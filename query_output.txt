@@ -1,0 +1,266 @@
+=== BUSCANDO TODOS LOS PRODUCTORES / PROVEEDORES QUE CONTIENEN 'ANDRE' ===
+
+==========================================
+PROVEEDOR: ANDRES CORRO (ID: 19)
+RIF: 29858769, Saldo en tabla: -64.30
+==========================================
+Movimientos registrados: 79
+  Mov ID: 7 | Fecha: 2026-03-16 09:35:22 | Tipo: COMPRA_POS      | Desc: Compra POS #30 | Cash: $0.00 | Libreta: $2.32 | Debe: 2.32 | Haber: 0.00 | Saldo Momento DB: -2.32
+  Mov ID: 12 | Fecha: 2026-03-16 09:59:11 | Tipo: COMPRA_POS      | Desc: Compra POS #39 | Cash: $0.00 | Libreta: $12.64 | Debe: 12.64 | Haber: 0.00 | Saldo Momento DB: -14.96
+  Mov ID: 19 | Fecha: 2026-03-16 15:32:53 | Tipo: COMPRA_POS      | Desc: Compra POS #78 | Cash: $12.50 | Libreta: $12.50 | Debe: 12.50 | Haber: 0.00 | Saldo Momento DB: -27.46
+  Mov ID: 74 | Fecha: 2026-03-21 19:50:20 | Tipo: ENTREGA_QUESO   | Desc: Recibido 3.9kg. Pago CREDITO: $0 | Debe: 0.00 | Haber: 19.50 | Saldo Momento DB: -7.96
+  Mov ID: 75 | Fecha: 2026-03-21 19:59:29 | Tipo: COMPRA_POS      | Desc: Compra POS #266 | Cash: $0.00 | Libreta: $2.00 | Debe: 2.00 | Haber: 0.00 | Saldo Momento DB: -9.96
+  Mov ID: 76 | Fecha: 2026-03-21 20:01:35 | Tipo: ABONO_POS       | Desc: Abono POS (PAGO MOVIL): Bs 5814.40 / $12.64 | Debe: 12.64 | Haber: 0.00 | Saldo Momento DB: -22.60
+  Mov ID: 80 | Fecha: 2026-03-21 21:16:54 | Tipo: COMPRA_POS      | Desc: Compra POS #273 | Cash: $0.00 | Libreta: $2.00 | Debe: 2.00 | Haber: 0.00 | Saldo Momento DB: -24.60
+  Mov ID: 81 | Fecha: 2026-03-21 21:20:06 | Tipo: ABONO_POS       | Desc: Abono POS (EFECTIVO BS): Bs 185.00 / $0.40 | Debe: 0.40 | Haber: 0.00 | Saldo Momento DB: -25.00
+  Mov ID: 88 | Fecha: 2026-03-21 23:03:18 | Tipo: COMPRA_POS      | Desc: Compra POS #283 | Cash: $0.00 | Libreta: $1.84 | Debe: 1.84 | Haber: 0.00 | Saldo Momento DB: -26.84
+  Mov ID: 114 | Fecha: 2026-03-24 08:34:41 | Tipo: COMPRA_POS      | Desc: Compra POS #409 | Cash: $0.00 | Libreta: $1.52 | Debe: 1.52 | Haber: 0.00 | Saldo Momento DB: -28.36
+  Mov ID: 116 | Fecha: 2026-03-24 08:40:01 | Tipo: COMPRA_POS      | Desc: Compra POS #411 | Cash: $0.00 | Libreta: $1.32 | Debe: 1.32 | Haber: 0.00 | Saldo Momento DB: -29.68
+  Mov ID: 120 | Fecha: 2026-03-24 11:07:06 | Tipo: ENTREGA_QUESO   | Desc: Recibido 2.36kg. Pago CREDITO: $0 | Debe: 0.00 | Haber: 11.80 | Saldo Momento DB: -17.88
+  Mov ID: 121 | Fecha: 2026-03-24 11:12:54 | Tipo: COMPRA_POS      | Desc: Compra POS #425 | Cash: $0.00 | Libreta: $10.15 | Debe: 10.15 | Haber: 0.00 | Saldo Momento DB: -28.03
+  Mov ID: 122 | Fecha: 2026-03-24 11:16:59 | Tipo: COMPRA_POS      | Desc: Compra POS #426 | Cash: $0.00 | Libreta: $6.50 | Debe: 6.50 | Haber: 0.00 | Saldo Momento DB: -34.53
+  Mov ID: 157 | Fecha: 2026-03-27 09:03:28 | Tipo: COMPRA_POS      | Desc: Compra POS #542 | Cash: $0.00 | Libreta: $1.00 | Debe: 1.00 | Haber: 0.00 | Saldo Momento DB: -35.53
+  Mov ID: 173 | Fecha: 2026-03-28 10:57:49 | Tipo: ENTREGA_QUESO   | Desc: Recibido 6.02kg. Pago CREDITO: $0 | Debe: 0.00 | Haber: 30.10 | Saldo Momento DB: -5.43
+  Mov ID: 174 | Fecha: 2026-03-28 11:00:07 | Tipo: PAGO            | Desc: Pago PAGO_MOVIL a DIANA. Ref: DEUDA CON ELLA - Bs 940.00 / $ | Debe: 2.00 | Haber: 0.00 | Saldo Momento DB: -7.43
+  Mov ID: 181 | Fecha: 2026-03-28 15:10:41 | Tipo: PAGO            | Desc: Pago PAGO_MOVIL a KARLITA. Ref: COMIDA - Bs 7369.96 / $15.68 | Debe: 15.68 | Haber: 0.00 | Saldo Momento DB: -23.11
+  Mov ID: 182 | Fecha: 2026-03-28 15:21:03 | Tipo: COMPRA_POS      | Desc: Compra POS #617 | Cash: $0.00 | Libreta: $1.19 | Debe: 1.19 | Haber: 0.00 | Saldo Momento DB: -24.30
+  Mov ID: 183 | Fecha: 2026-03-28 15:48:30 | Tipo: COMPRA_POS      | Desc: Compra POS #619 | Cash: $1.22 | Libreta: $1.78 | Debe: 1.78 | Haber: 0.00 | Saldo Momento DB: -26.08
+  Mov ID: 206 | Fecha: 2026-03-29 12:51:12 | Tipo: COMPRA_POS      | Desc: Compra POS #663 | Cash: $0.00 | Libreta: $2.00 | Debe: 2.00 | Haber: 0.00 | Saldo Momento DB: -28.08
+  Mov ID: 257 | Fecha: 2026-04-01 13:33:16 | Tipo: COMPRA_POS      | Desc: Compra POS #815 | Cash: $0.00 | Libreta: $4.21 | Debe: 4.21 | Haber: 0.00 | Saldo Momento DB: -32.29
+  Mov ID: 270 | Fecha: 2026-04-01 19:35:47 | Tipo: COMPRA_POS      | Desc: Compra POS #835 | Cash: $0.00 | Libreta: $3.00 | Debe: 3.00 | Haber: 0.00 | Saldo Momento DB: -35.29
+  Mov ID: 308 | Fecha: 2026-04-04 08:31:51 | Tipo: COMPRA_POS      | Desc: Compra POS #942 | Cash: $0.00 | Libreta: $3.00 | Debe: 3.00 | Haber: 0.00 | Saldo Momento DB: -38.29
+  Mov ID: 318 | Fecha: 2026-04-04 10:59:41 | Tipo: ENTREGA_QUESO   | Desc: Recibido 9kg. Pago CREDITO: $0 | Debe: 0.00 | Haber: 45.00 | Saldo Momento DB: 6.71
+  Mov ID: 319 | Fecha: 2026-04-04 11:04:47 | Tipo: COMPRA_POS      | Desc: Compra POS #950 | Cash: $0.00 | Libreta: $9.94 | Debe: 9.94 | Haber: 0.00 | Saldo Momento DB: -3.23
+  Mov ID: 320 | Fecha: 2026-04-04 11:05:45 | Tipo: COMPRA_POS      | Desc: Compra POS #951 | Cash: $0.00 | Libreta: $1.72 | Debe: 1.72 | Haber: 0.00 | Saldo Momento DB: -4.95
+  Mov ID: 322 | Fecha: 2026-04-04 11:59:48 | Tipo: COMPRA_POS      | Desc: Compra POS #953 | Cash: $0.00 | Libreta: $2.00 | Debe: 2.00 | Haber: 0.00 | Saldo Momento DB: -6.95
+  Mov ID: 325 | Fecha: 2026-04-04 14:15:03 | Tipo: COMPRA_POS      | Desc: Compra POS #959 | Cash: $0.00 | Libreta: $8.82 | Debe: 8.82 | Haber: 0.00 | Saldo Momento DB: -15.77
+  Mov ID: 326 | Fecha: 2026-04-04 14:17:07 | Tipo: PAGO            | Desc: Pago EFECTIVO_BS a andres corro. Ref: 3$ en efectivo bolivar | Debe: 3.00 | Haber: 0.00 | Saldo Momento DB: -18.77
+  Mov ID: 333 | Fecha: 2026-04-05 09:47:10 | Tipo: COMPRA_POS      | Desc: Compra POS #973 | Cash: $0.00 | Libreta: $9.99 | Debe: 9.99 | Haber: 0.00 | Saldo Momento DB: -28.76
+  Mov ID: 359 | Fecha: 2026-04-05 14:35:42 | Tipo: COMPRA_POS      | Desc: Compra POS #1022 | Cash: $0.00 | Libreta: $5.72 | Debe: 5.72 | Haber: 0.00 | Saldo Momento DB: -34.48
+  Mov ID: 441 | Fecha: 2026-04-09 16:41:15 | Tipo: COMPRA_POS      | Desc: Compra POS #1208 | Cash: $0.00 | Libreta: $1.37 | Debe: 1.37 | Haber: 0.00 | Saldo Momento DB: -35.85
+  Mov ID: 442 | Fecha: 2026-04-09 16:46:02 | Tipo: COMPRA_POS      | Desc: Compra POS #1210 | Cash: $0.00 | Libreta: $1.14 | Debe: 1.14 | Haber: 0.00 | Saldo Momento DB: -36.99
+  Mov ID: 458 | Fecha: 2026-04-10 18:47:52 | Tipo: COMPRA_POS      | Desc: Compra POS #1236 | Cash: $0.00 | Libreta: $2.00 | Debe: 2.00 | Haber: 0.00 | Saldo Momento DB: -38.99
+  Mov ID: 459 | Fecha: 2026-04-11 08:04:03 | Tipo: ENTREGA_QUESO   | Desc: Recibido 10.3kg. Pago CREDITO: $0 | Debe: 0.00 | Haber: 51.50 | Saldo Momento DB: 12.51
+  Mov ID: 461 | Fecha: 2026-04-11 08:47:00 | Tipo: PAGO            | Desc: Pago PAGO_MOVIL a andres corro. Ref: pago de queso - Bs 1852 | Debe: 38.59 | Haber: 0.00 | Saldo Momento DB: -26.08
+  Mov ID: 462 | Fecha: 2026-04-11 08:47:29 | Tipo: COMPRA_POS      | Desc: Compra POS #1247 | Cash: $0.00 | Libreta: $2.00 | Debe: 2.00 | Haber: 0.00 | Saldo Momento DB: -28.08
+  Mov ID: 480 | Fecha: 2026-04-12 08:24:04 | Tipo: COMPRA_POS      | Desc: Compra POS #1287 | Pagado completo en efectivo/móvil | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -28.08
+  Mov ID: 491 | Fecha: 2026-04-12 11:38:21 | Tipo: COMPRA_POS      | Desc: Compra POS #1311 | Cash: $0.00 | Libreta: $36.26 | Debe: 36.26 | Haber: 0.00 | Saldo Momento DB: -64.34
+  Mov ID: 627 | Fecha: 2026-04-18 10:57:12 | Tipo: ENTREGA_QUESO   | Desc: Recibido 9.2kg. Pago CREDITO: $0.00 | Debe: 0.00 | Haber: 50.60 | Saldo Momento DB: -13.74
+  Mov ID: 629 | Fecha: 2026-04-18 11:20:31 | Tipo: COMPRA_POS      | Desc: Compra POS #1557 | Deuda: $2.30 | Debe: 2.30 | Haber: 0.00 | Saldo Momento DB: -16.04
+  Mov ID: 630 | Fecha: 2026-04-18 15:23:44 | Tipo: PAGO            | Desc: Pago PAGO_MOVIL a . Ref:  | Debe: 10.04 | Haber: 0.00 | Saldo Momento DB: -26.08
+  Mov ID: 643 | Fecha: 2026-04-19 11:51:27 | Tipo: COMPRA_POS      | Desc: Compra POS #1592 | Deuda: $0.14 | Debe: 0.14 | Haber: 0.00 | Saldo Momento DB: -26.22
+  Mov ID: 645 | Fecha: 2026-04-19 12:15:01 | Tipo: COMPRA_POS      | Desc: Compra POS #1595 | Deuda: $1.04 | Debe: 1.04 | Haber: 0.00 | Saldo Momento DB: -27.26
+  Mov ID: 648 | Fecha: 2026-04-19 16:34:07 | Tipo: COMPRA_POS      | Desc: Compra POS #1606 | Deuda: $1.80 | Debe: 1.80 | Haber: 0.00 | Saldo Momento DB: -29.06
+  Mov ID: 658 | Fecha: 2026-04-20 10:13:24 | Tipo: COMPRA_POS      | Desc: Compra POS #1635 | Deuda: $1.28 | Debe: 1.28 | Haber: 0.00 | Saldo Momento DB: -30.34
+  Mov ID: 663 | Fecha: 2026-04-20 15:46:11 | Tipo: COMPRA_POS      | Desc: Compra POS #1645 | Deuda: $11.45 | Debe: 11.45 | Haber: 0.00 | Saldo Momento DB: -41.79
+  Mov ID: 670 | Fecha: 2026-04-21 09:56:43 | Tipo: COMPRA_POS      | Desc: Compra POS #1673 | Deuda: $3.00 | Debe: 3.00 | Haber: 0.00 | Saldo Momento DB: -44.79
+  Mov ID: 678 | Fecha: 2026-04-21 15:31:13 | Tipo: COMPRA_POS      | Desc: Compra POS #1689 | Deuda: $3.29 | Debe: 3.29 | Haber: 0.00 | Saldo Momento DB: -48.08
+  Mov ID: 693 | Fecha: 2026-04-22 10:54:56 | Tipo: COMPRA_POS      | Desc: Compra POS #1724 | Deuda: $6.94 | Debe: 6.94 | Haber: 0.00 | Saldo Momento DB: -55.02
+  Mov ID: 711 | Fecha: 2026-04-27 08:56:34 | Tipo: COMPRA_POS      | Desc: Compra POS #1759 | Deuda: $4.47 | Debe: 4.47 | Haber: 0.00 | Saldo Momento DB: -59.49
+  Mov ID: 750 | Fecha: 2026-04-27 14:29:38 | Tipo: COMPRA_POS      | Desc: Compra POS #1821 | Deuda: $3.99 | Debe: 3.99 | Haber: 0.00 | Saldo Momento DB: -63.48
+  Mov ID: 755 | Fecha: 2026-04-27 14:38:23 | Tipo: COMPRA_POS      | Desc: Compra POS #1828 | Deuda: $7.33 | Debe: 7.33 | Haber: 0.00 | Saldo Momento DB: -70.81
+  Mov ID: 759 | Fecha: 2026-04-27 14:54:40 | Tipo: COMPRA_POS      | Desc: Compra POS #1836 | Deuda: $7.77 | Debe: 7.77 | Haber: 0.00 | Saldo Momento DB: -78.58
+  Mov ID: 762 | Fecha: 2026-04-27 15:01:38 | Tipo: COMPRA_POS      | Desc: Compra POS #1843 | Deuda: $15.94 | Debe: 15.94 | Haber: 0.00 | Saldo Momento DB: -94.52
+  Mov ID: 764 | Fecha: 2026-04-27 15:10:13 | Tipo: COMPRA_POS      | Desc: Compra POS #1851 | Deuda: $30.61 | Debe: 30.61 | Haber: 0.00 | Saldo Momento DB: -125.13
+  Mov ID: 836 | Fecha: 2026-04-30 14:34:38 | Tipo: ENTREGA_QUESO   | Desc: Recibido 8.57kg. Pago CREDITO: $0.00 | Debe: 0.00 | Haber: 47.13 | Saldo Momento DB: -78.00
+  Mov ID: 837 | Fecha: 2026-04-30 16:20:41 | Tipo: COMPRA_POS      | Desc: Compra POS #2059 | Deuda: $1.00 | Debe: 1.00 | Haber: 0.00 | Saldo Momento DB: -79.00
+  Mov ID: 895 | Fecha: 2026-05-02 10:34:49 | Tipo: ENTREGA_QUESO   | Desc: Recibido 9.86kg. Pago CREDITO: $0.00 | Debe: 0.00 | Haber: 49.30 | Saldo Momento DB: -29.70
+  Mov ID: 896 | Fecha: 2026-05-02 10:37:22 | Tipo: COMPRA_POS      | Desc: Compra POS #2128 | Deuda: $2.00 | Debe: 2.00 | Haber: 0.00 | Saldo Momento DB: -31.70
+  Mov ID: 899 | Fecha: 2026-05-02 15:00:15 | Tipo: COMPRA_POS      | Desc: Compra POS #2143 | Deuda: $0.14 | Debe: 0.14 | Haber: 0.00 | Saldo Momento DB: -31.84
+  Mov ID: 900 | Fecha: 2026-05-02 15:19:08 | Tipo: COMPRA_POS      | Desc: Compra POS #2144 | Deuda: $1.00 | Debe: 1.00 | Haber: 0.00 | Saldo Momento DB: -32.84
+  Mov ID: 901 | Fecha: 2026-05-02 15:20:55 | Tipo: COMPRA_POS      | Desc: Compra POS #2145 | Deuda: $3.41 | Debe: 3.41 | Haber: 0.00 | Saldo Momento DB: -36.25
+  Mov ID: 904 | Fecha: 2026-05-02 16:45:25 | Tipo: COMPRA_POS      | Desc: Compra POS #2153 | Deuda: $1.44 | Debe: 1.44 | Haber: 0.00 | Saldo Momento DB: -37.69
+  Mov ID: 905 | Fecha: 2026-05-02 17:09:20 | Tipo: COMPRA_POS      | Desc: Compra POS #2155 | Deuda: $17.36 | Debe: 17.36 | Haber: 0.00 | Saldo Momento DB: -55.05
+  Mov ID: 929 | Fecha: 2026-05-03 15:49:26 | Tipo: COMPRA_POS      | Desc: Compra POS #2216 | Deuda: $32.97 | Debe: 32.97 | Haber: 0.00 | Saldo Momento DB: -88.02
+  Mov ID: 1010 | Fecha: 2026-05-07 10:58:28 | Tipo: COMPRA_POS      | Desc: Compra POS #2371 | Deuda: $0.69 | Debe: 0.69 | Haber: 0.00 | Saldo Momento DB: -88.71
+  Mov ID: 1018 | Fecha: 2026-05-07 14:02:15 | Tipo: COMPRA_POS      | Desc: Compra POS #2387 | Deuda: $4.21 | Debe: 4.21 | Haber: 0.00 | Saldo Momento DB: -92.92
+  Mov ID: 1011 | Fecha: 2026-05-07 15:03:19 | Tipo: PAGO            | Desc: Pago TRANSFERENCIA a comida ques estaba a nombre de karlita. | Debe: 7.34 | Haber: 0.00 | Saldo Momento DB: -100.26
+  Mov ID: 1045 | Fecha: 2026-05-09 10:04:55 | Tipo: ENTREGA_QUESO   | Desc: Recibido 8.12kg. Pago CREDITO: $0.00 | Debe: 0.00 | Haber: 36.54 | Saldo Momento DB: -63.72
+  Mov ID: 1046 | Fecha: 2026-05-09 10:15:08 | Tipo: COMPRA_POS      | Desc: Compra POS #2448 | Deuda: $10.18 | Debe: 10.18 | Haber: 0.00 | Saldo Momento DB: -73.90
+  Mov ID: 1047 | Fecha: 2026-05-09 11:16:47 | Tipo: COMPRA_POS      | Desc: Compra POS #2450 | Deuda: $3.49 | Debe: 3.49 | Haber: 0.00 | Saldo Momento DB: -77.39
+  Mov ID: 1049 | Fecha: 2026-05-09 15:17:39 | Tipo: COMPRA_POS      | Desc: Compra POS #2456 | Deuda: $8.33 | Debe: 8.33 | Haber: 0.00 | Saldo Momento DB: -85.72
+  Mov ID: 1053 | Fecha: 2026-05-09 15:47:31 | Tipo: COMPRA_POS      | Desc: Compra POS #2460 | Deuda: $5.01 | Debe: 5.01 | Haber: 0.00 | Saldo Momento DB: -90.73
+  Mov ID: 1066 | Fecha: 2026-05-10 10:39:57 | Tipo: COMPRA_POS      | Desc: Compra POS #2489 | Deuda: $2.00 | Debe: 2.00 | Haber: 0.00 | Saldo Momento DB: -92.73
+  Mov ID: 1176 | Fecha: 2026-05-16 09:17:29 | Tipo: ENTREGA_QUESO   | Desc: Recibido 8.78kg. Pago CREDITO: $0.00 | Debe: 0.00 | Haber: 43.90 | Saldo Momento DB: -48.83
+  Mov ID: 1177 | Fecha: 2026-05-16 09:23:01 | Tipo: COMPRA_POS      | Desc: Compra POS #2670 | Deuda: $5.00 | Debe: 5.00 | Haber: 0.00 | Saldo Momento DB: -53.83
+  Mov ID: 1274 | Fecha: 2026-05-19 10:59:04 | Tipo: COMPRA_POS      | Desc: Compra POS #2828 | Deuda: $10.47 | Debe: 10.47 | Haber: 0.00 | Saldo Momento DB: -64.30
+
+==========================================
+PROVEEDOR: andres eloy (ID: 30)
+RIF: 31107381, Saldo en tabla: -320.88
+==========================================
+Movimientos registrados: 133
+  Mov ID: 277 | Fecha: 2026-04-02 16:33:30 | Tipo: ADELANTO        | Desc: Pago PAGO_MOVIL a andres eloy. Ref: DEUDA DEL CUADERNO - Bs  | Debe: 23.55 | Haber: 0.00 | Saldo Momento DB: -23.55
+  Mov ID: 286 | Fecha: 2026-04-03 09:04:10 | Tipo: COMPRA_POS      | Desc: Compra POS #892 | Cash: $0.00 | Libreta: $1.00 | Debe: 1.00 | Haber: 0.00 | Saldo Momento DB: -24.55
+  Mov ID: 290 | Fecha: 2026-04-03 10:05:07 | Tipo: COMPRA_POS      | Desc: Compra POS #899 | Cash: $0.00 | Libreta: $3.93 | Debe: 3.93 | Haber: 0.00 | Saldo Momento DB: -28.48
+  Mov ID: 291 | Fecha: 2026-04-03 17:14:15 | Tipo: COMPRA_POS      | Desc: Compra POS #900 | Cash: $0.00 | Libreta: $3.93 | Debe: 3.93 | Haber: 0.00 | Saldo Momento DB: -32.41
+  Mov ID: 309 | Fecha: 2026-04-04 08:33:19 | Tipo: COMPRA_POS      | Desc: Compra POS #943 | Cash: $0.00 | Libreta: $3.17 | Debe: 3.17 | Haber: 0.00 | Saldo Momento DB: -35.58
+  Mov ID: 324 | Fecha: 2026-04-04 12:03:55 | Tipo: COMPRA_POS      | Desc: Compra POS #955 | Pagado completo en efectivo/móvil | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -35.58
+  Mov ID: 338 | Fecha: 2026-04-05 10:13:58 | Tipo: COMPRA_POS      | Desc: Compra POS #989 | Cash: $0.00 | Libreta: $4.77 | Debe: 4.77 | Haber: 0.00 | Saldo Momento DB: -40.35
+  Mov ID: 346 | Fecha: 2026-04-05 10:44:24 | Tipo: COMPRA_POS      | Desc: Compra POS #998 | Cash: $0.00 | Libreta: $5.00 | Debe: 5.00 | Haber: 0.00 | Saldo Momento DB: -45.35
+  Mov ID: 354 | Fecha: 2026-04-05 12:33:53 | Tipo: COMPRA_POS      | Desc: Compra POS #1012 | Pagado completo en efectivo/móvil | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -45.35
+  Mov ID: 369 | Fecha: 2026-04-06 07:42:35 | Tipo: COMPRA_POS      | Desc: Compra POS #1053 | Cash: $0.00 | Libreta: $1.32 | Debe: 1.32 | Haber: 0.00 | Saldo Momento DB: -46.67
+  Mov ID: 372 | Fecha: 2026-04-06 07:48:07 | Tipo: COMPRA_POS      | Desc: Compra POS #1057 | Cash: $0.00 | Libreta: $3.84 | Debe: 3.84 | Haber: 0.00 | Saldo Momento DB: -50.51
+  Mov ID: 386 | Fecha: 2026-04-06 14:56:03 | Tipo: COMPRA_POS      | Desc: Compra POS #1089 | Cash: $0.00 | Libreta: $0.96 | Debe: 0.96 | Haber: 0.00 | Saldo Momento DB: -51.47
+  Mov ID: 406 | Fecha: 2026-04-07 17:25:53 | Tipo: COMPRA_POS      | Desc: Compra POS #1131 | Cash: $0.00 | Libreta: $9.40 | Debe: 9.40 | Haber: 0.00 | Saldo Momento DB: -60.87
+  Mov ID: 421 | Fecha: 2026-04-08 08:57:02 | Tipo: COMPRA_POS      | Desc: Compra POS #1152 | Cash: $0.00 | Libreta: $8.83 | Debe: 8.83 | Haber: 0.00 | Saldo Momento DB: -69.70
+  Mov ID: 422 | Fecha: 2026-04-08 08:58:23 | Tipo: COMPRA_POS      | Desc: Compra POS #1153 | Cash: $0.00 | Libreta: $4.21 | Debe: 4.21 | Haber: 0.00 | Saldo Momento DB: -73.91
+  Mov ID: 435 | Fecha: 2026-04-09 07:25:30 | Tipo: COMPRA_POS      | Desc: Compra POS #1184 | Cash: $2.92 | Libreta: $6.40 | Debe: 6.40 | Haber: 0.00 | Saldo Momento DB: -80.31
+  Mov ID: 443 | Fecha: 2026-04-10 07:21:24 | Tipo: ABONO_POS       | Desc: Abono POS (PAGO MOVIL): Bs 2020.00 / $4.21 | Debe: 4.21 | Haber: 0.00 | Saldo Momento DB: -84.52
+  Mov ID: 444 | Fecha: 2026-04-10 07:49:44 | Tipo: COMPRA_POS      | Desc: Compra POS #1212 | Cash: $0.00 | Libreta: $0.66 | Debe: 0.66 | Haber: 0.00 | Saldo Momento DB: -85.18
+  Mov ID: 448 | Fecha: 2026-04-10 18:26:55 | Tipo: COMPRA_POS      | Desc: Compra POS #1230 | Pagado completo en efectivo/móvil | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -85.18
+  Mov ID: 457 | Fecha: 2026-04-10 18:47:16 | Tipo: COMPRA_POS      | Desc: Compra POS #1234 | Cash: $0.00 | Libreta: $0.42 | Debe: 0.42 | Haber: 0.00 | Saldo Momento DB: -85.60
+  Mov ID: 463 | Fecha: 2026-04-11 08:48:26 | Tipo: COMPRA_POS      | Desc: Compra POS #1248 | Cash: $0.00 | Libreta: $4.43 | Debe: 4.43 | Haber: 0.00 | Saldo Momento DB: -90.03
+  Mov ID: 475 | Fecha: 2026-04-12 07:51:17 | Tipo: COMPRA_POS      | Desc: Compra POS #1274 | Cash: $0.00 | Libreta: $10.66 | Debe: 10.66 | Haber: 0.00 | Saldo Momento DB: -100.69
+  Mov ID: 493 | Fecha: 2026-04-12 14:23:29 | Tipo: COMPRA_POS      | Desc: Compra POS #1317 | Cash: $0.00 | Libreta: $4.36 | Debe: 4.36 | Haber: 0.00 | Saldo Momento DB: -105.05
+  Mov ID: 504 | Fecha: 2026-04-13 07:28:57 | Tipo: COMPRA_POS      | Desc: Compra POS #1348 | Cash: $0.00 | Libreta: $2.64 | Debe: 2.64 | Haber: 0.00 | Saldo Momento DB: -107.69
+  Mov ID: 508 | Fecha: 2026-04-13 08:19:50 | Tipo: COMPRA_POS      | Desc: Compra POS #1354 | Cash: $0.00 | Libreta: $2.00 | Debe: 2.00 | Haber: 0.00 | Saldo Momento DB: -109.69
+  Mov ID: 515 | Fecha: 2026-04-13 11:58:16 | Tipo: ABONO_POS       | Desc: Abono POS (PAGO MOVIL): Bs 76800.00 / $160.00 | Debe: 160.00 | Haber: 0.00 | Saldo Momento DB: -269.69
+  Mov ID: 518 | Fecha: 2026-04-13 12:08:08 | Tipo: COMPRA_POS      | Desc: Compra POS #1371 | Cash: $0.00 | Libreta: $3.33 | Debe: 3.33 | Haber: 0.00 | Saldo Momento DB: -273.02
+  Mov ID: 519 | Fecha: 2026-04-13 12:08:26 | Tipo: COMPRA_POS      | Desc: Compra POS #1372 | Cash: $0.00 | Libreta: $0.88 | Debe: 0.88 | Haber: 0.00 | Saldo Momento DB: -273.90
+  Mov ID: 523 | Fecha: 2026-04-13 18:06:01 | Tipo: COMPRA_POS      | Desc: Compra POS #1379 | Cash: $0.00 | Libreta: $3.38 | Debe: 3.38 | Haber: 0.00 | Saldo Momento DB: -277.28
+  Mov ID: 526 | Fecha: 2026-04-13 18:11:10 | Tipo: ABONO_POS       | Desc: Abono POS (PAGO MOVIL): Bs 960.00 / $2.00 | Debe: 2.00 | Haber: 0.00 | Saldo Momento DB: -279.28
+  Mov ID: 527 | Fecha: 2026-04-13 18:12:44 | Tipo: COMPRA_POS      | Desc: Compra POS #1384 | Pagado completo en efectivo/móvil | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -279.28
+  Mov ID: 550 | Fecha: 2026-04-15 10:59:40 | Tipo: COMPRA_POS      | Desc: Compra POS #1413 | Cash: $0.00 | Libreta: $5.77 | Debe: 5.77 | Haber: 0.00 | Saldo Momento DB: -285.05
+  Mov ID: 556 | Fecha: 2026-04-15 11:45:33 | Tipo: COMPRA_POS      | Desc: Compra POS #1418 | Cash: $0.00 | Libreta: $2.59 | Debe: 2.59 | Haber: 0.00 | Saldo Momento DB: -287.64
+  Mov ID: 570 | Fecha: 2026-04-16 17:10:46 | Tipo: COMPRA_POS      | Desc: Compra POS #1449 | Cash: $0.00 | Libreta: $14.77 | Debe: 14.77 | Haber: 0.00 | Saldo Momento DB: -302.41
+  Mov ID: 579 | Fecha: 2026-04-16 18:24:02 | Tipo: COMPRA_POS      | Desc: Compra POS #1479 | Cash: $0.00 | Libreta: $6.00 | Debe: 6.00 | Haber: 0.00 | Saldo Momento DB: -308.41
+  Mov ID: 584 | Fecha: 2026-04-17 09:58:32 | Tipo: PAGO            | Desc: Pago EFECTIVO_BS a . Ref:  | Debe: 4.70 | Haber: 0.00 | Saldo Momento DB: -313.11
+  Mov ID: 587 | Fecha: 2026-04-17 11:14:50 | Tipo: COMPRA_POS      | Desc: Compra POS #1488 | Deuda: $3.94 | Debe: 3.94 | Haber: 0.00 | Saldo Momento DB: -317.05
+  Mov ID: 613 | Fecha: 2026-04-17 18:56:43 | Tipo: COMPRA_POS      | Desc: Compra POS #1533 | Deuda: $1.80 | Debe: 1.80 | Haber: 0.00 | Saldo Momento DB: -318.85
+  Mov ID: 604 | Fecha: 2026-04-17 21:46:10 | Tipo: PAGO            | Desc: Pago EFECTIVO_BS a pago andresito. Ref:  | Debe: 26.01 | Haber: 0.00 | Saldo Momento DB: -344.87
+  Mov ID: 614 | Fecha: 2026-04-18 08:09:53 | Tipo: COMPRA_POS      | Desc: Compra POS #1536 | Deuda: $0.85 | Debe: 0.85 | Haber: 0.00 | Saldo Momento DB: -345.72
+  Mov ID: 633 | Fecha: 2026-04-18 12:44:19 | Tipo: COMPRA_POS      | Desc: Compra POS #1563 | Deuda: $3.12 | Debe: 3.12 | Haber: 0.00 | Saldo Momento DB: -348.84
+  Mov ID: 638 | Fecha: 2026-04-19 10:08:00 | Tipo: COMPRA_POS      | Desc: Compra POS #1582 | Deuda: $24.22 | Debe: 24.22 | Haber: 0.00 | Saldo Momento DB: -373.06
+  Mov ID: 650 | Fecha: 2026-04-19 19:27:02 | Tipo: COMPRA_POS      | Desc: Compra POS #1617 | Deuda: $5.29 | Debe: 5.29 | Haber: 0.00 | Saldo Momento DB: -378.35
+  Mov ID: 653 | Fecha: 2026-04-20 02:17:22 | Tipo: NOMINA          | Desc: Sueldo Bruto: Semana 19 abril (Bs 22050) | Debe: 0.00 | Haber: 45.00 | Saldo Momento DB: -333.35
+  Mov ID: 657 | Fecha: 2026-04-20 07:13:43 | Tipo: COMPRA_POS      | Desc: Compra POS #1625 | Deuda: $2.40 | Debe: 2.40 | Haber: 0.00 | Saldo Momento DB: -335.75
+  Mov ID: 664 | Fecha: 2026-04-20 18:02:08 | Tipo: COMPRA_POS      | Desc: Compra POS #1659 | Deuda: $1.80 | Debe: 1.80 | Haber: 0.00 | Saldo Momento DB: -337.55
+  Mov ID: 669 | Fecha: 2026-04-21 07:33:41 | Tipo: COMPRA_POS      | Desc: Compra POS #1671 | Deuda: $4.00 | Debe: 4.00 | Haber: 0.00 | Saldo Momento DB: -341.55
+  Mov ID: 673 | Fecha: 2026-04-21 10:32:46 | Tipo: COMPRA_POS      | Desc: Compra POS #1677 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -341.55
+  Mov ID: 674 | Fecha: 2026-04-21 10:35:31 | Tipo: COMPRA_POS      | Desc: Compra POS #1678 | Deuda: $5.07 | Debe: 5.07 | Haber: 0.00 | Saldo Momento DB: -346.62
+  Mov ID: 696 | Fecha: 2026-04-22 12:19:57 | Tipo: COMPRA_POS      | Desc: Compra POS #1730 | Deuda: $5.00 | Debe: 5.00 | Haber: 0.00 | Saldo Momento DB: -351.62
+  Mov ID: 708 | Fecha: 2026-04-27 08:51:04 | Tipo: COMPRA_POS      | Desc: Compra POS #1754 | Deuda: $3.13 | Debe: 3.13 | Haber: 0.00 | Saldo Momento DB: -354.75
+  Mov ID: 729 | Fecha: 2026-04-27 10:16:58 | Tipo: COMPRA_POS      | Desc: Compra POS #1791 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -354.75
+  Mov ID: 743 | Fecha: 2026-04-27 14:12:20 | Tipo: COMPRA_POS      | Desc: Compra POS #1806 | Deuda: $3.66 | Debe: 3.66 | Haber: 0.00 | Saldo Momento DB: -358.41
+  Mov ID: 744 | Fecha: 2026-04-27 14:14:42 | Tipo: COMPRA_POS      | Desc: Compra POS #1808 | Deuda: $3.80 | Debe: 3.80 | Haber: 0.00 | Saldo Momento DB: -362.21
+  Mov ID: 745 | Fecha: 2026-04-27 14:17:12 | Tipo: COMPRA_POS      | Desc: Compra POS #1810 | Deuda: $4.50 | Debe: 4.50 | Haber: 0.00 | Saldo Momento DB: -366.71
+  Mov ID: 768 | Fecha: 2026-04-27 15:28:28 | Tipo: COMPRA_POS      | Desc: Compra POS #1870 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -366.71
+  Mov ID: 770 | Fecha: 2026-04-27 15:44:58 | Tipo: COMPRA_POS      | Desc: Compra POS #1884 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -366.71
+  Mov ID: 782 | Fecha: 2026-04-27 16:05:55 | Tipo: COMPRA_POS      | Desc: Compra POS #1905 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -366.71
+  Mov ID: 787 | Fecha: 2026-04-27 16:20:18 | Tipo: COMPRA_POS      | Desc: Compra POS #1912 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -366.71
+  Mov ID: 788 | Fecha: 2026-04-27 16:22:02 | Tipo: COMPRA_POS      | Desc: Compra POS #1913 | Deuda: $0.49 | Debe: 0.49 | Haber: 0.00 | Saldo Momento DB: -367.20
+  Mov ID: 793 | Fecha: 2026-04-29 16:53:20 | Tipo: COMPRA_POS      | Desc: Compra POS #1928 | Deuda: $0.20 | Debe: 0.20 | Haber: 0.00 | Saldo Momento DB: -367.40
+  Mov ID: 795 | Fecha: 2026-04-29 17:13:06 | Tipo: COMPRA_POS      | Desc: Compra POS #1937 | Deuda: $3.92 | Debe: 3.92 | Haber: 0.00 | Saldo Momento DB: -371.32
+  Mov ID: 803 | Fecha: 2026-04-29 17:35:28 | Tipo: COMPRA_POS      | Desc: Compra POS #1964 | Deuda: $0.67 | Debe: 0.67 | Haber: 0.00 | Saldo Momento DB: -371.99
+  Mov ID: 805 | Fecha: 2026-04-29 17:46:05 | Tipo: COMPRA_POS      | Desc: Compra POS #1974 | Deuda: $0.56 | Debe: 0.56 | Haber: 0.00 | Saldo Momento DB: -372.55
+  Mov ID: 810 | Fecha: 2026-04-29 17:57:58 | Tipo: COMPRA_POS      | Desc: Compra POS #1982 | Deuda: $0.66 | Debe: 0.66 | Haber: 0.00 | Saldo Momento DB: -373.21
+  Mov ID: 811 | Fecha: 2026-04-29 17:58:30 | Tipo: COMPRA_POS      | Desc: Compra POS #1983 | Deuda: $1.92 | Debe: 1.92 | Haber: 0.00 | Saldo Momento DB: -375.13
+  Mov ID: 820 | Fecha: 2026-04-29 18:24:49 | Tipo: COMPRA_POS      | Desc: Compra POS #2005 | Deuda: $5.02 | Debe: 5.02 | Haber: 0.00 | Saldo Momento DB: -380.15
+  Mov ID: 829 | Fecha: 2026-04-30 08:07:54 | Tipo: COMPRA_POS      | Desc: Compra POS #2033 | Deuda: $3.45 | Debe: 3.45 | Haber: 0.00 | Saldo Momento DB: -383.60
+  Mov ID: 838 | Fecha: 2026-04-30 16:21:09 | Tipo: COMPRA_POS      | Desc: Compra POS #2060 | Deuda: $1.72 | Debe: 1.72 | Haber: 0.00 | Saldo Momento DB: -385.32
+  Mov ID: 893 | Fecha: 2026-05-02 09:54:49 | Tipo: COMPRA_POS      | Desc: Compra POS #2121 | Deuda: $6.14 | Debe: 6.14 | Haber: 0.00 | Saldo Momento DB: -391.46
+  Mov ID: 912 | Fecha: 2026-05-02 18:13:25 | Tipo: COMPRA_POS      | Desc: Compra POS #2164 | Deuda: $5.15 | Debe: 5.15 | Haber: 0.00 | Saldo Momento DB: -396.61
+  Mov ID: 914 | Fecha: 2026-05-02 22:16:19 | Tipo: NOMINA          | Desc: Sueldo Bruto: desde el 20-04 al 02-05 (Bs 44100) | Debe: 0.00 | Haber: 90.00 | Saldo Momento DB: -306.61
+  Mov ID: 920 | Fecha: 2026-05-03 08:39:43 | Tipo: COMPRA_POS      | Desc: Compra POS #2176 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -306.61
+  Mov ID: 921 | Fecha: 2026-05-03 08:47:05 | Tipo: COMPRA_POS      | Desc: Compra POS #2177 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -306.61
+  Mov ID: 927 | Fecha: 2026-05-03 12:10:40 | Tipo: COMPRA_POS      | Desc: Compra POS #2205 | Deuda: $0.99 | Debe: 0.99 | Haber: 0.00 | Saldo Momento DB: -307.60
+  Mov ID: 928 | Fecha: 2026-05-03 15:32:48 | Tipo: COMPRA_POS      | Desc: Compra POS #2214 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -307.60
+  Mov ID: 938 | Fecha: 2026-05-04 11:23:50 | Tipo: COMPRA_POS      | Desc: Compra POS #2248 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -307.60
+  Mov ID: 941 | Fecha: 2026-05-04 11:42:21 | Tipo: COMPRA_POS      | Desc: Compra POS #2260 | Deuda: $0.63 | Debe: 0.63 | Haber: 0.00 | Saldo Momento DB: -308.23
+  Mov ID: 946 | Fecha: 2026-05-04 16:06:00 | Tipo: COMPRA_POS      | Desc: Compra POS #2272 | Deuda: $0.31 | Debe: 0.31 | Haber: 0.00 | Saldo Momento DB: -308.54
+  Mov ID: 951 | Fecha: 2026-05-04 18:03:54 | Tipo: COMPRA_POS      | Desc: Compra POS #2283 | Deuda: $2.45 | Debe: 2.45 | Haber: 0.00 | Saldo Momento DB: -310.99
+  Mov ID: 952 | Fecha: 2026-05-05 06:57:21 | Tipo: COMPRA_POS      | Desc: Compra POS #2285 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -310.99
+  Mov ID: 957 | Fecha: 2026-05-05 13:08:20 | Tipo: COMPRA_POS      | Desc: Compra POS #2297 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -310.99
+  Mov ID: 959 | Fecha: 2026-05-05 16:23:43 | Tipo: COMPRA_POS      | Desc: Compra POS #2301 | Deuda: $1.00 | Debe: 1.00 | Haber: 0.00 | Saldo Momento DB: -311.99
+  Mov ID: 967 | Fecha: 2026-05-06 07:29:17 | Tipo: COMPRA_POS      | Desc: Compra POS #2308 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -311.99
+  Mov ID: 970 | Fecha: 2026-05-06 10:32:44 | Tipo: COMPRA_POS      | Desc: Compra POS #2314 | Deuda: $3.40 | Debe: 3.40 | Haber: 0.00 | Saldo Momento DB: -315.39
+  Mov ID: 990 | Fecha: 2026-05-06 16:34:50 | Tipo: COMPRA_POS      | Desc: Compra POS #2343 | Deuda: $8.26 | Debe: 8.26 | Haber: 0.00 | Saldo Momento DB: -323.65
+  Mov ID: 1000 | Fecha: 2026-05-07 09:17:57 | Tipo: COMPRA_POS      | Desc: Compra POS #2353 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -323.65
+  Mov ID: 1004 | Fecha: 2026-05-07 10:26:27 | Tipo: COMPRA_POS      | Desc: Compra POS #2363 | Deuda: $0.03 | Debe: 0.03 | Haber: 0.00 | Saldo Momento DB: -323.68
+  Mov ID: 1016 | Fecha: 2026-05-07 12:24:30 | Tipo: COMPRA_POS      | Desc: Compra POS #2378 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -323.68
+  Mov ID: 1019 | Fecha: 2026-05-07 14:04:41 | Tipo: COMPRA_POS      | Desc: Compra POS #2388 | Deuda: $2.80 | Debe: 2.80 | Haber: 0.00 | Saldo Momento DB: -326.48
+  Mov ID: 1021 | Fecha: 2026-05-07 16:08:45 | Tipo: COMPRA_POS      | Desc: Compra POS #2391 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -326.48
+  Mov ID: 1023 | Fecha: 2026-05-07 16:48:05 | Tipo: COMPRA_POS      | Desc: Compra POS #2393 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -326.48
+  Mov ID: 1024 | Fecha: 2026-05-07 16:52:11 | Tipo: COMPRA_POS      | Desc: Compra POS #2394 | Deuda: $2.98 | Debe: 2.98 | Haber: 0.00 | Saldo Momento DB: -329.46
+  Mov ID: 1028 | Fecha: 2026-05-07 17:53:46 | Tipo: COMPRA_POS      | Desc: Compra POS #2402 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -329.46
+  Mov ID: 1032 | Fecha: 2026-05-08 11:19:57 | Tipo: COMPRA_POS      | Desc: Compra POS #2409 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -329.46
+  Mov ID: 1033 | Fecha: 2026-05-08 11:37:10 | Tipo: COMPRA_POS      | Desc: Compra POS #2411 | Deuda: $1.40 | Debe: 1.40 | Haber: 0.00 | Saldo Momento DB: -330.86
+  Mov ID: 1042 | Fecha: 2026-05-09 08:18:31 | Tipo: COMPRA_POS      | Desc: Compra POS #2442 | Deuda: $3.92 | Debe: 3.92 | Haber: 0.00 | Saldo Momento DB: -334.78
+  Mov ID: 1060 | Fecha: 2026-05-10 06:53:39 | Tipo: COMPRA_POS      | Desc: Compra POS #2471 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -334.78
+  Mov ID: 1072 | Fecha: 2026-05-10 14:15:40 | Tipo: COMPRA_POS      | Desc: Compra POS #2498 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -334.78
+  Mov ID: 1076 | Fecha: 2026-05-10 17:10:13 | Tipo: COMPRA_POS      | Desc: Compra POS #2507 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -334.78
+  Mov ID: 1077 | Fecha: 2026-05-10 17:58:28 | Tipo: COMPRA_POS      | Desc: Compra POS #2509 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -334.78
+  Mov ID: 1090 | Fecha: 2026-05-11 07:17:42 | Tipo: COMPRA_POS      | Desc: Compra POS #2519 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -334.78
+  Mov ID: 1096 | Fecha: 2026-05-11 08:38:46 | Tipo: COMPRA_POS      | Desc: Compra POS #2527 | Deuda: $0.68 | Debe: 0.68 | Haber: 0.00 | Saldo Momento DB: -335.46
+  Mov ID: 1102 | Fecha: 2026-05-11 11:52:00 | Tipo: COMPRA_POS      | Desc: Compra POS #2536 | Deuda: $1.40 | Debe: 1.40 | Haber: 0.00 | Saldo Momento DB: -336.86
+  Mov ID: 1106 | Fecha: 2026-05-11 18:49:52 | Tipo: NOMINA          | Desc: Sueldo Bruto: al 09 de mayo (Bs 25000) | Debe: 0.00 | Haber: 50.00 | Saldo Momento DB: -286.86
+  Mov ID: 1114 | Fecha: 2026-05-12 07:32:02 | Tipo: COMPRA_POS      | Desc: Compra POS #2556 | Deuda: $2.86 | Debe: 2.86 | Haber: 0.00 | Saldo Momento DB: -289.72
+  Mov ID: 1115 | Fecha: 2026-05-12 09:06:44 | Tipo: COMPRA_POS      | Desc: Compra POS #2559 | Deuda: $2.92 | Debe: 2.92 | Haber: 0.00 | Saldo Momento DB: -292.64
+  Mov ID: 1119 | Fecha: 2026-05-12 10:13:54 | Tipo: COMPRA_POS      | Desc: Compra POS #2560 | Deuda: $0.12 | Debe: 0.12 | Haber: 0.00 | Saldo Momento DB: -292.76
+  Mov ID: 1123 | Fecha: 2026-05-12 11:01:57 | Tipo: COMPRA_POS      | Desc: Compra POS #2564 | Deuda: $4.04 | Debe: 4.04 | Haber: 0.00 | Saldo Momento DB: -296.80
+  Mov ID: 1136 | Fecha: 2026-05-13 11:28:58 | Tipo: COMPRA_POS      | Desc: Compra POS #2582 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -296.80
+  Mov ID: 1137 | Fecha: 2026-05-13 12:46:34 | Tipo: COMPRA_POS      | Desc: Compra POS #2585 | Deuda: $3.99 | Debe: 3.99 | Haber: 0.00 | Saldo Momento DB: -300.79
+  Mov ID: 1138 | Fecha: 2026-05-13 13:59:36 | Tipo: COMPRA_POS      | Desc: Compra POS #2588 | Deuda: $3.35 | Debe: 3.35 | Haber: 0.00 | Saldo Momento DB: -304.14
+  Mov ID: 1140 | Fecha: 2026-05-13 15:50:24 | Tipo: COMPRA_POS      | Desc: Compra POS #2591 | Deuda: $2.96 | Debe: 2.96 | Haber: 0.00 | Saldo Momento DB: -307.10
+  Mov ID: 1145 | Fecha: 2026-05-14 08:26:34 | Tipo: COMPRA_POS      | Desc: Compra POS #2606 | Deuda: $2.21 | Debe: 2.21 | Haber: 0.00 | Saldo Momento DB: -309.31
+  Mov ID: 1155 | Fecha: 2026-05-14 16:22:53 | Tipo: COMPRA_POS      | Desc: Compra POS #2634 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -309.31
+  Mov ID: 1156 | Fecha: 2026-05-14 17:09:07 | Tipo: COMPRA_POS      | Desc: Compra POS #2637 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -309.31
+  Mov ID: 1160 | Fecha: 2026-05-15 08:10:23 | Tipo: COMPRA_POS      | Desc: Compra POS #2645 | Deuda: $0.93 | Debe: 0.93 | Haber: 0.00 | Saldo Momento DB: -310.24
+  Mov ID: 1162 | Fecha: 2026-05-15 08:44:20 | Tipo: COMPRA_POS      | Desc: Compra POS #2646 | Deuda: $0.00 | Debe: 0.00 | Haber: 0.00 | Saldo Momento DB: -310.24
+  Mov ID: 1164 | Fecha: 2026-05-15 10:23:41 | Tipo: COMPRA_POS      | Desc: Compra POS #2650 | Deuda: $2.60 | Debe: 2.60 | Haber: 0.00 | Saldo Momento DB: -312.84
+  Mov ID: 1161 | Fecha: 2026-05-15 12:22:27 | Tipo: PAGO            | Desc: Pago EFECTIVO_BS a efectivo andres. Ref:  | Debe: 2.88 | Haber: 0.00 | Saldo Momento DB: -315.72
+  Mov ID: 1175 | Fecha: 2026-05-16 08:48:32 | Tipo: COMPRA_POS      | Desc: Compra POS #2668 | Deuda: $2.55 | Debe: 2.55 | Haber: 0.00 | Saldo Momento DB: -318.27
+  Mov ID: 1190 | Fecha: 2026-05-16 13:20:09 | Tipo: COMPRA_POS      | Desc: Compra POS #2690 | Deuda: $0.76 | Debe: 0.76 | Haber: 0.00 | Saldo Momento DB: -319.03
+  Mov ID: 1192 | Fecha: 2026-05-16 14:19:28 | Tipo: COMPRA_POS      | Desc: Compra POS #2691 | Deuda: $0.87 | Debe: 0.87 | Haber: 0.00 | Saldo Momento DB: -319.90
+  Mov ID: 1188 | Fecha: 2026-05-16 16:24:08 | Tipo: PAGO            | Desc: Pago EFECTIVO_BS a andres. Ref:  | Debe: 2.50 | Haber: 0.00 | Saldo Momento DB: -322.40
+  Mov ID: 1191 | Fecha: 2026-05-16 17:21:09 | Tipo: PAGO            | Desc: Pago PAGO_MOVIL a carmen luz. Ref:  | Debe: 12.00 | Haber: 0.00 | Saldo Momento DB: -334.40
+  Mov ID: 1212 | Fecha: 2026-05-17 07:54:23 | Tipo: COMPRA_POS      | Desc: Compra POS #2708 | Deuda: $2.21 | Debe: 2.21 | Haber: 0.00 | Saldo Momento DB: -336.61
+  Mov ID: 1218 | Fecha: 2026-05-17 09:32:50 | Tipo: COMPRA_POS      | Desc: Compra POS #2723 | Deuda: $0.99 | Debe: 0.99 | Haber: 0.00 | Saldo Momento DB: -337.60
+  Mov ID: 1240 | Fecha: 2026-05-18 09:23:18 | Tipo: COMPRA_POS      | Desc: Compra POS #2772 | Deuda: $2.25 | Debe: 2.25 | Haber: 0.00 | Saldo Momento DB: -339.85
+  Mov ID: 1255 | Fecha: 2026-05-18 15:06:39 | Tipo: COMPRA_POS      | Desc: Compra POS #2802 | Deuda: $1.69 | Debe: 1.69 | Haber: 0.00 | Saldo Momento DB: -341.54
+  Mov ID: 1264 | Fecha: 2026-05-18 22:06:45 | Tipo: NOMINA          | Desc: Sueldo Bruto: semana 18/05 (Bs 26000) | Debe: 0.00 | Haber: 50.00 | Saldo Momento DB: -291.54
+  Mov ID: 1267 | Fecha: 2026-05-18 22:35:58 | Tipo: PAGO            | Desc: Pago PAGO_MOVIL a PAGO EN BS. Ref:  | Debe: 7.15 | Haber: 0.00 | Saldo Momento DB: -298.69
+  Mov ID: 1279 | Fecha: 2026-05-19 16:49:19 | Tipo: COMPRA_POS      | Desc: Compra POS #2847 | Deuda: $12.62 | Debe: 12.62 | Haber: 0.00 | Saldo Momento DB: -311.31
+  Mov ID: 1285 | Fecha: 2026-05-21 07:45:25 | Tipo: COMPRA_POS      | Desc: Compra POS #2861 | Deuda: $9.57 | Debe: 9.57 | Haber: 0.00 | Saldo Momento DB: -320.88
+
+=== CLIENTES QUE CONTIENEN 'ANDRE' ===
+Cliente: ANDRES SILVA (ID: 106) | Saldo USD: 0.00
+  Ventas:
+    Venta ID: 130 | Fecha: 2026-03-18 17:01:11.756557 | Total: 2.00 | Pendiente: 0.00 | Fiado: False | Pagada: True
+    Venta ID: 2288 | Fecha: 2026-05-05 07:56:11.254624 | Total: 5.00 | Pendiente: 0.00 | Fiado: False | Pagada: True
+  Abonos:
+Cliente: ANDRES FLOREZ (ID: 149) | Saldo USD: 0.00
+  Ventas:
+    Venta ID: 481 | Fecha: 2026-03-25 17:52:13.499904 | Total: 6.50 | Pendiente: 0.00 | Fiado: True | Pagada: False
+  Abonos:
+    Pago ID: 45 | Fecha: 2026-03-27 14:21:30.299852 | Monto: 6.50 | Metodo: PAGO_MOVIL
+
+=== CUENTAS POR PAGAR (CXP) PARA ESTOS PROVEEDORES ===
+Proveedor: ANDRES CORRO (ID: 19) - CXPs: 5
+  CxP ID: 84 | Fecha: 2026-04-18 14:57:12.740133 | Nro Factura: ENTREGA-202604181457 | Total: 50.60 | Abonado: 17.38 | Pendiente: 33.22 | Estatus: Parcial
+    -> Abono ID: 82 | Fecha: 2026-04-18 11:23:44.233262 | Monto: 10.04 | Metodo: PAGO_MOVIL | Desc: Saldado desde Libreta Digital | Ref: 
+    -> Abono ID: 112 | Fecha: 2026-05-07 11:03:19.026487 | Monto: 7.34 | Metodo: TRANSFERENCIA | Desc: Saldado desde Libreta Digital | Ref: 
+  CxP ID: 119 | Fecha: 2026-04-30 18:34:38.384409 | Nro Factura: ENTREGA-202604301834 | Total: 47.13 | Abonado: 0.00 | Pendiente: 47.13 | Estatus: Pendiente
+  CxP ID: 136 | Fecha: 2026-05-02 14:34:49.824351 | Nro Factura: ENTREGA-202605021434 | Total: 49.30 | Abonado: 0.00 | Pendiente: 49.30 | Estatus: Pendiente
+  CxP ID: 159 | Fecha: 2026-05-09 14:04:55.818197 | Nro Factura: ENTREGA-202605091404 | Total: 36.54 | Abonado: 0.00 | Pendiente: 36.54 | Estatus: Pendiente
+  CxP ID: 197 | Fecha: 2026-05-16 13:17:29.502190 | Nro Factura: ENTREGA-202605161317 | Total: 43.90 | Abonado: 0.00 | Pendiente: 43.90 | Estatus: Pendiente
+Proveedor: andres eloy (ID: 30) - CXPs: 0
+
+=== PAGOS REPORTADOS PARA ESTAS PERSONAS ===
+
+=== VERIFICANDO TRANSACCIONES DEL 13 DE ABRIL DE 2026 ===
+  Mov Productor 13/04: ID=504, Nombre=andres eloy, Tipo=COMPRA_POS, Desc=Compra POS #1348 | Cash: $0.00 | Libreta: $2.64, Debe=2.64, Haber=0.00, Saldo Momento=-107.69
+  Mov Productor 13/04: ID=508, Nombre=andres eloy, Tipo=COMPRA_POS, Desc=Compra POS #1354 | Cash: $0.00 | Libreta: $2.00, Debe=2.00, Haber=0.00, Saldo Momento=-109.69
+  Mov Productor 13/04: ID=515, Nombre=andres eloy, Tipo=ABONO_POS, Desc=Abono POS (PAGO MOVIL): Bs 76800.00 / $160.00, Debe=160.00, Haber=0.00, Saldo Momento=-269.69
+  Mov Productor 13/04: ID=518, Nombre=andres eloy, Tipo=COMPRA_POS, Desc=Compra POS #1371 | Cash: $0.00 | Libreta: $3.33, Debe=3.33, Haber=0.00, Saldo Momento=-273.02
+  Mov Productor 13/04: ID=519, Nombre=andres eloy, Tipo=COMPRA_POS, Desc=Compra POS #1372 | Cash: $0.00 | Libreta: $0.88, Debe=0.88, Haber=0.00, Saldo Momento=-273.90
+  Mov Productor 13/04: ID=523, Nombre=andres eloy, Tipo=COMPRA_POS, Desc=Compra POS #1379 | Cash: $0.00 | Libreta: $3.38, Debe=3.38, Haber=0.00, Saldo Momento=-277.28
+  Mov Productor 13/04: ID=526, Nombre=andres eloy, Tipo=ABONO_POS, Desc=Abono POS (PAGO MOVIL): Bs 960.00 / $2.00, Debe=2.00, Haber=0.00, Saldo Momento=-279.28
+  Mov Productor 13/04: ID=527, Nombre=andres eloy, Tipo=COMPRA_POS, Desc=Compra POS #1384 | Pagado completo en efectivo/móvil, Debe=0.00, Haber=0.00, Saldo Momento=-279.28
+  Venta POS 13/04: VentaID=1348, Prov=andres eloy, Total=2.64, Pendiente=2.64, Fiado=True
+  Venta POS 13/04: VentaID=1354, Prov=andres eloy, Total=2.00, Pendiente=2.00, Fiado=True
+  Venta POS 13/04: VentaID=1371, Prov=andres eloy, Total=3.33, Pendiente=3.33, Fiado=True
+  Venta POS 13/04: VentaID=1372, Prov=andres eloy, Total=0.88, Pendiente=0.88, Fiado=True
+  Venta POS 13/04: VentaID=1379, Prov=andres eloy, Total=3.38, Pendiente=3.38, Fiado=True
+  Venta POS 13/04: VentaID=1384, Prov=andres eloy, Total=3.54, Pendiente=0.00, Fiado=False

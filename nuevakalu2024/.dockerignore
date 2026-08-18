@@ -1,0 +1,33 @@
+# Ignorar todo por defecto y luego permitir solo lo necesario
+# O mejor, ignorar lo pesado conocido:
+.git
+.gitignore
+.venv
+venv
+ENV
+env
+.vscode
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite
+*.zip
+*.tar
+*.gz
+backups/
+instance/
+importar_aqui/
+scratch/
+archive/
+.firebase/
+admin_desktop/
+migrations/
+static/publicidad/
+static/comprobantes/
+*.log
+*.tmp
+.dockerignore
+Dockerfile
+docker-compose.yml

@@ -1,0 +1,82 @@
+{% extends 'base_portal.html' %}
+{% block title %}Mi Perfil — KALU{% endblock %}
+
+{% block content %}
+
+<div class="wa-section-label"><i class="fas fa-shield-alt" style="margin-right:6px;"></i>Seguridad de la Cuenta</div>
+
+<div class="card-kalu animate-in"
+    style="border-left:3px solid #fbbf24; background:rgba(251,191,36,0.08); margin-bottom:16px;">
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+        <i class="fas fa-lock" style="color:#fbbf24; font-size:18px;"></i>
+        <strong style="font-size:15px;">Cambiar acceso</strong>
+    </div>
+    <p style="margin:0; font-size:13px; color:var(--wa-subtext);">
+        Puedes cambiar tu usuario y clave aquí. Si dejas la clave en blanco, la actual no cambiará.
+    </p>
+</div>
+
+<div class="wa-form-card animate-in">
+    <form action="{{ url_for('portal.mi_perfil') }}" method="POST">
+        <div style="display:grid; gap:18px;">
+
+            <div>
+                <label class="wa-label">
+                    <i class="fas fa-envelope" style="margin-right:6px;"></i>Correo Electrónico
+                </label>
+                <input type="email" name="email" class="wa-input" value="{{ current_user.email or '' }}"
+                    placeholder="ejemplo@correo.com" autocomplete="email" style="color:#e9edef;">
+                <small style="color:var(--wa-subtext); font-size:11px;">
+                    Usado para recuperación de cuenta y acceso con Google.
+                </small>
+            </div>
+
+            <div>
+                <label class="wa-label">
+                    <i class="fas fa-user" style="margin-right:6px;"></i>Nombre de usuario
+                </label>
+                <input type="text" name="username" class="wa-input" value="{{ current_user.username }}" required
+                    autocomplete="username" style="color:#e9edef;">
+            </div>
+
+            <div>
+                <label class="wa-label">
+                    <i class="fas fa-key" style="margin-right:6px;"></i>Nueva clave
+                    <span
+                        style="font-weight:400; color:var(--wa-subtext); text-transform:none; letter-spacing:0; font-size:11px; margin-left:6px;">(dejar
+                        en blanco = sin cambios)</span>
+                </label>
+                <div style="position:relative;">
+                    <input type="password" name="password" id="password" class="wa-input"
+                        placeholder="Escribe tu nueva clave" autocomplete="new-password"
+                        style="color:#e9edef; padding-right:48px;">
+                    <button type="button" onclick="toggleClave()"
+                        style="position:absolute; right:14px; top:50%; transform:translateY(-50%);
+                               background:none; border:none; color:var(--wa-subtext); font-size:18px; cursor:pointer; padding:0;">
+                        <i class="fas fa-eye" id="toggleIcon"></i>
+                    </button>
+                </div>
+            </div>
+
+            <button type="submit" class="btn-app" style="margin-top:4px;">
+                <i class="fas fa-save"></i> GUARDAR CAMBIOS
+            </button>
+
+        </div>
+    </form>
+</div>
+
+<script>
+    function toggleClave() {
+        const input = document.getElementById('password');
+        const icon = document.getElementById('toggleIcon');
+        if (input.type === 'password') {
+            input.type = 'text';
+            icon.classList.replace('fa-eye', 'fa-eye-slash');
+        } else {
+            input.type = 'password';
+            icon.classList.replace('fa-eye-slash', 'fa-eye');
+        }
+    }
+</script>
+{% endblock %}

@@ -1,0 +1,52 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "Cormorant Garamond", "Georgia", serif;
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Custom Editorial Colors */
+  --color-brand-accent: #E63946;
+  --color-editorial-bg: #0F0F0F;
+  --color-editorial-card: #161616;
+  --color-editorial-border: rgba(255, 255, 255, 0.1);
+  --color-editorial-text-primary: #F5F5F1;
+  --color-editorial-text-muted: #A0A0A0;
+}
+
+@layer base {
+  body {
+    background-color: var(--color-editorial-bg);
+    color: var(--color-editorial-text-primary);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-ticket, .print-ticket * {
+    visibility: visible;
+  }
+  .print-ticket {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 58mm;
+    max-width: 58mm;
+    margin: 0;
+    padding: 0;
+    font-size: 11px;
+    font-family: monospace;
+    color: #000 !important;
+    background: #fff !important;
+  }
+  .print-ticket button, .print-ticket .no-print {
+    display: none !important;
+  }
+}

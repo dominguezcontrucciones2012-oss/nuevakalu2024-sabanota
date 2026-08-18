@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KALU POS - Acceso Seguro</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" />
+    <style>
+        :root {
+            --kalu-blue: #3498db;
+            --kalu-dark: #1a252f;
+            --kalu-glass: rgba(255, 255, 255, 0.1);
+        }
+
+        body {
+            background: url('/static/fondo_negocio_jpg.png') no-repeat center center fixed !important;
+            background-size: cover !important;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(circle, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.85) 100%);
+            z-index: -1;
+        }
+
+        .login-container {
+            text-align: center;
+            width: 100%;
+            max-width: 450px;
+            perspective: 1000px;
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 40px;
+            padding: 60px 40px;
+            box-shadow: 0 40px 80px rgba(0, 0, 0, 0.6);
+            transform-style: preserve-3d;
+            animation: fadeInDown 1s ease-out;
+        }
+
+        .logo-box {
+            margin-bottom: 40px;
+        }
+
+        .brand-name {
+            font-size: 3rem;
+            font-weight: 900;
+            letter-spacing: 6px;
+            color: #fff;
+            margin-bottom: 0;
+            text-shadow: 0 5px 15px rgba(0,0,0,0.5);
+        }
+
+        .brand-tagline {
+            color: var(--kalu-blue);
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            font-weight: 600;
+            margin-top: -5px;
+        }
+
+        .scanner-visual {
+            position: relative;
+            width: 140px;
+            height: 140px;
+            margin: 40px auto;
+            background: rgba(52, 152, 219, 0.1);
+            border-radius: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid rgba(52, 152, 219, 0.3);
+        }
+
+        .scanner-visual i {
+            font-size: 4rem;
+            color: var(--kalu-blue);
+            animation: pulse-scanner 2s infinite;
+        }
+
+        .scanner-line {
+            position: absolute;
+            width: 100%;
+            height: 3px;
+            background: var(--kalu-blue);
+            box-shadow: 0 0 15px var(--kalu-blue);
+            top: 0;
+            left: 0;
+            animation: scan-move 2.5s infinite linear;
+        }
+
+        @keyframes scan-move {
+            0% { top: 10%; opacity: 0; }
+            50% { opacity: 1; }
+            100% { top: 90%; opacity: 0; }
+        }
+
+        @keyframes pulse-scanner {
+            0% { transform: scale(1); opacity: 0.8; }
+            50% { transform: scale(1.1); opacity: 1; }
+            100% { transform: scale(1); opacity: 0.8; }
+        }
+
+        .instruction-text {
+            color: white;
+            font-size: 1.2rem;
+            font-weight: 400;
+            margin-top: 20px;
+            opacity: 0.9;
+        }
+
+        .instruction-sub {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.85rem;
+            margin-top: 10px;
+        }
+
+        /* Hidden Input for Scanner */
+        #barcodeInput {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .alert-float {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            border: none;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+
+        .footer-links {
+            margin-top: 30px;
+            font-size: 0.9rem;
+        }
+
+        .remote-access {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            text-decoration: none;
+            transition: 0.3s;
+            padding: 15px 25px;
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            font-weight: 600;
+            width: 100%;
+        }
+
+        .remote-access:hover {
+            background: var(--kalu-blue);
+            border-color: var(--kalu-blue);
+            transform: translateY(-3px);
+            box-shadow: 0 10px 20px rgba(52, 152, 219, 0.3);
+            color: white;
+        }
+
+        /* Estilos para móviles */
+        @media (max-width: 768px) {
+            .scanner-visual {
+                display: none; /* Ocultar el visual del scanner en celular */
+            }
+            .instruction-text {
+                display: none;
+            }
+            .instruction-sub {
+                margin-bottom: 20px;
+                font-size: 1rem;
+                color: white;
+            }
+            .remote-access {
+                background: var(--kalu-blue);
+                border: none;
+                font-size: 1.1rem;
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    {% for category, message in messages %}
+    <div class="alert alert-{{ category }} alert-float animate__animated animate__fadeInRight" role="alert">
+        {{ message }}
+    </div>
+    {% endfor %}
+    {% endif %}
+    {% endwith %}
+
+    <div class="login-container">
+        <div class="glass-card">
+            <div class="logo-box">
+                <h1 class="brand-name">KALU</h1>
+                <div class="brand-tagline">Point of Sale 2.0</div>
+            </div>
+
+            <!-- Este bloque se ve en PC -->
+            <div class="d-none d-md-block" id="pcScannerView">
+                <div class="scanner-visual">
+                    <div class="scanner-line"></div>
+                    <i class="fas fa-barcode"></i>
+                </div>
+                <div class="instruction-text animate__animated animate__pulse animate__infinite">
+                    ESPERANDO ESCANEO...
+                </div>
+                <div class="instruction-sub">
+                    Pase su carnet por el lector
+                </div>
+                <button class="btn btn-link text-white-50 mt-3 text-decoration-none" onclick="toggleManualLogin()">
+                    <i class="fas fa-user-circle me-1"></i> Soy Cliente / Productor
+                </button>
+            </div>
+
+            <!-- Este bloque se ve en Móvil -->
+            <div class="d-block d-md-none" id="mobileMainView">
+                <div class="instruction-sub">
+                    Acceso a los Portales
+                </div>
+                <button class="btn btn-primary w-100 rounded-4 py-3 fw-bold mb-3 shadow" onclick="toggleManualLogin()">
+                    <i class="fas fa-user-lock me-2"></i> ENTRAR AL PORTAL
+                </button>
+                <div class="instruction-sub mt-4" style="font-size: 0.8rem; opacity: 0.6;">
+                    Administración y Gerencia
+                </div>
+                <a href="{{ url_for('auth.ingresar_google') }}" class="remote-access">
+                    <i class="fab fa-google me-2"></i> ENTRAR CON GOOGLE
+                </a>
+            </div>
+
+            <!-- Panel de Login Manual (Oculto por defecto) -->
+            <div id="manualLoginView" style="display: none;" class="animate__animated animate__fadeIn">
+                <h4 class="mb-4">Ingreso a Portales</h4>
+                <form action="/ingresar" method="POST">
+                    <div class="mb-3">
+                        <input type="text" name="username" class="form-control text-center py-3 rounded-4" placeholder="Cédula de Identidad" required>
+                    </div>
+                    <div class="mb-4">
+                        <input type="password" name="password" class="form-control text-center py-3 rounded-4" placeholder="Últimos 4 dígitos" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100 py-3 rounded-4 fw-bold shadow">
+                        ENTRAR AL PORTAL
+                    </button>
+                    <div class="mt-4">
+                        <span class="text-white-50 small">¿No tienes cuenta?</span><br>
+                        <a href="/registro" class="text-info fw-bold text-decoration-none">
+                            ¡Regístrate aquí! ✨
+                        </a>
+                    </div>
+                    <button type="button" class="btn btn-link text-white-50 mt-3 text-decoration-none" onclick="toggleManualLogin()">
+                        <i class="fas fa-arrow-left me-1"></i> Regresar
+                    </button>
+                </form>
+            </div>
+
+            <!-- Input invisible para PC -->
+            <input type="text" id="barcodeInput" autofocus autocomplete="off">
+        </div>
+
+        <!-- Link discreto también en PC por si acaso -->
+        <div class="footer-links d-none d-md-block">
+            <a href="{{ url_for('auth.ingresar_google') }}" class="remote-access" style="width: auto; background: transparent;">
+                <i class="fab fa-google me-1"></i> Acceso Dueños
+            </a>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script>
+        function toggleManualLogin() {
+            const pcView = document.getElementById('pcScannerView');
+            const mobileView = document.getElementById('mobileMainView');
+            const manualView = document.getElementById('manualLoginView');
+            
+            if (manualView.style.display === 'none') {
+                if (pcView) pcView.style.display = 'none';
+                if (mobileView) mobileView.style.display = 'none';
+                manualView.style.display = 'block';
+            } else {
+                if (window.innerWidth >= 768) {
+                    if (pcView) pcView.style.display = 'block';
+                } else {
+                    if (mobileView) mobileView.style.display = 'block';
+                }
+                manualView.style.display = 'none';
+            }
+        }
+        const barcodeInput = document.getElementById('barcodeInput');
+        const manualView = document.getElementById('manualLoginView');
+
+        // Mantener el foco en el scanner SOLO si el login manual está oculto
+        document.addEventListener('click', () => {
+            if (manualView && manualView.style.display === 'none') {
+                barcodeInput.focus();
+            }
+        });
+
+        // Asegurar que el input del escáner capture los datos, incluso si no está enfocado inicialmente
+        document.addEventListener('keydown', (e) => {
+            // Si el login manual está visible y están escribiendo en él, no interceptar
+            if (manualView && manualView.style.display !== 'none') return;
+            if (e.target.tagName === 'INPUT' && e.target.id !== 'barcodeInput') return;
+
+            // Si el foco no está en el input del escáner, enfocarlo y pasarle el primer caracter
+            if (document.activeElement !== barcodeInput) {
+                barcodeInput.focus();
+                if (e.key.length === 1) {
+                    barcodeInput.value += e.key;
+                    e.preventDefault();
+                }
+            }
+        });
+
+        // Escuchar el Enter en el input del escáner para procesar el login
+        barcodeInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const codigo = barcodeInput.value.trim();
+                if (codigo.length >= 4) {
+                    e.preventDefault();
+                    procesarLogin(codigo);
+                }
+                barcodeInput.value = '';
+            }
+        });
+
+        function procesarLogin(codigo) {
+            fetch('/barcode-login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ codigo: codigo })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: data.message,
+                        showConfirmButton: false,
+                        timer: 1500,
+                        background: '#1a252f',
+                        color: '#fff'
+                    }).then(() => {
+                        window.location.href = data.redirect;
+                    });
+                } else {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Acceso Denegado',
+                        text: data.message,
+                        background: '#1a252f',
+                        color: '#fff',
+                        confirmButtonColor: '#3498db'
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
+        }
+
+        // Auto-focus al cargar si el login manual está oculto
+        window.onload = () => {
+            if (manualView && manualView.style.display === 'none') {
+                barcodeInput.focus();
+            }
+        };
+    </script>
+</body>
+
+</html>

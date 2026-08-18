@@ -1,0 +1,6 @@
+{
+  "name": "Kalu Editorial Fintech System",
+  "description": "Un ERP de alta gama para la gestión contable, punto de venta, mermas de maduración, clientes y control de proveedores de la Quesería KALU.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

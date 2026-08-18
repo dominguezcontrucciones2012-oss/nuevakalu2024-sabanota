@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h3>Cierre de Caja - {{ cierre.fecha.strftime('%d/%m/%Y') }}</h3>
+    <button class="btn btn-success" onclick="window.print()">Imprimir</button>
+</div>
+
+<!-- FILA RESUMEN -->
+<div class="row mb-4 g-3">
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm bg-primary text-white h-100">
+            <div class="card-body">
+                <h6 class="text-white-50">Ventas Totales</h6>
+                <h3 class="fw-bold">${{ '%.2f'|format(cierre.total_ventas_usd or 0) }}</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm bg-danger text-white h-100">
+            <div class="card-body">
+                <h6 class="text-white-50">Diferencia USD</h6>
+                <h3 class="fw-bold {% if cierre.diferencia_usd < 0 %}text-warning{% endif %}">
+                    ${{ '%.2f'|format(cierre.diferencia_usd or 0) }}
+                </h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm bg-info text-white h-100">
+            <div class="card-body">
+                <h6 class="text-white-50">Diferencia Bs</h6>
+                <h3 class="fw-bold {% if cierre.diferencia_bs < 0 %}text-warning{% endif %}">
+                    Bs {{ '%.2f'|format(cierre.diferencia_bs or 0) }}
+                </h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm bg-dark text-white h-100">
+            <div class="card-body">
+                <h6 class="text-white-50">Tasa BCV</h6>
+                <h3 class="fw-bold">Bs {{ '%.2f'|format(cierre.tasa_cierre or 0) }}</h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ✅ NUEVA TABLA: INFORMACIÓN DE APERTURA Y RESPONSABLE -->
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-header bg-dark text-white fw-bold">
+        📝 Información de Apertura y Responsable
+    </div>
+    <div class="table-responsive">
+        <table class="table table-bordered mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th>Cajero Responsable</th>
+                    <th class="text-center">Apertura USD</th>
+                    <th class="text-center">Apertura Bs</th>
+                    <th class="text-center">Fecha de Cierre</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td class="fw-bold text-primary">{{ cierre.cajero_nombre.upper() if cierre.cajero_nombre else 'S/N' }}</td>
+                    <td class="text-center text-success fw-bold">${{ '%.2f'|format(cierre.monto_apertura_usd or 0) }}</td>
+                    <td class="text-center text-success fw-bold">Bs {{ '%.2f'|format(cierre.monto_apertura_bs or 0) }}</td>
+                    <td class="text-center">{{ cierre.fecha.strftime('%d/%m/%Y') }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- COMPARATIVA CIEGA -->
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-header bg-secondary text-white fw-bold">
+        ⚖️ Conciliación de Efectivo (Real vs Esperado)
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th>Caja / Método</th>
+                    <th class="text-center">Esperado (Sistema)</th>
+                    <th class="text-center">Real (Declarado)</th>
+                    <th class="text-center">Diferencia</th>
+                    <th>Estado</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>💵 Efectivo USD</td>
+                    <td class="text-center">${{ '%.2f'|format(cierre.monto_usd) }}</td>
+                    <td class="text-center">${{ '%.2f'|format(cierre.monto_real_usd) }}</td>
+                    <td class="text-center fw-bold">{{ '%.2f'|format(cierre.diferencia_usd) }}</td>
+                    <td>
+                        {% if cierre.diferencia_usd == 0 %}<span class="badge bg-success">CUADRADO</span>
+                        {% elif cierre.diferencia_usd > 0 %}<span class="badge bg-primary">SOBRANTE</span>
+                        {% else %}<span class="badge bg-danger">FALTANTE</span>{% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <td>🇻🇪 Efectivo Bs</td>
+                    <td class="text-center">Bs {{ '%.2f'|format(cierre.monto_bs) }}</td>
+                    <td class="text-center">Bs {{ '%.2f'|format(cierre.monto_real_bs) }}</td>
+                    <td class="text-center fw-bold">{{ '%.2f'|format(cierre.diferencia_bs) }}</td>
+                    <td>
+                        {% if cierre.diferencia_bs == 0 %}<span class="badge bg-success">CUADRADO</span>
+                        {% elif cierre.diferencia_bs > 0 %}<span class="badge bg-primary">SOBRANTE</span>
+                        {% else %}<span class="badge bg-danger">FALTANTE</span>{% endif %}
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    {% if cierre.observaciones %}
+    <div class="card-footer bg-light">
+        <strong>📝 Observaciones:</strong> {{ cierre.observaciones }}
+    </div>
+    {% endif %}
+</div>
+
+<h4>Detalle de Ventas del Día</h4>
+<table class="table table-bordered table-sm">
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Hora</th>
+            <th>Cliente</th>
+            <th>Total USD</th>
+            <th>Efectivo USD</th>
+            <th>Efectivo Bs</th>
+            <th>P. Móvil</th>
+            <th>Débito</th>
+            <th>Transf.</th>
+            <th>Biopago</th>
+            <th>Fiado</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for v in ventas %}
+        <tr>
+            <td>{{ v.id }}</td>
+            <td>{{ v.hora }}</td>
+            <td>{{ v.cliente }}</td>
+            <td>${{ '%.2f'|format(v.total_usd|float) }}</td>
+            <td>${{ '%.2f'|format(v.efectivo_usd|float) }}</td>
+            <td>Bs {{ '%.2f'|format(v.efectivo_bs|float) }}</td>
+            <td>Bs {{ '%.2f'|format(v.pago_movil|float) }}</td>
+            <td>Bs {{ '%.2f'|format(v.debito|float) }}</td>
+            <td>Bs {{ '%.2f'|format(v.transferencia|float) }}</td>
+            <td>Bs {{ '%.2f'|format(v.biopago|float) }}</td>
+            <td>
+                {% if v.fiado %}
+                <span class="badge bg-danger">Fiado</span>
+                {% else %}
+                <span class="badge bg-success">Contado</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% if v.productos %}
+        <tr>
+            <td></td>
+            <td colspan="9">
+                <strong>Productos:</strong>
+                <ul class="mb-0">
+                    {% for p in v.productos %}
+                    <li>{{ p.cantidad }} x {{ p.nombre }} @ ${{ '%.2f'|format(p.precio|float) }}</li>
+                    {% endfor %}
+                </ul>
+            </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+    </tbody>
+</table>
+
+<h4 class="mt-4">Detalle de Compras del Día</h4>
+<table class="table table-bordered table-sm">
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Proveedor</th>
+            <th>Factura</th>
+            <th>Total USD</th>
+            <th>Estado</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for c in compras %}
+        <tr>
+            <td>{{ c.id }}</td>
+            <td>{{ c.proveedor }}</td>
+            <td>{{ c.factura }}</td>
+            <td>${{ '%.2f'|format(c.total_usd|float) }}</td>
+            <td>{{ c.estado }}</td>
+        </tr>
+        {% if c.productos %}
+        <tr>
+            <td></td>
+            <td colspan="4">
+                <strong>Productos:</strong>
+                <ul class="mb-0">
+                    {% for p in c.productos %}
+                    <li>{{ p.cantidad }} x {{ p.nombre }} @ ${{ '%.2f'|format(p.costo|float) }}</li>
+                    {% endfor %}
+                </ul>
+            </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+    </tbody>
+</table>
+
+{% endblock %}

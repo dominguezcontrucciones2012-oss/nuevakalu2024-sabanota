@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+*.db
+*.log
+.firebase/
+coverage/
+.DS_Store
+.env*
+!.env.example
+.env.*.local
+*.key
+*.pem

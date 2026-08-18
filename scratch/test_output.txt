@@ -1,0 +1,11 @@
+﻿python : ...
+En línea: 1 Carácter: 22
++ ... YTHONPATH="."; python scratch/test_robustez_seguridad.py 2>&1 | Out-F ...
++                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (...:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+----------------------------------------------------------------------
+Ran 3 tests in 0.194s
+
+OK

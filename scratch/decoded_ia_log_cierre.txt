@@ -1,0 +1,4 @@
+Línea 126: Caja</div>\n        <a href="/reporte_cierre"><i class="fas fa-chart-line me-2"></i> CIERRE DIARIO</a>\n        \n\n
+Línea 1627: href="/compras" class=""><i class="fas fa-shopping-cart"></i>Compras</a>\n    <a href="/reporte_cierre" class=""><i
+Línea 1628: class="fas fa-chart-line"></i>Cierre</a>\n    <a href="/libreta_productores" class=""><i class="fas
+Línea 1675: SEGURIDAD: Cierre de Sesi¾n por Inactividad (20 min) ---\n    if (document.body.dataset.loggedIn === \'true\') {\n

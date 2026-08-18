@@ -1,0 +1,815 @@
+<!doctype html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="google-site-verification" content="P9Np8fiCz-04v6HXE4I8-qqK3Ffx5rW4ebz" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+    <title>KALUNUEVA2024 - Gestión Administrativa</title>
+    <meta name="description" content="Sistema de Gestión Administrativa para Negocios - KALUNUEVA2024. Control de inventario, ventas y proveedores.">
+    <!-- OpenGraph -->
+    <meta property="og:title" content="KALUNUEVA2024">
+    <meta property="og:description" content="Gestión profesional de inventario y ventas.">
+    <meta property="og:image" content="/static/logo_antigravity.png">
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    
+    <!-- PWA Support -->
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#1a252f">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="/static/favicon.png">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
+  <!-- DataTables + Buttons CSS -->
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css">
+  <link rel="stylesheet" href="https://cdn.datatables.net/buttons/2.4.2/css/buttons.bootstrap5.min.css">
+  
+  <!-- DataTables + Extensiones de Exportación JS -->
+  <script src="https://code.jquery.com/jquery-3.7.0.js"></script>
+  <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
+  <script src="https://cdn.datatables.net/buttons/2.4.2/js/dataTables.buttons.min.js"></script>
+  <script src="https://cdn.datatables.net/buttons/2.4.2/js/buttons.bootstrap5.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.js"></script>
+  <script src="https://cdn.datatables.net/buttons/2.4.2/js/buttons.html5.min.js"></script>
+  <script src="https://cdn.datatables.net/buttons/2.4.2/js/buttons.print.min.js"></script>
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='movil.css') }}">
+  <style>
+    body {
+      background: url('/static/fondo_negocio_jpg.png') no-repeat center center fixed !important;
+      background-size: cover !important;
+      font-family: 'Inter', 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      color: #333;
+    }
+
+    /* Overlay global para contraste */
+    body::before {
+      content: "";
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.4); /* Capa oscura sutil */
+      z-index: -1;
+    }
+
+    @keyframes pulse-tasa {
+      0% {
+        background: #c0392b;
+      }
+
+      50% {
+        background: #e74c3c;
+      }
+
+      100% {
+        background: #c0392b;
+      }
+    }
+
+    .barra-tasa-alerta {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 10000;
+      background: #c0392b;
+      color: white;
+      text-align: center;
+      padding: 12px;
+      font-weight: bold;
+      font-size: 1rem;
+      cursor: pointer;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+      animation: pulse-tasa 1.5s infinite;
+    }
+
+    .sidebar {
+      height: 100vh;
+      background: rgba(26, 37, 47, 0.98);
+      color: white;
+      position: fixed;
+      width: 280px;
+      transition: left 0.4s ease-in-out;
+      overflow-y: auto;
+      z-index: 2147483646 !important; /* Prioridad máxima por encima de tablas y otros elementos */
+      backdrop-filter: blur(15px);
+      border-right: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 15px 0 50px rgba(0,0,0,0.8);
+      top: 0;
+      left: 0;
+    }
+
+    /* En escritorio, el menú se esconde hacia la izquierda */
+    .sidebar.collapsed {
+      left: -280px;
+    }
+    
+    /* En móvil, el menú por defecto está afuera */
+    @media (max-width: 991px) {
+      .sidebar {
+        left: -300px; /* Asegurar que esté bien afuera */
+        display: block !important;
+        visibility: visible !important;
+      }
+      .sidebar.show-mobile {
+        left: 0 !important;
+      }
+      .main-content {
+        margin-left: 0 !important;
+        width: 100% !important;
+        padding: 15px !important;
+        padding-top: 85px !important; /* Espacio para el botón de menú hamburguesa */
+        transition: none !important;
+      }
+    }
+
+    .sidebar h3 {
+      padding: 15px;
+      background: rgba(0, 0, 0, 0.2);
+      color: #3498db;
+      font-weight: 800;
+      text-align: center;
+      margin-bottom: 0;
+      letter-spacing: 2px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+
+    .sidebar .logo-img {
+      width: 100%;
+      max-width: 200px;
+      padding: 20px;
+      display: block;
+      margin: 0 auto;
+      filter: drop-shadow(0 0 10px rgba(52, 152, 219, 0.5));
+    }
+
+    .sidebar .menu-label {
+      padding: 15px 25px 5px 25px;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      color: #5dade2;
+      font-weight: 800;
+      letter-spacing: 1px;
+    }
+
+    .sidebar a {
+      color: #bdc3c7;
+      text-decoration: none;
+      padding: 12px 25px;
+      display: block;
+      transition: all 0.2s;
+      font-size: 0.9rem;
+      border-left: 4px solid transparent;
+    }
+
+    .sidebar a:hover,
+    .sidebar a.active {
+      background: rgba(52, 152, 219, 0.1);
+      color: #3498db;
+      border-left: 4px solid #3498db;
+      padding-left: 30px;
+    }
+
+    .main-content {
+      margin-left: 260px;
+      padding: 30px;
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* Sidebar Overlay for Mobile (DESACTIVADO POR PETICION) */
+    .sidebar-overlay {
+      display: none !important;
+    }
+
+    .main-content.expanded {
+      margin-left: 0;
+    }
+
+    /* Toggle Button */
+    .btn-toggle-sidebar {
+      position: fixed;
+      top: 15px;
+      left: 15px;
+      z-index: 2147483647 !important; /* Siempre encima de todo, incluyendo la barra lateral */
+      background: #3498db;
+      color: white;
+      width: 50px;
+      height: 50px;
+      border-radius: 15px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.4);
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    .btn-toggle-sidebar:hover {
+      background: #3498db;
+      transform: scale(1.05);
+    }
+
+    .card {
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.85);
+      backdrop-filter: blur(15px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+      transition: transform 0.2s;
+    }
+
+    .card:hover {
+        transform: translateY(-5px);
+    }
+    
+    /* PWA - Color de barra de estado */
+    meta[name="theme-color"] { content: #1a252f; }
+
+    .btn-tasa-bcv {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      color: white !important;
+      border-radius: 50px;
+      padding: 8px 15px;
+      font-size: 0.85rem;
+      text-decoration: none !important;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .btn-tasa-bcv:hover {
+      background: #f1c40f;
+      color: #000 !important;
+      transform: translateY(-2px);
+    }
+  </style>
+  <!-- Standardized Kalu Sliding Drawers -->
+  <style>
+    .drawer-backdrop {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(8px);
+      z-index: 9990 !important;
+      display: none;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .drawer-backdrop.active {
+      display: block !important;
+      opacity: 1 !important;
+    }
+    .payment-drawer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: 480px;
+      height: 100vh;
+      background: linear-gradient(135deg, #1a2a3a 0%, #0d151d 100%) !important;
+      backdrop-filter: blur(25px);
+      z-index: 9999 !important;
+      transform: translateX(100%);
+      visibility: hidden;
+      transition: transform 0.5s cubic-bezier(0.19, 1, 0.22, 1), visibility 0.5s;
+      border-left: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: -20px 0 60px rgba(0, 0, 0, 0.8);
+      overflow-y: auto;
+      padding: 40px 30px;
+      color: white;
+    }
+    .payment-drawer.active {
+      transform: translateX(0);
+      visibility: visible;
+    }
+    .btn-close-drawer {
+      font-size: 1.8rem;
+      cursor: pointer;
+      opacity: 0.6;
+      transition: all 0.3s;
+    }
+    .btn-close-drawer:hover {
+      opacity: 1;
+      transform: rotate(90deg) scale(1.1);
+      color: #e74c3c;
+    }
+    .total-display-premium {
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 24px;
+      padding: 25px;
+      text-align: center;
+      margin-bottom: 30px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .total-display-amount {
+      font-size: 3rem;
+      font-weight: 900;
+      margin: 10px 0;
+      letter-spacing: -2px;
+      text-shadow: 0 4px 15px rgba(0,0,0,0.3);
+    }
+    .form-dark-premium input, .form-dark-premium select {
+      background: rgba(255, 255, 255, 0.07) !important;
+      border: 1px solid rgba(255, 255, 255, 0.1) !important;
+      color: white !important;
+      border-radius: 12px !important;
+      padding: 15px 20px !important;
+      font-weight: 600 !important;
+    }
+    .form-dark-premium input:focus, .form-dark-premium select:focus {
+      background: rgba(255, 255, 255, 0.12) !important;
+      border-color: #3498db !important;
+      box-shadow: 0 0 15px rgba(52, 152, 219, 0.3) !important;
+    }
+    .btn-currency-selector {
+      border-width: 2px !important;
+      padding: 12px !important;
+      font-weight: 800 !important;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    /* Responsive adjustments for drawers */
+    @media (max-width: 576px) {
+      .payment-drawer {
+        width: 100%;
+      }
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+
+<body data-logged-in="{{ 'true' if current_user.is_authenticated else 'false' }}">
+  <button class="btn-toggle-sidebar" id="sidebar-toggle" onclick="toggleSidebarMenu()">
+    <i class="fas fa-bars"></i>
+  </button>
+  
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebarMenu()"></div>
+
+  <!-- 🚨 BARRA ROJA FLOTANTE — ALERTA TASA BCV -->
+  {% if alerta_tasa %}
+  <div class="barra-tasa-alerta" data-url="{{ url_for('set_tasa_bcv') }}" onclick="window.location=this.dataset.url">
+    ⚠️ LA TASA BCV ESTÁ DESACTUALIZADA — HAZ CLIC AQUÍ PARA ACTUALIZAR
+  </div>
+  <style>
+    .sidebar {
+      margin-top: 48px !important;
+    }
+
+    .main-content {
+      margin-top: 48px !important;
+    }
+  </style>
+  {% endif %}
+
+    <div class="sidebar">
+    <img src="/static/logo_antigravity.png" alt="KALUNEVA2024" class="logo-img">
+
+    {% if current_user.role in ['admin', 'dueno', 'supervisor', 'cajero'] %}
+        <div class="menu-label">Módulo de Ventas</div>
+        <a href="/pos"><i class="fas fa-cash-register me-2"></i> PUNTO DE VENTA</a>
+        {% if current_user.role in ['admin', 'dueno', 'supervisor', 'cajero'] %}
+        <a href="/historial_ventas"><i class="fas fa-receipt me-2"></i> HISTORIAL VENTAS</a>
+        {% endif %}
+        
+        {% if current_user.role in ['admin', 'dueno', 'supervisor'] %}
+        <a href="/clientes"><i class="fas fa-users me-2"></i> CLIENTES</a>
+        {% endif %}
+        <a href="/morosos"><i class="fas fa-user-clock me-2"></i> CUENTAS X COBRAR</a>
+
+        <div class="menu-label">Inventario y Compras</div>
+        {% if current_user.role in ['admin', 'dueno', 'supervisor'] %}
+        <a href="/inventario"><i class="fas fa-boxes me-2"></i> INVENTARIO</a>
+        {% endif %}
+        <a href="/compras"><i class="fas fa-shopping-cart me-2"></i> CARGA DE COMPRAS</a>
+        {% if current_user.role in ['admin', 'dueno', 'supervisor'] %}
+        <a href="/cuentas_por_pagar"><i class="fas fa-file-invoice-dollar me-2"></i> CUENTAS X PAGAR</a>
+        <a href="/proveedores"><i class="fas fa-truck me-2"></i> PROVEEDORES</a>
+        {% endif %}
+
+        <div class="menu-label">Reportes y Caja</div>
+        <a href="/reporte_cierre"><i class="fas fa-chart-line me-2"></i> CIERRE DIARIO</a>
+        {% if current_user.role in ['admin', 'dueno', 'supervisor'] %}
+        <a href="/reportes"><i class="fas fa-chart-bar me-2"></i> ANÁLISIS Y UTILIDAD</a>
+        <a href="{{ url_for('caja.registrar_gasto') }}" class="gasto-link">
+        <i class="fas fa-money-bill-wave me-2"></i> REGISTRAR GASTOS / PAGOS
+        </a>
+        <a href="/contabilidad"><i class="fas fa-book me-2"></i> MOVIMIENTOS CAJA</a>
+        <a href="/ia-mercado"><i class="fas fa-robot me-2"></i> IA MERCADO</a>
+        {% endif %}
+
+        <div class="menu-label">Productores</div>
+        <a href="{{ url_for('productores.libreta') }}">
+        <i class="fas fa-book-open me-2"></i> LIBRETA QUESO
+        </a>
+    {% endif %}
+
+    {% if current_user.role == 'cliente' %}
+        <div class="menu-label">Mi Cuenta</div>
+        <a href="{{ url_for('portal.mi_deuda') }}"><i class="fas fa-file-invoice-dollar me-2"></i> MI DEUDA</a>
+        <a href="{{ url_for('portal.mi_perfil') }}"><i class="fas fa-user-circle me-2"></i> MI PERFIL</a>
+    {% endif %}
+
+    {% if current_user.role == 'productor' or (current_user.role == 'cajero' and current_user.proveedor_id) %}
+        <div class="menu-label">Mi Libreta</div>
+        <a href="{{ url_for('portal.mi_libreta') }}"><i class="fas fa-book-open me-2"></i> MI LIBRETA</a>
+        <a href="{{ url_for('portal.mi_perfil') }}"><i class="fas fa-user-circle me-2"></i> MI PERFIL</a>
+    {% endif %}
+
+    {% if current_user.role in ['admin', 'dueno'] %}
+    <div class="menu-label" style="color: #f39c12;">Marketing y Portal</div>
+    <a href="{{ url_for('marketing.admin_publicidad') }}"><i class="fas fa-camera-retro me-2"></i> PUBLICIDAD INFO</a>
+    <a href="{{ url_for('marketing.admin_quejas') }}"><i class="fas fa-envelope-open-text me-2"></i> BUZÓN DE QUEJAS</a>
+
+    <div class="menu-label-admin">⚙️ Panel Jefe / Dueño</div>
+    <a href="{{ url_for('usuarios.lista_usuarios') }}" class="admin-link"><i class="fas fa-user-shield me-2"></i>
+      GESTIONAR USUARIOS</a>
+    <a href="{{ url_for('cargar.panel_cargar') }}" class="admin-link"><i class="fas fa-file-excel me-2"></i> IMPORTAR
+      EXCEL</a>
+    <a href="/ia-inventario" class="admin-link" style="color: #5dade2;"><i class="fas fa-magic me-2"></i> AFINAR INVENTARIO (IA)</a>
+    <a href="{{ url_for('herramientas.panel_herramientas') }}" class="admin-link"><i class="fas fa-tools me-2"></i>
+      HERRAMIENTAS MANT.</a>
+    <a href="{{ url_for('reportes.respaldar_db') }}" class="admin-link"><i class="fas fa-cloud-download-alt me-2"></i>
+      DESCARGAR RESPALDO</a>
+    {% endif %}
+
+    <div style="padding: 15px 25px; margin-top: 10px">
+      <a href="{{ url_for('set_tasa_bcv') }}" class="btn-tasa-bcv shadow-sm w-100
+         {% if alerta_tasa %}border-danger{% endif %}" {% if alerta_tasa %}style="background:#c0392b;" {% endif %}>
+        <i class="fas fa-university me-2"></i>
+        {% if alerta_tasa %}
+        <span>⚠️ ACTUALIZAR TASA</span>
+        {% else %}
+        <span>BCV: <strong>Bs. {{ tasa_actual|default('CARGAR') }}</strong></span>
+        {% endif %}
+      </a>
+    </div>
+
+    {% if current_user.is_authenticated %}
+    <div style="padding: 10px 25px; margin-bottom: 20px;">
+      <a href="{{ url_for('auth.logout') }}" style="color:#e74c3c; border-left: 4px solid #e74c3c;"
+        class="d-block text-decoration-none py-2 px-0">
+        <i class="fas fa-sign-out-alt me-2"></i> CERRAR SESIÓN
+        <small class="d-block text-muted" style="font-size:0.75rem;">{{ current_user.username }} ({{ current_user.role
+          }})</small>
+      </a>
+    </div>
+    {% endif %}
+
+    <div class="mt-auto px-4 py-3 text-center opacity-75" style="border-top: 1px solid rgba(255,255,255,0.05);">
+        <small style="color: #5dade2; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+            <i class="fas fa-rocket"></i> KALUNEVA2024<br>
+            <span style="font-size: 0.7rem; letter-spacing: 1px;">CREADA CON ANTIGRAVITY</span>
+        </small>
+    </div>
+  </div>
+
+  <div class="main-content">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    {% for category, message in messages %}
+    <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+      {{ message }}
+      <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endfor %}
+    {% endif %}
+    {% endwith %}
+    
+    <!-- BOTÓN REGRESAR GLOBAL (Oculto en el POS para limpieza total) -->
+    {% if request.path != '/pos' %}
+    <div class="mb-4 d-print-none d-flex align-items-center gap-3">
+        <button onclick="history.back()" class="btn btn-dark shadow-sm rounded-pill px-4" id="btn_regresar_global" style="background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(10px);">
+            <i class="fas fa-chevron-left me-2"></i> REGRESAR
+        </button>
+        {% if request.path != '/' %}
+        <a href="/" class="btn btn-outline-light btn-sm rounded-circle shadow-sm" title="Inicio" style="width: 35px; height: 35px; display: flex; align-items: center; justify-content: center;">
+            <i class="fas fa-home"></i>
+        </a>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% block content %}
+    {% endblock %}
+
+  </div>
+  <script>
+    function toggleSidebarMenu() {
+      const sidebar = document.querySelector('.sidebar');
+      const mainContent = document.querySelector('.main-content');
+      const overlay = document.getElementById('sidebar-overlay');
+      const toggleBtn = document.getElementById('sidebar-toggle');
+      
+      // Detectar móvil de forma más robusta
+      const isMobile = window.innerWidth < 992;
+      
+      if (isMobile) {
+        sidebar.classList.toggle('show-mobile');
+        overlay.classList.toggle('active');
+        // Asegurar que no se quede pegado el scroll del fondo
+        document.body.style.overflow = sidebar.classList.contains('show-mobile') ? 'hidden' : '';
+      } else {
+        sidebar.classList.toggle('collapsed');
+        mainContent.classList.toggle('expanded');
+        
+        const isCollapsed = sidebar.classList.contains('collapsed');
+        localStorage.setItem('sidebarCollapsed', isCollapsed);
+      }
+      
+      // Update icon if needed
+      const icon = toggleBtn.querySelector('i');
+      if (sidebar.classList.contains('collapsed') || (isMobile && !sidebar.classList.contains('show-mobile'))) {
+        // En desktop colapsado o movil oculto
+        if (!isMobile) icon.classList.replace('fa-bars', 'fa-chevron-right');
+      } else {
+        if (!isMobile) icon.classList.replace('fa-chevron-right', 'fa-bars');
+      }
+    }
+
+    // Compatibilidad con la función anterior por si se llama desde otro lado
+    function toggleSidebar() { toggleSidebarMenu(); }
+
+    // Initialize sidebar state
+    document.addEventListener('DOMContentLoaded', () => {
+      let isCollapsed = localStorage.getItem('sidebarCollapsed');
+      
+      // Forzar colapso por defecto en el POS para maximizar espacio
+      if (window.location.pathname.includes('/pos')) {
+        isCollapsed = 'true';
+      }
+      
+      if (isCollapsed === 'true') {
+        const sidebar = document.querySelector('.sidebar');
+        const mainContent = document.querySelector('.main-content');
+        const toggleBtn = document.getElementById('sidebar-toggle');
+        
+        if (sidebar) sidebar.classList.add('collapsed');
+        if (mainContent) mainContent.classList.add('expanded');
+        if (toggleBtn) {
+          const icon = toggleBtn.querySelector('i');
+          if (icon) icon.classList.replace('fa-bars', 'fa-chevron-right');
+        }
+      }
+    });
+
+    // 🔒 SEGURO DE DOBLE CLIC: Deshabilita botones al enviar formulario
+    document.addEventListener('submit', (e) => {
+        const form = e.target;
+        // Solo aplicar a formularios que no tengan la clase 'no-lock'
+        if (form.classList.contains('no-lock')) return;
+        
+        const submitBtn = form.querySelector('button[type="submit"]');
+        if (submitBtn) {
+            // Un pequeño delay para permitir que la validación nativa de HTML5 ocurra
+            setTimeout(() => {
+                if (form.checkValidity()) {
+                    submitBtn.disabled = true;
+                    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> PROCESANDO...';
+                }
+            }, 0);
+        }
+    });
+  </script>
+  <script>
+    // PWA Service Worker Registration
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/static/sw.js').then(reg => {
+          console.log('PWA Service Worker registrado correctamente.', reg.scope);
+        }).catch(err => {
+          console.warn('Fallo el registro del Service Worker:', err);
+        });
+      });
+    }
+
+// ============================================================
+// 🔍 SISTEMA DE ESCÁNER ADMINISTRATIVO (CÓDIGOS MÁGICOS)
+// ============================================================
+let barcodeBuffer = "";
+let globalLastKeyTime = Date.now();
+
+document.addEventListener("keydown", (e) => {
+    // Evitar que el escáner active el submit de formularios si no es el foco
+    const currentTime = Date.now();
+    
+    // Si pasa más de 200ms entre teclas, probablemente sea humano escribiendo
+    if (currentTime - globalLastKeyTime > 200) {
+        barcodeBuffer = "";
+    }
+    
+    if (e.key === "Enter") {
+        if (barcodeBuffer.length >= 4) {
+            handleSpecialBarcode(barcodeBuffer);
+            // Prevenir el submit si es un código mágico
+            if (['1001', '1002', '1003', '1004', '9001', '9002'].includes(barcodeBuffer) || barcodeBuffer.startsWith("KALU-")) e.preventDefault();
+            barcodeBuffer = "";
+        }
+    } else {
+        if (e.key.length === 1) {
+            barcodeBuffer += e.key;
+        }
+    }
+    globalLastKeyTime = currentTime;
+});
+
+function handleSpecialBarcode(code) {
+    if (['1001', '1002', '1003', '1004'].includes(code) || code.startsWith("KALU-LOGIN-") || code === "KALU-LLAVE-MAESTRA-LOGIN") {
+        fetch('/barcode-login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ codigo: code })
+        })
+        .then(r => r.json())
+        .then(res => {
+            if (res.success) {
+                window.location.href = res.redirect;
+            } else {
+                Swal.fire('Error', res.message, 'error');
+            }
+        });
+    } else if (code === "KALU-CAJA-BORRAR" || code === "9001") {
+        console.log("Comando de borrar detectado:", code);
+        Swal.fire({
+            title: '¡Código Detectado!',
+            text: 'Intentando borrar el producto...',
+            icon: 'info',
+            timer: 1000,
+            showConfirmButton: false
+        });
+        
+        if (typeof limpiarItemSeleccionado === "function") {
+            setTimeout(limpiarItemSeleccionado, 500); // Esperar medio segundo para evitar choques
+        } else {
+            Swal.fire('Error', 'Debe estar en la pantalla de la Caja para usar esta tarjeta.', 'error');
+        }
+    } else if (code === "KALU-ADMIN-PRECIOS" || code === "9002") {
+        window.location.href = "/inventario";
+    }
+}
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+  <!-- DataTables + Extensiones de Exportación JS -->
+<!-- DataTables + Extensiones de Exportación JS y jQuery se cargan arriba -->
+
+  {% if current_user.is_authenticated and current_user.role == 'cajero' %}
+  <div class="mobile-nav">
+    <a href="/pos" class="{% if request.path == '/pos' %}active{% endif %}"><i class="fas fa-cash-register"></i>POS</a>
+    <a href="/compras" class="{% if request.path == '/compras' %}active{% endif %}"><i class="fas fa-shopping-cart"></i>Compras</a>
+    <a href="/reporte_cierre" class="{% if request.path == '/reporte_cierre' %}active{% endif %}"><i class="fas fa-chart-line"></i>Cierre</a>
+    <a href="{{ url_for('productores.libreta') }}" class="{% if request.path == url_for('productores.libreta') %}active{% endif %}"><i class="fas fa-book-open"></i>Libreta</a>
+    <a href="/morosos" class="{% if request.path == '/morosos' %}active{% endif %}"><i class="fas fa-user-clock"></i>Morosos</a>
+  </div>
+  {% endif %}
+  <!-- MODAL DE PIN PARA SEGURIDAD -->
+  <div class="modal fade" id="pinModal" tabindex="-1" aria-hidden="true" style="z-index: 9999;">
+    <div class="modal-dialog modal-dialog-centered modal-sm">
+      <div class="modal-content border-0 shadow-lg bg-dark text-white" style="border-radius: 20px;">
+        <div class="modal-header border-0 pb-0 justify-content-center">
+          <div class="text-center mt-3">
+            <div class="bg-warning text-dark d-inline-block rounded-circle p-3 mb-2 shadow-sm">
+                <i class="fas fa-shield-alt fa-2x"></i>
+            </div>
+            <h5 class="modal-title w-100 fw-800">AUTORIZACIÓN</h5>
+          </div>
+        </div>
+        <div class="modal-body text-center pt-2">
+          <p class="small opacity-75 mb-4 px-3">Ingrese el PIN de Supervisor para continuar con esta operación.</p>
+          <div class="pin-display mb-4 px-4">
+            <input type="password" id="pin_input_global" class="form-control form-control-lg text-center fw-bold bg-transparent text-white border-0 border-bottom border-warning border-2" 
+                   maxlength="10" placeholder="••••" style="font-size: 2.5rem; letter-spacing: 0.8rem; box-shadow: none;" autocomplete="off">
+          </div>
+          <div id="pin_error_global" class="text-danger small mb-3 fw-bold animate__animated animate__shakeX" style="display:none;"></div>
+          <div class="px-3">
+            <button id="btn_confirm_pin_global" class="btn btn-warning w-100 py-3 fw-bold rounded-4 mb-2 shadow-sm">
+              <i class="fas fa-key me-2"></i> VERIFICAR PIN
+            </button>
+            <button type="button" class="btn btn-link btn-sm text-white-50 text-decoration-none" data-bs-dismiss="modal">Cancelar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let pinCallbackAction = null;
+
+    /**
+     * Solicita un PIN de supervisor antes de ejecutar una acción.
+     * @param {Function} callback - La función a ejecutar si el PIN es correcto.
+     */
+    function solicitarPinSupervisor(callback) {
+      pinCallbackAction = callback;
+      const modal = new bootstrap.Modal(document.getElementById('pinModal'));
+      document.getElementById('pin_input_global').value = '';
+      document.getElementById('pin_error_global').style.display = 'none';
+      modal.show();
+
+      // Enfoque automático
+      const myModalEl = document.getElementById('pinModal');
+      myModalEl.addEventListener('shown.bs.modal', () => {
+        document.getElementById('pin_input_global').focus();
+      });
+    }
+
+    // Manejador del botón de verificación de PIN
+    document.getElementById('btn_confirm_pin_global').addEventListener('click', async function() {
+      const pin = document.getElementById('pin_input_global').value;
+      const btn = this;
+      const errorDiv = document.getElementById('pin_error_global');
+      
+      if (!pin) return;
+
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i> VERIFICANDO...';
+      errorDiv.style.display = 'none';
+
+      try {
+        const response = await fetch('/api/verify_pin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: pin })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          console.log("✅ PIN Autorizado por:", data.username);
+          const modalEl = document.getElementById('pinModal');
+          const modal = bootstrap.Modal.getInstance(modalEl);
+          modal.hide();
+          
+          if (typeof pinCallbackAction === 'function') {
+            pinCallbackAction(pin, data.username);
+          }
+
+        } else {
+          errorDiv.innerText = '❌ ' + (data.message || 'PIN Incorrecto');
+          errorDiv.style.display = 'block';
+          document.getElementById('pin_input_global').value = '';
+          document.getElementById('pin_input_global').focus();
+        }
+      } catch (error) {
+        console.error("Error verificando PIN:", error);
+        errorDiv.innerText = '❌ Error de conexión';
+        errorDiv.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-key me-2"></i> VERIFICAR PIN';
+      }
+    });
+
+    // --- FUNCIÓN GLOBAL DE FORMATEO ---
+    window.safeFix = function(val, dec = 2) {
+      const n = parseFloat(val);
+      if (isNaN(n)) {
+        console.warn("[Kalu] No se pudo formatear:", val);
+        return (0).toFixed(dec);
+      }
+      return n.toFixed(dec);
+    };
+
+    // Permitir Enter en el input de PIN
+    document.getElementById('pin_input_global').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+        document.getElementById('btn_confirm_pin_global').click();
+      }
+    });
+    // --- SEGURIDAD: Cierre de Sesión por Inactividad (20 min) ---
+    if (document.body.dataset.loggedIn === 'true') {
+        (function() {
+            let idleTimer;
+            const idleLimit = 20 * 60 * 1000; 
+
+            function doLogout() {
+                console.log("🔒 Sesión expirada.");
+                window.location.href = "{{ url_for('auth.logout') }}";
+            }
+
+            function resetIdleTimer() {
+                if (idleTimer) clearTimeout(idleTimer);
+                idleTimer = setTimeout(doLogout, idleLimit);
+            }
+
+            ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'].forEach(evt => {
+                document.addEventListener(evt, resetIdleTimer, true);
+            });
+
+            resetIdleTimer();
+        })();
+    }
+  </script>
+</body>
+
+</html>
