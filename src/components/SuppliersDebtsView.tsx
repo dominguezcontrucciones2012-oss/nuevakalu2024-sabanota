@@ -15,9 +15,9 @@ interface SuppliersDebtsViewProps {
   onPaySupplierRemainingBalance?: (supplierId: string, amount: number, paymentSource: string) => void;
   onLoadPurchase?: (purchase: {
     supplierId: string;
-    items: { productId: string; quantityKg: number; purchasePrice: number; sellingPrice: number; marginPercent: number; name: string; }[];
+    items: { productId: string; quantityKg: number; purchasePrice: number; sellingPrice: number; marginPercent: number; name: string; createNewItem?: boolean; }[];
     isCredit: boolean;
-  }) => void;
+  }) => Promise<void>;
   onAddNotification: (msg: string, type: 'success' | 'info' | 'warning') => void;
   isSidebarOpen?: boolean;
 }
@@ -38,6 +38,8 @@ export default function SuppliersDebtsView({
   isSidebarOpen = true
 }: SuppliersDebtsViewProps) {
   
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   // Add Supplier States
   const [showAddForm, setShowAddForm] = useState(false);
   const [name, setName] = useState('');
@@ -58,9 +60,11 @@ export default function SuppliersDebtsView({
   // Forms State for Modals
   // Recibir Queso
   const [receiveProductId, setReceiveProductId] = useState('');
+  const [customProductName, setCustomProductName] = useState('');
   const [receiveKg, setReceiveKg] = useState('');
   const [receivePrice, setReceivePrice] = useState('');
   const [receivePayment, setReceivePayment] = useState('A la Libreta');
+  const [createNewProduct, setCreateNewProduct] = useState(false);
 
   // Pago a Él (Pay Supplier)
   const [payToThemAmount, setPayToThemAmount] = useState('');
@@ -78,10 +82,17 @@ export default function SuppliersDebtsView({
     setActiveModal(modal);
     // Reset forms
     if (modal === 'recibir') {
-      setReceiveProductId(cheeseProducts[0]?.id || '');
+      const defaultCheese = cheeseProducts.find(p => 
+        p.category?.toLowerCase().includes('queso') || 
+        p.category?.toLowerCase().includes('lacteo') ||
+        p.name?.toLowerCase().includes('queso')
+      );
+      setReceiveProductId(defaultCheese ? defaultCheese.id : '');
+      setCustomProductName('');
       setReceiveKg('');
       setReceivePrice('');
       setReceivePayment('A la Libreta');
+      setCreateNewProduct(false);
     } else if (modal === 'pagar') {
       const s = suppliers.find(sup => sup.id === supplierId);
       setPayToThemAmount(s ? s.balanceOwed.toString() : '');
@@ -339,10 +350,17 @@ export default function SuppliersDebtsView({
         ))}
       </div>
 
-      {/* 4 Modales Flotantes Superpuestos */}
+      {/* Panel Lateral (Drawer) de Libreta */}
       {activeModal && selectedSupplierId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="bg-[#1e293b] border border-amber-500/40 rounded-xl shadow-2xl w-full max-w-md animate-fade-in flex flex-col max-h-[90vh]">
+        <>
+          {/* Backdrop overlay */}
+          <div 
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 transition-opacity cursor-pointer"
+            onClick={() => setActiveModal(null)}
+          />
+          
+          {/* Right-anchored Drawer */}
+          <div className="fixed right-0 top-0 h-screen overflow-hidden w-full sm:w-[450px] max-w-full bg-neutral-900 border-l border-neutral-700 shadow-2xl z-50 animate-slide-left flex flex-col">
             {(() => {
               const s = suppliers.find(sup => sup.id === selectedSupplierId);
               if (!s) return null;
@@ -350,102 +368,219 @@ export default function SuppliersDebtsView({
               if (activeModal === 'historial') {
                 const supTx = transactions.filter(t => t.entity.includes(s.name));
                 return (
-                  <>
-                    <div className="flex justify-between items-center border-b border-editorial-border/40 p-5 shrink-0">
-                      <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><Eye className="w-5 h-5"/> Historial de Transacciones</h3>
-                      <button onClick={() => setActiveModal(null)} className="text-xs font-mono text-editorial-text-muted hover:text-white uppercase">Cerrar</button>
+                  <div className="flex flex-col h-full overflow-hidden">
+                    {/* Header */}
+                    <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
+                      <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><Eye className="w-5 h-5 text-amber-500"/> Historial de Movimientos</h3>
+                      <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
+                        <X className="w-5 h-5" />
+                      </button>
                     </div>
-                    <div className="p-5 overflow-y-auto space-y-3 font-sans text-xs">
+                    {/* Content */}
+                    <div className="p-5 overflow-y-auto space-y-4 font-sans flex-1">
                       {supTx.length === 0 ? (
-                         <p className="text-editorial-text-muted text-center py-8">No hay transacciones registradas.</p>
+                         <p className="text-neutral-500 text-center py-8">No hay transacciones registradas.</p>
                       ) : (
-                        supTx.map(tx => (
-                          <div key={tx.id} className="flex justify-between items-center p-3 bg-black/20 border border-editorial-border/30 rounded">
-                            <div>
-                              <p className="font-bold text-editorial-text-primary">{tx.invoiceNumber} - {tx.date}</p>
-                              <p className="text-[10px] text-editorial-text-muted font-mono uppercase">{tx.category}</p>
-                            </div>
-                            <div className="text-right">
-                              <p className={`font-mono font-bold ${tx.isIncome ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                {tx.isIncome ? '+' : '-'}${tx.amount.toLocaleString()}
-                              </p>
-                              <p className="text-[9px] text-editorial-text-muted">{tx.paymentMethod || 'A la Libreta'}</p>
-                            </div>
-                          </div>
-                        ))
+                        supTx.map(tx => {
+                           let catLabel: string = tx.category;
+                           if (tx.category === 'credito') catLabel = 'Consumo POS (Fiado)';
+                           else if (tx.category === 'compras') catLabel = 'Recepción Productor';
+                           return (
+                             <div key={tx.id} className="flex flex-col p-4 bg-neutral-800/50 border border-neutral-700 rounded-lg hover:border-neutral-500 transition-colors shadow-sm">
+                               <div className="flex justify-between items-start mb-2 border-b border-neutral-700/50 pb-2">
+                                 <div>
+                                   <p className="font-bold text-neutral-100 text-sm">{tx.date}</p>
+                                   <p className="text-[10px] text-neutral-400 font-mono uppercase mt-0.5">{catLabel} | Ref: {tx.invoiceNumber}</p>
+                                 </div>
+                                 <div className="text-right shrink-0">
+                                   <p className={`font-mono font-bold text-sm ${tx.isIncome ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                     {tx.isIncome ? '+' : '-'}${tx.amount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                                   </p>
+                                 </div>
+                               </div>
+                               {(tx.notes || tx.paymentMethod) && (
+                                  <div className="bg-neutral-900/50 rounded p-2 text-xs font-mono text-amber-500/90 leading-relaxed border border-neutral-800">
+                                    {tx.notes || tx.paymentMethod}
+                                  </div>
+                               )}
+                             </div>
+                           );
+                        })
                       )}
                     </div>
-                  </>
+                  </div>
                 );
               }
 
               if (activeModal === 'recibir') {
+                const cleanNumber = (val: string) => {
+                  if (!val) return 0;
+                  const cleaned = val.toString().replace(/[^0-9.,]/g, '').replace(',', '.');
+                  return Number(cleaned) || 0;
+                };
+                const currentKg = cleanNumber(receiveKg);
+                const currentPrice = cleanNumber(receivePrice);
+                const calculatedSubtotal = currentKg * currentPrice;
+                const calculatedSubtotalBs = calculatedSubtotal * exchangeRate;
+
                 return (
-                  <>
-                    <div className="flex justify-between items-center border-b border-editorial-border/40 p-5 shrink-0">
-                      <h3 className="font-serif text-lg font-bold text-emerald-400 flex items-center gap-2"><Plus className="w-5 h-5"/> Recibir Queso de {s.name}</h3>
-                      <button onClick={() => setActiveModal(null)} className="text-xs font-mono text-editorial-text-muted hover:text-white uppercase">Cerrar</button>
+                  <div className="flex flex-col h-full overflow-hidden">
+                    {/* Header */}
+                    <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
+                      <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><Plus className="w-5 h-5"/> Compra a {s.name}</h3>
+                      <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
+                        <X className="w-5 h-5" />
+                      </button>
                     </div>
-                    <div className="p-5 space-y-4">
+                    {/* Content */}
+                    <div className="p-5 space-y-5 flex-1 overflow-y-auto">
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Producto Entregado</label>
-                        <select value={receiveProductId} onChange={e => setReceiveProductId(e.target.value)} className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:border-emerald-500 outline-none">
-                          <option value="">Seleccione Queso</option>
-                          {cheeseProducts.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Concepto / Rubro</label>
+                        <select value={receiveProductId} onChange={e => {
+                          setReceiveProductId(e.target.value);
+                          if (e.target.value !== 'Otro') {
+                            setCustomProductName('');
+                            setCreateNewProduct(false);
+                          }
+                        }} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
+                          <option value="">Seleccione Producto a Arrimar</option>
+                          {cheeseProducts
+                            .filter(p => 
+                              p.category?.toLowerCase().includes('queso') || 
+                              p.category?.toLowerCase().includes('lacteo') ||
+                              p.name?.toLowerCase().includes('queso')
+                            )
+                            .map(p => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                          <option value="Otro">Otro rubro / Animal</option>
                         </select>
+                        {receiveProductId === 'Otro' && (
+                          <div className="space-y-2 mt-2">
+                            <input type="text" value={customProductName} onChange={e => setCustomProductName(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" placeholder="Ej. Cochino, Ganado, Suero..." />
+                            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 hover:text-amber-500 transition-colors">
+                              <input 
+                                type="checkbox" 
+                                checked={createNewProduct} 
+                                onChange={(e) => setCreateNewProduct(e.target.checked)} 
+                                className="w-4 h-4 rounded border-neutral-700 text-amber-500 focus:ring-amber-500 focus:ring-offset-neutral-900 bg-neutral-800"
+                              />
+                              Registrar como nuevo ítem en el inventario
+                            </label>
+                          </div>
+                        )}
                       </div>
                       <div className="flex gap-4">
                         <div className="space-y-1.5 flex-1">
-                          <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Kilogramos (Kg)</label>
-                          <input type="number" step="0.01" value={receiveKg} onChange={e => setReceiveKg(e.target.value)} className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:border-emerald-500 outline-none" placeholder="0.00" />
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Cantidad (Kg/Unid)</label>
+                          <input 
+                            type="text" 
+                            inputMode="decimal" 
+                            value={receiveKg} 
+                            onChange={(e) => setReceiveKg(e.target.value)} 
+                            className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" 
+                            placeholder="0.00" 
+                          />
                         </div>
                         <div className="space-y-1.5 flex-1">
-                          <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Precio x Kg</label>
-                          <input type="number" step="0.01" value={receivePrice} onChange={e => setReceivePrice(e.target.value)} className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:border-emerald-500 outline-none" placeholder="0.00" />
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Precio Unitario ($)</label>
+                          <input 
+                            type="text" 
+                            inputMode="decimal" 
+                            value={receivePrice} 
+                            onChange={(e) => setReceivePrice(e.target.value)} 
+                            className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" 
+                            placeholder="0.00" 
+                          />
                         </div>
                       </div>
+
+                      {/* Real-time Subtotal */}
+                      <div className="bg-neutral-800/50 border border-neutral-700 rounded p-4 text-center">
+                        <span className="text-[10px] font-mono text-neutral-400 uppercase block">Subtotal Calculado</span>
+                        <span className="font-mono text-2xl font-bold text-amber-500 block mt-1">
+                          $ {calculatedSubtotal.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                        <span className="text-[10px] font-mono text-neutral-500 mt-1 block">
+                          Bs {calculatedSubtotalBs.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Forma de Pago</label>
-                        <select value={receivePayment} onChange={e => setReceivePayment(e.target.value)} className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:border-emerald-500 outline-none">
-                          <option value="A la Libreta">A la Libreta (Sumar a Deuda)</option>
-                          <option value="Efectivo / Caja Chica">Efectivo / Caja Chica</option>
-                          <option value="Pago Móvil / Banco">Pago Móvil / Banco</option>
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Forma de Pago</label>
+                        <select value={receivePayment} onChange={e => setReceivePayment(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
+                          <option value="A la Libreta">A la Libreta (Sumar a Deuda / Cobrar Fiado)</option>
+                          <option value="Efectivo / Caja Chica">Pagado en Efectivo / Caja Chica</option>
+                          <option value="Pago Móvil / Banco">Pagado por Banco</option>
                         </select>
                       </div>
-                      <div className="pt-2">
+
+                      {s.storeDebt > 0 && receivePayment === 'A la Libreta' && (
+                        <div className="bg-rose-950/20 border border-rose-900/50 rounded p-4 text-xs text-rose-300 font-mono leading-relaxed">
+                          ⚠️ El productor debe <strong>${s.storeDebt.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</strong> por fiados en el POS.<br/>
+                          Esta deuda será cobrada automáticamente del subtotal.
+                        </div>
+                      )}
+
+                      <div className="pt-4">
                         <button
-                          onClick={() => {
-                            const parsedKg = Number(receiveKg);
-                            const parsedPrice = Number(receivePrice);
-                            if (!receiveProductId || isNaN(parsedKg) || isNaN(parsedPrice) || parsedKg <= 0 || parsedPrice <= 0) return onAddNotification('Campos incompletos o inválidos', 'warning');
-                            onLoadPurchase?.({
-                              supplierId: s.id,
-                              items: [{ productId: receiveProductId, quantityKg: parsedKg, purchasePrice: parsedPrice, sellingPrice: 0, marginPercent: 0, name: 'Recepción Directa' }],
-                              isCredit: receivePayment === 'A la Libreta'
-                            });
-                            onAddNotification(`Recepción de queso registrada correctamente.`, 'success');
-                            setActiveModal(null);
+                          disabled={isSubmitting}
+                          onClick={async () => {
+                            if (!receiveProductId || calculatedSubtotal <= 0 || (receiveProductId === 'Otro' && !customProductName.trim())) return onAddNotification('Campos incompletos o inválidos', 'warning');
+                            
+                            const selectedCheese = cheeseProducts.find(p => p.id === receiveProductId);
+                            const finalProductName = receiveProductId === 'Otro' ? customProductName.trim() : (selectedCheese?.name || 'Queso');
+                            const payloadProductId = receiveProductId === 'Otro' ? `custom-${Date.now()}` : receiveProductId;
+
+                            try {
+                              setIsSubmitting(true);
+                              if (onLoadPurchase) {
+                                await onLoadPurchase({
+                                  supplierId: s.id,
+                                  items: [{ 
+                                    productId: payloadProductId, 
+                                    quantityKg: currentKg, 
+                                    purchasePrice: currentPrice, 
+                                    sellingPrice: 0, 
+                                    marginPercent: 0, 
+                                    name: finalProductName,
+                                    createNewItem: createNewProduct 
+                                  }],
+                                  isCredit: receivePayment === 'A la Libreta'
+                                });
+                              }
+                              onAddNotification(`Recepción de ${finalProductName} registrada correctamente.`, 'success');
+                              setActiveModal(null);
+                            } catch (error) {
+                              onAddNotification('Error al registrar recepción', 'warning');
+                            } finally {
+                              setIsSubmitting(false);
+                            }
                           }}
-                          className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer"
+                          className="w-full py-3.5 bg-amber-600 hover:bg-amber-500 text-neutral-900 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                         >
-                          Confirmar Recepción
+                          {isSubmitting ? 'Procesando...' : 'Confirmar Recepción'}
                         </button>
                       </div>
                     </div>
-                  </>
+                  </div>
                 );
               }
 
               if (activeModal === 'pagar') {
                 return (
-                  <>
-                    <div className="flex justify-between items-center border-b border-editorial-border/40 p-5 shrink-0">
+                  <div className="flex flex-col h-full">
+                    {/* Header */}
+                    <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
                       <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><Wallet className="w-5 h-5"/> Pagar a {s.name}</h3>
-                      <button onClick={() => setActiveModal(null)} className="text-xs font-mono text-editorial-text-muted hover:text-white uppercase">Cerrar</button>
+                      <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
+                        <X className="w-5 h-5" />
+                      </button>
                     </div>
-                    <div className="p-5 space-y-4">
+                    {/* Content */}
+                    <div className="p-5 space-y-4 flex-1 overflow-y-auto">
                       <div className="bg-amber-500/10 border border-amber-500/30 rounded p-4 text-center">
-                        <span className="text-[10px] font-mono uppercase text-editorial-text-muted block tracking-wider">Le Debemos Actualmente</span>
+                        <span className="text-[10px] font-mono uppercase text-neutral-400 block tracking-wider">Le Debemos Actualmente</span>
                         <span className="font-mono text-3xl font-extrabold text-amber-500 block mt-1">$ {s.balanceOwed.toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD</span>
                         <span className="text-xs font-mono text-amber-500/70 block mt-1">Bs {(s.balanceOwed * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
                       </div>
@@ -466,12 +601,12 @@ export default function SuppliersDebtsView({
                       )}
 
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Monto a Pagar</label>
-                        <input type="number" step="0.01" value={payToThemAmount} onChange={e => setPayToThemAmount(e.target.value)} className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:border-amber-500 outline-none" placeholder="0.00" />
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto a Pagar ($)</label>
+                        <input type="number" step="0.01" value={payToThemAmount} onChange={e => setPayToThemAmount(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" placeholder="0.00" />
                       </div>
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Fuente de Pago</label>
-                        <select value={payToThemSource} onChange={e => setPayToThemSource(e.target.value)} className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:border-amber-500 outline-none">
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Fuente de Pago</label>
+                        <select value={payToThemSource} onChange={e => setPayToThemSource(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
                           <option value="Efectivo / Caja Chica">Efectivo / Caja Chica</option>
                           <option value="Pago Móvil / Banco">Pago Móvil / Banco</option>
                         </select>
@@ -485,38 +620,37 @@ export default function SuppliersDebtsView({
                             onAddNotification(`Pago de $${amt.toFixed(2)} USD a ${s.name} registrado exitosamente.`, 'success');
                             setActiveModal(null);
                           }}
-                          className="w-full py-3 bg-amber-600 hover:bg-amber-500 text-white text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer"
+                          className="w-full py-3 bg-amber-600 hover:bg-amber-500 text-neutral-900 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer"
                         >
                           Efectuar Pago
                         </button>
                       </div>
                     </div>
-                  </>
+                  </div>
                 );
               }
 
               if (activeModal === 'abonar') {
                 return (
-                <div className="flex flex-col h-full">
-                  <div className="flex justify-between items-center p-5 border-b border-editorial-border/40 shrink-0">
-                    <div>
-                      <h3 className="font-serif font-bold text-lg text-editorial-text-primary">Movimiento en Libreta</h3>
-                      <p className="text-xs text-editorial-text-muted font-sans mt-1">Registra consumos fiados o abonos de {s.name}</p>
+                  <div className="flex flex-col h-full">
+                    {/* Header */}
+                    <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
+                      <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><CreditCard className="w-5 h-5"/> Movimiento Libreta</h3>
+                      <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
+                        <X className="w-5 h-5" />
+                      </button>
                     </div>
-                    <button onClick={() => setActiveModal(null)} className="text-editorial-text-muted hover:text-white transition-colors cursor-pointer"><X className="w-5 h-5" /></button>
-                  </div>
-                  
-                  <div className="max-h-[70vh] overflow-y-auto">
-                    <div className="p-5 space-y-4">
-                      <div className="bg-editorial-bg border border-editorial-border rounded p-4 text-center">
-                        <span className="text-[10px] font-mono uppercase text-editorial-text-muted block tracking-wider">Él Nos Debe Actualmente</span>
-                        <span className="font-mono text-3xl font-extrabold text-white block mt-1">$ {(s.storeDebt || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD</span>
-                        <span className="text-xs font-mono text-editorial-text-muted block mt-1">Bs {((s.storeDebt || 0) * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
+                    {/* Content */}
+                    <div className="p-5 space-y-4 flex-1 overflow-y-auto">
+                      <div className="bg-neutral-800 border border-neutral-700 rounded p-4 text-center">
+                        <span className="text-[10px] font-mono uppercase text-neutral-400 block tracking-wider">Él Nos Debe Actualmente</span>
+                        <span className="font-mono text-3xl font-extrabold text-amber-500 block mt-1">$ {(s.storeDebt || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD</span>
+                        <span className="text-xs font-mono text-neutral-500 block mt-1">Bs {((s.storeDebt || 0) * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
                       </div>
 
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Tipo de Movimiento</label>
-                        <select value={payToUsMovementType} onChange={e => setPayToUsMovementType(e.target.value as 'cargo' | 'abono')} className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:border-editorial-text-primary outline-none cursor-pointer">
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Tipo de Movimiento</label>
+                        <select value={payToUsMovementType} onChange={e => setPayToUsMovementType(e.target.value as 'cargo' | 'abono')} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
                           <option value="cargo">Crédito / Consumo Fiado (Él saca víveres, AUMENTA la deuda)</option>
                           <option value="abono">Abono / Pago (Él paga su cuenta, DISMINUYE la deuda)</option>
                         </select>
@@ -524,12 +658,12 @@ export default function SuppliersDebtsView({
 
                       <div className="flex gap-4">
                         <div className="space-y-1.5 flex-[2]">
-                          <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Monto</label>
-                          <input type="number" step="0.01" value={payToUsAmount} onChange={e => setPayToUsAmount(e.target.value)} className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:border-editorial-text-primary outline-none" placeholder="0.00" />
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto</label>
+                          <input type="number" step="0.01" value={payToUsAmount} onChange={e => setPayToUsAmount(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" placeholder="0.00" />
                         </div>
                         <div className="space-y-1.5 flex-[1]">
-                          <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Moneda</label>
-                          <select value={payToUsCurrency} onChange={e => setPayToUsCurrency(e.target.value as 'USD' | 'VES')} className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:border-editorial-text-primary outline-none cursor-pointer">
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Moneda</label>
+                          <select value={payToUsCurrency} onChange={e => setPayToUsCurrency(e.target.value as 'USD' | 'VES')} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
                             <option value="USD">Dólares ($)</option>
                             <option value="VES">Bolívares (Bs)</option>
                           </select>
@@ -537,8 +671,8 @@ export default function SuppliersDebtsView({
                       </div>
 
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Método</label>
-                        <select value={payToUsMethod} onChange={e => setPayToUsMethod(e.target.value)} className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:border-editorial-text-primary outline-none cursor-pointer">
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Método</label>
+                        <select value={payToUsMethod} onChange={e => setPayToUsMethod(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
                           <option value="Libreta de Queso">Descontar de Libreta de Queso</option>
                           <option value="Efectivo / Caja Chica">Efectivo / Caja Chica</option>
                           <option value="Pago Móvil / Banco">Pago Móvil / Banco</option>
@@ -546,8 +680,8 @@ export default function SuppliersDebtsView({
                       </div>
 
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Concepto / Referencia / Nota</label>
-                        <input type="text" value={payToUsNote} onChange={e => setPayToUsNote(e.target.value)} className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:border-editorial-text-primary outline-none" placeholder="Ej. Víveres del día / Abono semanal" />
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Concepto / Referencia / Nota</label>
+                        <input type="text" value={payToUsNote} onChange={e => setPayToUsNote(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" placeholder="Ej. Víveres del día / Abono semanal" />
                       </div>
                       
                       <div className="pt-2">
@@ -561,10 +695,10 @@ export default function SuppliersDebtsView({
                             onAddNotification(`${payToUsMovementType === 'cargo' ? 'Crédito' : 'Abono'} de $${usdAmount.toFixed(2)} USD registrado correctamente.`, 'success');
                             setActiveModal(null);
                           }}
-                          className={`w-full py-3 text-white text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer ${
+                          className={`w-full py-3 text-neutral-900 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer ${
                             payToUsMovementType === 'cargo' 
-                              ? 'bg-rose-600 hover:bg-rose-500' 
-                              : 'bg-emerald-600 hover:bg-emerald-500'
+                              ? 'bg-rose-500 hover:bg-rose-400' 
+                              : 'bg-emerald-500 hover:bg-emerald-400'
                           }`}
                         >
                           Confirmar {payToUsMovementType === 'cargo' ? 'Crédito' : 'Abono'} a Libreta
@@ -572,14 +706,13 @@ export default function SuppliersDebtsView({
                       </div>
                     </div>
                   </div>
-                </div>
                 );
               }
 
               return null;
             })()}
           </div>
-        </div>
+        </>
       )}
     </div>
   );

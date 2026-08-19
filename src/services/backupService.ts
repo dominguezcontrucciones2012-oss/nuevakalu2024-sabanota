@@ -140,3 +140,49 @@ export async function importFromJson(file: File): Promise<void> {
     reader.readAsText(file);
   });
 }
+/**
+ * Resets all accounting data to zero. (Botón de pánico)
+ */
+export async function resetAccountingData(): Promise<void> {
+  let batch = writeBatch(db);
+  let operationCount = 0;
+
+  const commitBatchIfNeeded = async () => {
+    if (operationCount >= 450) {
+      await batch.commit();
+      batch = writeBatch(db);
+      operationCount = 0;
+    }
+  };
+
+  // 1. Delete all transactions and sales (and bills)
+  const collectionsToWipe = ['transactions', 'sales', 'bills'];
+  for (const colName of collectionsToWipe) {
+    const snapshot = await getDocs(collection(db, colName));
+    for (const docSnap of snapshot.docs) {
+      batch.delete(docSnap.ref);
+      operationCount++;
+      await commitBatchIfNeeded();
+    }
+  }
+
+  // 2. Reset client debts
+  const clientsSnap = await getDocs(collection(db, 'clients'));
+  for (const docSnap of clientsSnap.docs) {
+    batch.update(docSnap.ref, { outstandingDebt: 0 });
+    operationCount++;
+    await commitBatchIfNeeded();
+  }
+
+  // 3. Reset supplier debts
+  const suppliersSnap = await getDocs(collection(db, 'suppliers'));
+  for (const docSnap of suppliersSnap.docs) {
+    batch.update(docSnap.ref, { balanceOwed: 0, storeDebt: 0 });
+    operationCount++;
+    await commitBatchIfNeeded();
+  }
+
+  if (operationCount > 0) {
+    await batch.commit();
+  }
+}

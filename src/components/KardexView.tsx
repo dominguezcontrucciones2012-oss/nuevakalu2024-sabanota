@@ -1,36 +1,116 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, orderBy, onSnapshot, limit } from 'firebase/firestore';
+import { collection, query, orderBy, limit, getDocs, where, startAfter, QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { KardexMovement } from '../types';
-import { Search, Filter, BookOpen, ArrowUpRight, ArrowDownRight, AlertTriangle, Edit3 } from 'lucide-react';
+import { Search, Filter, BookOpen, ArrowUpRight, ArrowDownRight, AlertTriangle, Edit3, RefreshCw, DownloadCloud } from 'lucide-react';
+
+const CACHE_KEY = 'kalu_kardex_cache';
 
 export default function KardexView() {
   const [movements, setMovements] = useState<KardexMovement[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
+  const [lastDoc, setLastDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
+  const [hasMore, setHasMore] = useState(true);
 
   useEffect(() => {
-    const q = query(
-      collection(db, 'kardex'),
-      orderBy('date', 'desc'),
-      limit(200)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        ...doc.data(),
-        id: doc.id
-      })) as KardexMovement[];
-      setMovements(data);
-      setLoading(false);
-    }, (error) => {
-      console.error("Error fetching kardex:", error);
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
+    loadKardex();
   }, []);
+
+  const loadKardex = async () => {
+    setLoading(true);
+    try {
+      let cachedData: KardexMovement[] = [];
+      try {
+        const cachedString = localStorage.getItem(CACHE_KEY);
+        if (cachedString) {
+          cachedData = JSON.parse(cachedString);
+        }
+      } catch (e) {
+        console.error("Error reading cache", e);
+      }
+
+      const kardexRef = collection(db, 'kardex');
+      let newMovements: KardexMovement[] = [];
+
+      if (cachedData.length > 0) {
+        // Incremental fetch
+        const latestDate = cachedData[0].date;
+        const q = query(kardexRef, where('date', '>', latestDate), orderBy('date', 'desc'));
+        const querySnapshot = await getDocs(q);
+        newMovements = querySnapshot.docs.map(doc => ({ ...(doc.data() as any), id: doc.id } as KardexMovement));
+      } else {
+        // Initial fetch
+        const q = query(kardexRef, orderBy('date', 'desc'), limit(15));
+        const querySnapshot = await getDocs(q);
+        newMovements = querySnapshot.docs.map(doc => ({ ...(doc.data() as any), id: doc.id } as KardexMovement));
+        if (querySnapshot.docs.length > 0) {
+          setLastDoc(querySnapshot.docs[querySnapshot.docs.length - 1]);
+        }
+        if (querySnapshot.docs.length < 15) setHasMore(false);
+      }
+
+      const combinedData = [...newMovements, ...cachedData];
+      
+      // Remove duplicates just in case
+      const uniqueData = combinedData.filter((v, i, a) => a.findIndex(t => (t.id === v.id)) === i);
+      
+      // Sort descending by date
+      uniqueData.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+      setMovements(uniqueData);
+      localStorage.setItem(CACHE_KEY, JSON.stringify(uniqueData));
+      
+    } catch (error) {
+      console.error("Error loading Kardex:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadOlder = async () => {
+    if (!hasMore) return;
+    setLoading(true);
+    try {
+      const kardexRef = collection(db, 'kardex');
+      let q;
+
+      if (lastDoc) {
+        q = query(kardexRef, orderBy('date', 'desc'), startAfter(lastDoc), limit(25));
+      } else if (movements.length > 0) {
+        // Fallback if we have cache but no lastDoc
+        const oldestDate = movements[movements.length - 1].date;
+        q = query(kardexRef, where('date', '<', oldestDate), orderBy('date', 'desc'), limit(25));
+      } else {
+        q = query(kardexRef, orderBy('date', 'desc'), limit(25));
+      }
+
+      const querySnapshot = await getDocs(q);
+      const olderMovements = querySnapshot.docs.map(doc => ({ ...(doc.data() as any), id: doc.id } as KardexMovement));
+
+      if (querySnapshot.docs.length > 0) {
+        setLastDoc(querySnapshot.docs[querySnapshot.docs.length - 1]);
+      }
+      
+      if (querySnapshot.docs.length < 25) {
+        setHasMore(false);
+      }
+
+      if (olderMovements.length > 0) {
+        const combinedData = [...movements, ...olderMovements];
+        const uniqueData = combinedData.filter((v, i, a) => a.findIndex(t => (t.id === v.id)) === i);
+        uniqueData.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        setMovements(uniqueData);
+        localStorage.setItem(CACHE_KEY, JSON.stringify(uniqueData));
+      }
+
+    } catch (error) {
+      console.error("Error loading older Kardex records:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const filteredMovements = movements.filter(m => {
     const matchesSearch = (m.productName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -71,6 +151,14 @@ export default function KardexView() {
             Registro universal de movimientos de inventario
           </p>
         </div>
+        <button
+          onClick={loadKardex}
+          disabled={loading}
+          className="bg-editorial-surface border border-editorial-border text-editorial-text-primary px-4 py-2 text-xs font-bold uppercase tracking-widest hover:border-amber-500 hover:text-amber-500 transition-colors flex items-center gap-2"
+        >
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          Actualizar Novedades
+        </button>
       </div>
 
       {/* Filters */}
@@ -119,7 +207,7 @@ export default function KardexView() {
             </tr>
           </thead>
           <tbody className="font-mono text-sm">
-            {loading ? (
+            {movements.length === 0 && loading ? (
               <tr>
                 <td colSpan={8} className="px-4 py-12 text-center text-editorial-text-muted">CARGANDO KARDEX...</td>
               </tr>
@@ -169,7 +257,22 @@ export default function KardexView() {
             )}
           </tbody>
         </table>
+        
+        {/* Load More Button */}
+        {hasMore && filteredMovements.length > 0 && (
+          <div className="p-4 flex justify-center border-t border-editorial-border/30 bg-editorial-surface">
+            <button
+              onClick={loadOlder}
+              disabled={loading}
+              className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/20 px-6 py-2 text-xs font-bold uppercase tracking-widest transition-colors flex items-center gap-2"
+            >
+              <DownloadCloud className={`w-4 h-4 ${loading ? 'animate-bounce' : ''}`} />
+              {loading ? 'Consultando en Servidor...' : 'Buscar movimientos antiguos en la nube'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
 }
+

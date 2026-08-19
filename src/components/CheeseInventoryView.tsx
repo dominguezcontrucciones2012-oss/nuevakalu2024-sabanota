@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { CheeseProduct, CheeseLedgerBatch, SupplierProfile } from '../types';
 import StockPurchasesView, { PurchaseItem } from './StockPurchasesView';
-import { getUnitLabel } from '../utils';
+import { getUnitLabel, formatCurrency, formatQuantity, parseSafeDecimal } from '../utils';
 import {
   Package,
   Plus,
@@ -107,19 +107,31 @@ export default function CheeseInventoryView({
     setNewName('');
   };
 
-  const handleSaveInlineEdit = async () => {
+  const handleSaveInlineEdit = async (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    
     if (!editingProduct || !editingProduct.id) return;
+    
     try {
-      await onUpdateProduct(editingProduct.id, {
-        purchasePrice: Number(editingProduct.purchasePrice || 0),
-        sellingPrice: Number(editingProduct.sellingPrice || 0),
-        stockKg: Number(editingProduct.stockKg || 0),
+      console.log('Iniciando guardado de edición para:', editingProduct.id);
+      
+      // Lanzamos la actualización sin await para no bloquear la UI si hay latencia de red.
+      // App.tsx ya maneja el estado local instantáneamente.
+      onUpdateProduct(editingProduct.id, {
+        purchasePrice: parseSafeDecimal(editingProduct.purchasePrice),
+        sellingPrice: parseSafeDecimal(editingProduct.sellingPrice),
+        stockKg: parseSafeDecimal(editingProduct.stockKg),
         unit: editingProduct.unit || 'Kg'
       });
+      
+      console.log('Edición procesada localmente, cerrando modo edición.');
       setEditingProduct(null);
-      onAddNotification('Producto actualizado correctamente.', 'success');
+      onAddNotification('Producto actualizado.', 'success');
     } catch (error) {
-      console.error(error);
+      console.error('Error al guardar edición inline:', error);
       onAddNotification('Fallo al guardar en la nube. Intente nuevamente.', 'warning');
     }
   };
@@ -412,12 +424,17 @@ export default function CheeseInventoryView({
                         <td className="py-4 px-4 font-sans text-editorial-text-muted">{p.origin || '-'}</td>
                         <td className="py-4 px-4 text-center">
                           {isEditing ? (
-                            <div className="flex items-center gap-1">
+                            <div key="edit-stock" className="flex items-center gap-1">
                               <input
-                                type="number"
+                                type="text"
+                                inputMode="decimal"
                                 value={editingProduct.stockKg ?? ''}
-                                onChange={e => setEditingProduct({ ...editingProduct, stockKg: parseFloat(e.target.value) || 0 })}
-                                className="w-16 h-8 bg-editorial-bg border border-editorial-border rounded text-center text-xs font-mono"
+                                onChange={e => {
+                                  const val = e.target.value;
+                                  const sanitizedStock = parseFloat(String(val).replace(/[^0-9.,]/g, '').replace(',', '.')) || 0;
+                                  setEditingProduct({ ...editingProduct, stockKg: sanitizedStock });
+                                }}
+                                className="w-24 h-8 bg-editorial-bg border border-editorial-border rounded text-center text-xs font-mono"
                               />
                               <select
                                 value={editingProduct.unit || 'Kg'}
@@ -430,8 +447,8 @@ export default function CheeseInventoryView({
                               </select>
                             </div>
                           ) : (
-                            <div className={`text-sm font-bold ${isSoldOut ? 'text-rose-400' : isLowStock ? 'text-amber-500' : 'text-editorial-text-primary'}`}>
-                              {Number(p.stockKg || 0).toFixed(1)} {getUnitLabel(p)}
+                            <div key="view-stock" className={`text-sm font-bold ${isSoldOut ? 'text-rose-400' : isLowStock ? 'text-amber-500' : 'text-editorial-text-primary'}`}>
+                              <span>{Number(p.stockKg || 0).toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} {getUnitLabel(p)}</span>
                             </div>
                           )}
                         </td>
@@ -476,10 +493,10 @@ export default function CheeseInventoryView({
                         </td>
                         <td className="py-4 px-4 text-center">
                           {isEditing ? (
-                            <div className="flex justify-center gap-1.5">
+                            <div key="edit-actions" className="flex justify-center gap-1.5">
                               <button
-                                onClick={handleSaveInlineEdit}
-                                className="p-1 border border-emerald-800 bg-emerald-950/20 text-emerald-400 rounded hover:bg-emerald-500 hover:text-white cursor-pointer"
+                                onClick={(e) => handleSaveInlineEdit(e)}
+                                className="p-1 border border-emerald-800 bg-emerald-950/20 text-emerald-400 rounded hover:bg-emerald-500 hover:text-white cursor-pointer active:scale-95 transition-transform"
                                 title="Guardar"
                               >
                                 <Check className="w-3.5 h-3.5" />
@@ -489,17 +506,17 @@ export default function CheeseInventoryView({
                                 className="p-1 border border-editorial-border text-rose-400 rounded hover:bg-rose-500 hover:text-white cursor-pointer"
                                 title="Cancelar"
                               >
-                                X
+                                <span>X</span>
                               </button>
                             </div>
                           ) : (
-                            <div className="flex justify-center gap-1.5">
+                            <div key="view-actions" className="flex justify-center gap-1.5">
                               <button
                                 onClick={() => {
                                   console.log('Producto a editar:', p);
                                   setEditingProduct({ ...p, unit: getUnitLabel(p) as any });
                                 }}
-                                className="p-1.5 border border-editorial-border text-editorial-text-muted hover:text-amber-500 hover:border-amber-500 rounded bg-editorial-card transition-all cursor-pointer"
+                                className="p-1 border border-editorial-border bg-editorial-bg text-editorial-text-primary rounded hover:bg-amber-500 hover:border-amber-500 hover:text-white cursor-pointer transition-colors"
                                 title="Editar"
                               >
                                 <Edit2 className="w-3.5 h-3.5" />
@@ -511,7 +528,7 @@ export default function CheeseInventoryView({
                                     onAddNotification(`Producto ${p.name} eliminado de la base de datos.`, 'info');
                                   }
                                 }}
-                                className="p-1.5 border border-editorial-border text-rose-400/80 hover:text-white hover:bg-rose-950/40 rounded transition-all cursor-pointer"
+                                className="p-1 border border-editorial-border bg-editorial-bg text-editorial-text-primary rounded hover:bg-rose-500 hover:border-rose-500 hover:text-white cursor-pointer transition-colors"
                                 title="Eliminar"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -721,7 +738,7 @@ export default function CheeseInventoryView({
                     <td className="py-3 px-3 font-mono font-bold">{b.id}</td>
                     <td className="py-3 px-3 font-serif font-extrabold text-editorial-text-primary">{b.productName}</td>
                     <td className="py-3 px-3 font-sans text-editorial-text-muted">{b.receivedDate}</td>
-                    <td className="py-3 px-3 text-right font-mono">{Number(b.initialWeightKg || 0).toFixed(1)} {getUnitLabel(b)}</td>
+                    <td className="py-3 px-3 text-right font-mono">{formatQuantity(b.initialWeightKg, getUnitLabel(b))}</td>
                     <td className="py-3 px-3 text-right font-mono font-bold text-editorial-text-primary">
                       {adjustingBatchId === b.id ? (
                         <input
@@ -733,7 +750,7 @@ export default function CheeseInventoryView({
                       )}
                     </td>
                     <td className="py-3 px-3 text-right font-mono text-rose-400">
-                      -{Number(b.shrinkageKg || 0).toFixed(1)} {getUnitLabel(b)} ({((Number(b.shrinkageKg || 0) / (Number(b.initialWeightKg) || 1)) * 100).toFixed(1)}%)
+                      -{formatQuantity(b.shrinkageKg, getUnitLabel(b))} ({((Number(b.shrinkageKg || 0) / (Number(b.initialWeightKg) || 1)) * 100).toFixed(1)}%)
                     </td>
                     <td className="py-3 px-3 text-center">
                       <span className={`px-2.5 py-0.5 rounded text-[9px] font-mono uppercase font-bold border ${

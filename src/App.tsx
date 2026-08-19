@@ -52,7 +52,8 @@ import ContadorIAView from './components/ContadorIAView';
 
 import { CheckCircle2, Info, AlertTriangle, X } from 'lucide-react';
 import { db } from './services/firebase';
-import { doc, updateDoc, increment, collection, onSnapshot, query, setDoc, deleteDoc, limit, orderBy } from 'firebase/firestore';
+import { doc, increment, collection, onSnapshot, query, deleteDoc, limit, orderBy } from 'firebase/firestore';
+import { guardianSetDoc as setDoc, guardianUpdateDoc as updateDoc } from './utils/firebaseGuardian';
 
 interface ToastNotification {
   id: string;
@@ -72,29 +73,76 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   // Unified States for Cheese ERP
-  const [cheeseProducts, setCheeseProducts] = useState<CheeseProduct[]>(INITIAL_CHEESE_PRODUCTS);
-  const [cheeseBatches, setCheeseBatches] = useState<CheeseLedgerBatch[]>(INITIAL_CHEESE_BATCHES);
-  const [clients, setClients] = useState<ClientProfile[]>(INITIAL_CLIENTS);
-  const [suppliers, setSuppliers] = useState<SupplierProfile[]>(INITIAL_SUPPLIERS);
-  const [bills, setBills] = useState<AccountBill[]>(INITIAL_BILLS);
-  const [expenses, setExpenses] = useState<OperatingExpense[]>(INITIAL_OPERATING_EXPENSES);
+  const [cheeseProducts, setCheeseProducts] = useState<CheeseProduct[]>(() => {
+    const saved = localStorage.getItem('kalu_inventory');
+    return saved ? JSON.parse(saved) : INITIAL_CHEESE_PRODUCTS;
+  });
+  const [cheeseBatches, setCheeseBatches] = useState<CheeseLedgerBatch[]>(() => {
+    const saved = localStorage.getItem('kalu_batches');
+    return saved ? JSON.parse(saved) : INITIAL_CHEESE_BATCHES;
+  });
+  const [clients, setClients] = useState<ClientProfile[]>(() => {
+    const saved = localStorage.getItem('kalu_clients');
+    return saved ? JSON.parse(saved) : INITIAL_CLIENTS;
+  });
+  const [suppliers, setSuppliers] = useState<SupplierProfile[]>(() => {
+    const saved = localStorage.getItem('kalu_suppliers');
+    return saved ? JSON.parse(saved) : INITIAL_SUPPLIERS;
+  });
+  const [bills, setBills] = useState<AccountBill[]>(() => {
+    const saved = localStorage.getItem('kalu_supplier_ledger'); // Using kalu_supplier_ledger for bills
+    return saved ? JSON.parse(saved) : INITIAL_BILLS;
+  });
+  const [expenses, setExpenses] = useState<OperatingExpense[]>(() => {
+    const saved = localStorage.getItem('kalu_expenses');
+    return saved ? JSON.parse(saved) : INITIAL_OPERATING_EXPENSES;
+  });
   const [complaints, setComplaints] = useState<CustomerComplaint[]>(INITIAL_COMPLAINTS);
   const [settings, setSettings] = useState<BusinessSettings>(DEFAULT_SETTINGS);
   const [mobileOrders, setMobileOrders] = useState<MobileOrder[]>([]);
 
   // Global Ledger States
-  const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
+  const [transactions, setTransactions] = useState<Transaction[]>(() => {
+    const saved = localStorage.getItem('kalu_sales_history');
+    return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
+  });
   const [users, setUsers] = useState<UserIdentity[]>(INITIAL_USERS);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>(INITIAL_PAYMENT_METHODS);
-  const [activities, setActivities] = useState<ActivityStream[]>(INITIAL_ACTIVITIES);
+  const [activities, setActivities] = useState<ActivityStream[]>(() => {
+    const saved = localStorage.getItem('kalu_activities');
+    return saved ? JSON.parse(saved) : INITIAL_ACTIVITIES;
+  });
 
   // Toast stack
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
 
   // Financial Metrics (Calculated dynamically or kept as state modifiers)
-  const [balance, setBalance] = useState<number>(0);
-  const [totalSalesCount, setTotalSalesCount] = useState<number>(0);
-  const [totalSalesRevenue, setTotalSalesRevenue] = useState<number>(0);
+  const [balance, setBalance] = useState<number>(() => {
+    const saved = localStorage.getItem('kalu_balance');
+    return saved ? parseFloat(saved) : 0;
+  });
+  const [totalSalesCount, setTotalSalesCount] = useState<number>(() => {
+    const saved = localStorage.getItem('kalu_sales_count');
+    return saved ? parseInt(saved) : 0;
+  });
+  const [totalSalesRevenue, setTotalSalesRevenue] = useState<number>(() => {
+    const saved = localStorage.getItem('kalu_sales_revenue');
+    return saved ? parseFloat(saved) : 0;
+  });
+
+  // Nuevo estado para el guardián
+  const [firebaseLoopAlert, setFirebaseLoopAlert] = useState<{message: string, isBlocked: boolean} | null>(null);
+
+  useEffect(() => {
+    const handleLoopDetection = (e: any) => {
+      setFirebaseLoopAlert({ message: e.detail.message, isBlocked: true });
+      setTimeout(() => setFirebaseLoopAlert(null), e.detail.blockDurationMs);
+    };
+    
+    window.addEventListener('FIREBASE_LOOP_DETECTED', handleLoopDetection);
+    return () => window.removeEventListener('FIREBASE_LOOP_DETECTED', handleLoopDetection);
+  }, []);
+
 
   // Real-time Firebase Listeners
   useEffect(() => {
@@ -145,6 +193,38 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('kalu_suppliers', JSON.stringify(suppliers));
   }, [suppliers]);
+
+  useEffect(() => {
+    localStorage.setItem('kalu_supplier_ledger', JSON.stringify(bills));
+  }, [bills]);
+
+  useEffect(() => {
+    localStorage.setItem('kalu_sales_history', JSON.stringify(transactions));
+  }, [transactions]);
+
+  useEffect(() => {
+    localStorage.setItem('kalu_activities', JSON.stringify(activities));
+  }, [activities]);
+
+  useEffect(() => {
+    localStorage.setItem('kalu_balance', balance.toString());
+  }, [balance]);
+
+  useEffect(() => {
+    localStorage.setItem('kalu_sales_count', totalSalesCount.toString());
+  }, [totalSalesCount]);
+
+  useEffect(() => {
+    localStorage.setItem('kalu_sales_revenue', totalSalesRevenue.toString());
+  }, [totalSalesRevenue]);
+
+  useEffect(() => {
+    localStorage.setItem('kalu_batches', JSON.stringify(cheeseBatches));
+  }, [cheeseBatches]);
+
+  useEffect(() => {
+    localStorage.setItem('kalu_expenses', JSON.stringify(expenses));
+  }, [expenses]);
 
   // Help alert helper
   const addNotification = (message: string, type: 'success' | 'info' | 'warning' = 'info') => {
@@ -203,6 +283,8 @@ export default function App() {
         const item = saleItems.find((si) => si.productId === p.id);
         if (item) {
           const newStock = Math.max(0, p.stockKg - item.quantityKg);
+          // Persist to Firebase immediately
+          updateDoc(doc(db, 'products', p.id), { stockKg: newStock }).catch(e => console.error("Error updating stock", e));
           return { ...p, stockKg: newStock };
         }
         return p;
@@ -221,18 +303,25 @@ export default function App() {
         prevClients.map((c) => {
           if (c.id === clientId) {
             const addedPoints = Math.round(saleTotal * 0.1);
+            let updatedClient;
             if (paymentMethodType === 'credit' || paymentMethodType === 'Libreta de Queso') {
-              return {
+              updatedClient = {
                 ...c,
-                outstandingDebt: c.outstandingDebt + debtAmount,
-                loyaltyPoints: c.loyaltyPoints + addedPoints
+                outstandingDebt: Number(c.outstandingDebt || 0) + debtAmount,
+                loyaltyPoints: Number(c.loyaltyPoints || 0) + addedPoints
               };
             } else {
-              return {
+              updatedClient = {
                 ...c,
-                loyaltyPoints: c.loyaltyPoints + addedPoints
+                loyaltyPoints: Number(c.loyaltyPoints || 0) + addedPoints
               };
             }
+            // Persist client updates to Firebase
+            updateDoc(doc(db, 'clients', clientId), { 
+              outstandingDebt: updatedClient.outstandingDebt,
+              loyaltyPoints: updatedClient.loyaltyPoints
+            }).catch(e => console.error("Error updating client", e));
+            return updatedClient;
           }
           return c;
         })
@@ -259,10 +348,16 @@ export default function App() {
       setSuppliers((prevSuppliers) =>
         prevSuppliers.map((s) => {
           if (s.id === supplierId) {
-            const currentDebt = s.storeDebt || 0;
+            const currentDebt = Number(s.storeDebt || 0);
+            const newStoreDebt = currentDebt + debtAmount;
+            // Persist supplier debt updates to Firebase
+            updateDoc(doc(db, 'suppliers', supplierId), {
+              storeDebt: newStoreDebt
+            }).catch(e => console.error("Error updating supplier store debt", e));
+            
             return {
               ...s,
-              storeDebt: currentDebt + debtAmount
+              storeDebt: newStoreDebt
             };
           }
           return s;
@@ -289,6 +384,14 @@ export default function App() {
     setTotalSalesRevenue((prev) => prev + saleTotal);
     setTotalSalesCount((prev) => prev + 1);
 
+    // Determine the precise payment method string
+    let finalPaymentMethod = paymentMethodType || 'Efectivo';
+    if (debtAmount > 0 && paidAmount === 0) {
+      finalPaymentMethod = supplierId ? 'Libreta Quesero' : 'Crédito / Fiado';
+    } else if (debtAmount > 0 && paidAmount! > 0) {
+      finalPaymentMethod = `Multipago (Efectivo + ${supplierId ? 'Libreta' : 'Crédito'})`;
+    }
+
     // Add general transaction record
     const newTx: Transaction = {
       id: `TX-${Date.now().toString().slice(-4)}`,
@@ -298,9 +401,20 @@ export default function App() {
       invoiceNumber: `F-${Math.floor(Math.random() * 9000 + 1000)}`,
       amount: saleTotal,
       isIncome: true,
-      status: 'Completado'
+      status: 'Completado',
+      paymentMethod: finalPaymentMethod,
+      items: saleItems // Saving items to show in the ticket later
     };
+    
+    // Save to Local State immediately (which triggers localStorage backup)
     setTransactions((prev) => [newTx, ...prev]);
+
+    // Save to Firebase so it syncs globally and doesn't get overwritten by the listener
+    try {
+      await setDoc(doc(db, 'transactions', newTx.id), newTx);
+    } catch (err) {
+      console.error("Error saving transaction to Firebase:", err);
+    }
 
     // Activity Stream
     const newAct: ActivityStream = {
@@ -416,6 +530,12 @@ export default function App() {
       notes: note || (movementType === 'cargo' ? 'Consumo Fiado' : 'Abono a Libreta')
     };
     setTransactions((prev) => [newTx, ...prev]);
+
+    try {
+      setDoc(doc(db, 'transactions', newTx.id), newTx);
+    } catch (err) {
+      console.error("Error saving supplier transaction to Firebase:", err);
+    }
   };
 
   const handleNetSupplierBalances = (supplierId: string) => {
@@ -474,6 +594,12 @@ export default function App() {
     };
     setTransactions((prev) => [newTx, ...prev]);
 
+    try {
+      setDoc(doc(db, 'transactions', newTx.id), newTx);
+    } catch (err) {
+      console.error("Error saving net transaction to Firebase:", err);
+    }
+
     addNotification(`Intercambio en Libreta de Queso: Se han compensado $${netAmount.toLocaleString()} M.N. de deudas cruzadas.`, 'success');
   };
 
@@ -494,6 +620,11 @@ export default function App() {
         status: 'Completado'
       };
       setTransactions(prev => [newTx, ...prev]);
+      try {
+        setDoc(doc(db, 'transactions', newTx.id), newTx);
+      } catch (err) {
+        console.error("Error saving payment to Firebase:", err);
+      }
     }
   };
 
@@ -576,6 +707,11 @@ export default function App() {
         status: 'Completado'
       };
       setTransactions((prev) => [newTx, ...prev]);
+      try {
+        setDoc(doc(db, 'transactions', newTx.id), newTx);
+      } catch (err) {
+        console.error("Error saving order tx to Firebase:", err);
+      }
 
       // Activity Stream log
       const newAct: ActivityStream = {
@@ -650,7 +786,7 @@ export default function App() {
   // 3. Purchase load (Carga de compras + balance owed increment)
   const handleLoadPurchase = async (purchase: {
     supplierId: string;
-    items: { productId: string; quantityKg: number; purchasePrice: number; sellingPrice: number; marginPercent: number; name: string; }[];
+    items: { productId: string; quantityKg: number; purchasePrice: number; sellingPrice: number; marginPercent: number; name: string; createNewItem?: boolean; }[];
     isCredit: boolean;
   }) => {
     const selectedSup = suppliers.find(s => s.id === purchase.supplierId);
@@ -662,17 +798,40 @@ export default function App() {
     try {
       // Process each item asynchronously in Firebase
       for (const item of purchase.items) {
-        totalCost += item.quantityKg * item.purchasePrice;
+        totalCost += (item.quantityKg || 0) * (item.purchasePrice || 0);
 
-        const prod = cheeseProducts.find(p => p.id === item.productId);
-        if (prod) {
+        let prod = cheeseProducts.find(p => p.id === item.productId);
+
+        if (item.createNewItem && !prod) {
+          const newProdRef = doc(collection(db, 'products'));
+          const newProd: CheeseProduct = {
+            id: newProdRef.id,
+            name: item.name,
+            category: 'Fresco', // Default or guess
+            stockKg: item.quantityKg,
+            purchasePrice: item.purchasePrice,
+            sellingPrice: item.sellingPrice || 0,
+            alertThreshold: 5,
+            agingDays: 0,
+            origin: selectedSup?.name || '',
+            unit: 'Kg'
+          };
+          await setDoc(newProdRef, newProd);
+          prod = newProd;
+          
+          setCheeseProducts(prev => [...prev, newProd]);
+        } else if (prod) {
+          const currentStock = prod.stockKg || 0;
           // Update product document atomically
           await updateDoc(doc(db, 'products', prod.id), {
-            stockKg: increment(item.quantityKg),
+            stockKg: increment(Number(item.quantityKg)),
             purchasePrice: item.purchasePrice,
-            sellingPrice: item.sellingPrice
+            sellingPrice: item.sellingPrice > 0 ? item.sellingPrice : (prod.sellingPrice || 0)
           });
+        }
 
+        if (prod) {
+          const currentStock = prod.stockKg || 0;
           // Record Kardex Movement
           const kardexRef = doc(collection(db, 'kardex'));
           const kardexMovement: KardexMovement = {
@@ -682,11 +841,11 @@ export default function App() {
             productName: prod.name,
             unit: prod.unit || 'Kg',
             type: 'ENTRADA_COMPRA',
-            quantity: item.quantityKg,
-            previousStock: prod.stockKg,
-            newStock: prod.stockKg + item.quantityKg,
-            unitCost: item.purchasePrice,
-            totalCost: item.purchasePrice * item.quantityKg,
+            quantity: Number(item.quantityKg),
+            previousStock: currentStock,
+            newStock: currentStock + Number(item.quantityKg),
+            unitCost: Number(item.purchasePrice),
+            totalCost: Number(item.purchasePrice * item.quantityKg),
             referenceId: purchaseTxId,
             userOrCashier: 'Sistema de Compras'
           };
@@ -699,8 +858,31 @@ export default function App() {
         // Here we could also use an atomic increment for a balance doc if one existed,
         // but for now we rely on the local state + transactions collection as it was before.
       } else {
+        let deductionAmount = 0;
+        let newBalanceOwed = 0;
+        let newStoreDebt = 0;
+
+        const currentDebt = selectedSup.storeDebt || 0;
+        const currentBalanceOwed = selectedSup.balanceOwed || 0;
+
+        if (currentDebt > 0) {
+          if (totalCost >= currentDebt) {
+            deductionAmount = currentDebt;
+            newBalanceOwed = currentBalanceOwed + (totalCost - currentDebt);
+            newStoreDebt = 0;
+          } else {
+            deductionAmount = totalCost;
+            newBalanceOwed = currentBalanceOwed;
+            newStoreDebt = currentDebt - totalCost;
+          }
+        } else {
+          newBalanceOwed = currentBalanceOwed + totalCost;
+          newStoreDebt = currentDebt;
+        }
+
         await updateDoc(doc(db, 'suppliers', purchase.supplierId), {
-          balanceOwed: increment(totalCost)
+          balanceOwed: newBalanceOwed,
+          storeDebt: newStoreDebt
         });
       }
 
@@ -719,14 +901,22 @@ export default function App() {
         if (pIndex !== -1) {
           nextProducts[pIndex] = {
             ...nextProducts[pIndex],
-            stockKg: nextProducts[pIndex].stockKg + item.quantityKg,
-            purchasePrice: item.purchasePrice,
-            sellingPrice: item.sellingPrice
+            stockKg: nextProducts[pIndex].stockKg + Number(item.quantityKg),
+            purchasePrice: Number(item.purchasePrice),
+            sellingPrice: item.sellingPrice > 0 ? item.sellingPrice : nextProducts[pIndex].sellingPrice
           };
         }
       });
       return nextProducts;
     });
+
+    const txItems = purchase.items.map(i => ({
+      name: i.name,
+      kg: Number(i.quantityKg),
+      pricePerKg: Number(i.purchasePrice),
+      totalUsd: Number(i.quantityKg * i.purchasePrice),
+      totalBs: Number((i.quantityKg * i.purchasePrice) * (settings.exchangeRate || 42.50))
+    }));
 
     if (!purchase.isCredit) {
       // Deduct from business balance immediately (Cash payment)
@@ -740,32 +930,65 @@ export default function App() {
         amount: totalCost,
         isIncome: false,
         status: 'Completado',
-        paymentMethod: 'Efectivo / Caja Chica'
+        paymentMethod: 'Efectivo / Caja Chica',
+        items: txItems
       };
       setTransactions((prev) => [newTx, ...prev]);
+      try {
+        setDoc(doc(db, 'transactions', newTx.id), newTx);
+      } catch (err) {
+        console.error("Error saving cash purchase to Firebase:", err);
+      }
     } else {
+      let deductionAmount = 0;
+      let newBalanceOwed = 0;
+      let newStoreDebt = 0;
+      const currentDebt = selectedSup.storeDebt || 0;
+      const currentBalanceOwed = selectedSup.balanceOwed || 0;
+
+      if (currentDebt > 0) {
+        if (totalCost >= currentDebt) {
+          deductionAmount = currentDebt;
+          newBalanceOwed = currentBalanceOwed + (totalCost - currentDebt);
+          newStoreDebt = 0;
+        } else {
+          deductionAmount = totalCost;
+          newBalanceOwed = currentBalanceOwed;
+          newStoreDebt = currentDebt - totalCost;
+        }
+      } else {
+        newBalanceOwed = currentBalanceOwed + totalCost;
+        newStoreDebt = currentDebt;
+      }
+
       // Increase supplier's balance owed (Accounts payable)
       setSuppliers((prev) =>
         prev.map((s) => {
           if (s.id === purchase.supplierId) {
-            return { ...s, balanceOwed: s.balanceOwed + totalCost };
+            return { ...s, balanceOwed: newBalanceOwed, storeDebt: newStoreDebt };
           }
           return s;
         })
       );
 
-      // Add to bills pay list
-      const newBill: AccountBill = {
-        id: `bill-pay-${Date.now()}`,
-        type: 'payable',
-        entityId: purchase.supplierId,
-        entityName: selectedSup.name,
-        amount: totalCost,
-        dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-        status: 'Pendiente',
-        notes: `Compra Múltiple: ${purchase.items.length} ítems`
-      };
-      setBills((prev) => [newBill, ...prev]);
+      // Add to bills pay list (only if there is a remaining balance to pay)
+      if (newBalanceOwed > selectedSup.balanceOwed) {
+        const newBill: AccountBill = {
+          id: `bill-pay-${Date.now()}`,
+          type: 'payable',
+          entityId: purchase.supplierId,
+          entityName: selectedSup.name,
+          amount: totalCost - deductionAmount,
+          dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+          status: 'Pendiente',
+          notes: `Compra Múltiple: ${purchase.items.length} ítems`
+        };
+        setBills((prev) => [newBill, ...prev]);
+      }
+
+      const notes = deductionAmount > 0 
+        ? `Recibido Queso ($${totalCost.toFixed(2)}) - Cobro deuda POS (-$${deductionAmount.toFixed(2)}) = A favor: $${(totalCost - deductionAmount).toFixed(2)}`
+        : `Recepción Queso a Libreta ($${totalCost.toFixed(2)}).`;
 
       // Create a transaction record (compras) as pending
       const newTx: Transaction = {
@@ -776,9 +999,16 @@ export default function App() {
         invoiceNumber: purchaseTxId,
         amount: totalCost,
         isIncome: false,
-        status: 'Pendiente'
+        status: 'Pendiente',
+        notes: notes,
+        items: txItems
       };
       setTransactions((prev) => [newTx, ...prev]);
+      try {
+        setDoc(doc(db, 'transactions', newTx.id), newTx);
+      } catch (err) {
+        console.error("Error saving pending purchase to Firebase:", err);
+      }
     }
 
     // Add activity
@@ -1001,6 +1231,24 @@ export default function App() {
     }
   };
 
+  const handleResetAccounting = async () => {
+    // Import dynamically or assume it's imported (wait, let me import it at the top)
+    // Wipe local state
+    setTransactions([]);
+    setBills([]);
+    setExpenses([]);
+    setActivities([]);
+    setBalance(0);
+    setTotalSalesCount(0);
+    setTotalSalesRevenue(0);
+    setClients(prev => prev.map(c => ({ ...c, outstandingDebt: 0 })));
+    setSuppliers(prev => prev.map(s => ({ ...s, balanceOwed: 0, storeDebt: 0 })));
+    
+    // Wipe Firebase data via backupService
+    const { resetAccountingData } = await import('./services/backupService');
+    await resetAccountingData();
+  };
+
 
 
   if (!isAuthenticated) {
@@ -1163,6 +1411,7 @@ export default function App() {
               users={users}
               onUpdateSettings={handleUpdateSettings}
               onAddNotification={addNotification}
+              onResetAccounting={handleResetAccounting}
             />
           )}
 
@@ -1175,6 +1424,18 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {firebaseLoopAlert && (
+        <div className="fixed top-0 left-0 right-0 z-[9999] bg-rose-600 text-white px-4 py-3 flex items-center justify-between shadow-2xl animate-fade-in border-b-4 border-rose-900">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="w-6 h-6 animate-pulse text-rose-200" />
+            <div className="font-mono">
+              <span className="font-bold block text-sm uppercase tracking-wider">Bloqueo de Emergencia Activo</span>
+              <span className="text-xs text-rose-100">{firebaseLoopAlert.message}</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modern High-End Editorial Toast Stack Container */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 max-w-sm w-full pointer-events-none">

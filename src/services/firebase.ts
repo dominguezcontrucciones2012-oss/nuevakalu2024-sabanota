@@ -4,13 +4,12 @@ import { getStorage } from 'firebase/storage';
 
 // Reemplazar con las credenciales reales provistas por el usuario
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDzBNbtHgQsFdLaPMmPgPozcrQ69fQUJYo",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "sistemekalu.firebaseapp.com",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "sistemekalu",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "sistemekalu.firebasestorage.app",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "924429764977",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:924429764977:web:6e300555e2850618f74ed0",
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "G-1PYQG9B27V"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDmvrR4PyCeITbDccIW0sx_wAwVh_vPgNc",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "sistema-kalu-crm.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "sistema-kalu-crm",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "sistema-kalu-crm.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "640256708568",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:640256708568:web:2ca6de7fe49e6dc2fcecad"
 };
 
 // Initialize Firebase

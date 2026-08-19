@@ -14,6 +14,7 @@ export interface Transaction {
   status: 'Completado' | 'Pendiente';
   paymentMethod?: string;
   notes?: string;
+  items?: any[];
 }
 
 export interface UserIdentity {

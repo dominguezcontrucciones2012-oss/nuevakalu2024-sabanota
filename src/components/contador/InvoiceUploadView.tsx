@@ -314,7 +314,7 @@ export default function InvoiceUploadView({ onBack }: InvoiceUploadViewProps) {
         try {
           const supRef = doc(db, 'suppliers', supplierId);
           await updateDoc(supRef, {
-            balanceOwed: increment(totalInvoiceCost)
+            balanceOwed: increment(Number(totalInvoiceCost))
           });
         } catch (e) {
           console.error("Error al actualizar deuda del proveedor:", e);

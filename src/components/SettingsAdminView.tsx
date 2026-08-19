@@ -24,13 +24,15 @@ interface SettingsAdminViewProps {
   users: UserIdentity[];
   onUpdateSettings: (newSettings: Partial<BusinessSettings>) => void;
   onAddNotification: (msg: string, type: 'success' | 'info' | 'warning') => void;
+  onResetAccounting?: () => Promise<void>;
 }
 
 export default function SettingsAdminView({
   settings,
   users,
   onUpdateSettings,
-  onAddNotification
+  onAddNotification,
+  onResetAccounting
 }: SettingsAdminViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<'config' | 'users' | 'backup' | 'maintenance'>('config');
 
@@ -250,19 +252,24 @@ export default function SettingsAdminView({
   };
 
   const handleRestoreSnapshot = async () => {
-    const confirmText = window.prompt('ATENCIÓN: Esto revertirá TODA la base de datos (Quesos, Ventas, Clientes) al último Snapshot. Escriba RESTAURAR para confirmar:');
-    if (confirmText !== 'RESTAURAR') {
+    const confirmText = window.prompt('ATENCIÓN: Esto revertirá y dejará EN CERO toda la contabilidad (Ventas, Libreta, Gastos). Los productos no se borrarán. Escriba PONER EN CERO para confirmar:');
+    if (confirmText !== 'PONER EN CERO') {
       onAddNotification('Restauración cancelada o palabra incorrecta.', 'info');
       return;
     }
 
     try {
       setIsSnapshotLoading(true);
-      onAddNotification('Revirtiendo estado de la base de datos... Por favor espere.', 'info');
-      await restoreSnapshot();
-      onAddNotification('Base de datos revertida exitosamente. Recargando datos...', 'success');
+      onAddNotification('Borrando datos contables y reiniciando libretas... Por favor espere.', 'info');
+      
+      // Call the global reset function passed from App.tsx
+      if (onResetAccounting) {
+        await onResetAccounting();
+      }
+
+      onAddNotification('Contabilidad reiniciada a cero exitosamente. Datos locales actualizados.', 'success');
     } catch (err: any) {
-      onAddNotification('Error al restaurar Snapshot: ' + err.message, 'warning');
+      onAddNotification('Error al reiniciar contabilidad: ' + err.message, 'warning');
     } finally {
       setIsSnapshotLoading(false);
     }

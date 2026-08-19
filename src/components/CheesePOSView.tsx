@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOrder, Transaction } from '../types';
 import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap } from 'lucide-react';
+import { parseSafeDecimal, formatCurrency, formatQuantity } from '../utils';
 
 interface CheesePOSViewProps {
   exchangeRate: number;
@@ -39,12 +40,7 @@ export default function CheesePOSView({
   onAddNotification
 }: CheesePOSViewProps) {
   // Helper para procesar números y precios de manera segura (Regla estricta 2)
-  const parseNum = (val: any) => {
-    if (typeof val === 'number') return isNaN(val) ? 0 : val;
-    if (!val) return 0;
-    const parsed = parseFloat(String(val).replace(',', '.'));
-    return isNaN(parsed) ? 0 : parsed;
-  };
+  const parseNum = (val: any) => parseSafeDecimal(val);
   const [activeTab, setActiveTab] = useState<'pos' | 'history' | 'closing'>('pos');
   // POS Register States
   const [searchQuery, setSearchQuery] = useState('');
@@ -119,9 +115,11 @@ export default function CheesePOSView({
   const [closingReport, setClosingReport] = useState<any | null>(null);
 
   // Calculate Cart Totals (Regla estricta 2)
-  const subtotal = cart.reduce((sum, item) => sum + (parseNum(item.subtotal) || (parseNum(item.quantityKg) * parseNum(item.pricePerKg)) || 0), 0);
-  const tax = subtotal * 0.16; // 16% IVA
-  const total = subtotal + tax;
+  const { subtotal, tax, total } = React.useMemo(() => {
+    const sub = cart.reduce((sum, item) => sum + (parseNum(item.subtotal) || (parseNum(item.quantityKg) * parseNum(item.pricePerKg)) || 0), 0);
+    const tx = sub * 0.16; // 16% IVA
+    return { subtotal: sub, tax: tx, total: sub + tx };
+  }, [cart]);
 
   const handleAddToCart = (product: CheeseProduct, qty: number = 1.0) => {
     const stock = parseNum(product.stockKg);
@@ -199,8 +197,8 @@ export default function CheesePOSView({
   const totalAbonado = addedPayments.reduce((sum, p) => sum + p.amount, 0);
 
   const handleAddPayment = () => {
-    const rawAmount = parseFloat(paidAmountInput);
-    if (isNaN(rawAmount) || rawAmount <= 0) {
+    const rawAmount = parseSafeDecimal(paidAmountInput);
+    if (rawAmount <= 0) {
       onAddNotification('Ingrese un monto válido a abonar.', 'warning');
       return;
     }
@@ -761,7 +759,7 @@ export default function CheesePOSView({
                 <div className="h-px bg-editorial-border/60 my-4" />
 
                 {/* Calculations summary */}
-                <div className="space-y-1.5 font-mono text-[11px] text-editorial-text-muted">
+                <div key={Date.now() + Math.random()} className="space-y-1.5 font-mono text-[11px] text-editorial-text-muted">
                   <div className="flex justify-between">
                     <span>Total parcial:</span>
                     <span className="text-editorial-text-primary">${subtotal.toFixed(2)}</span>
@@ -1241,6 +1239,99 @@ export default function CheesePOSView({
           </div>
         </div>
       )}
+
+      {/* Ticket Preview Modal */}
+      {lastReceipt && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-editorial-bg border border-editorial-border rounded w-full max-w-sm flex flex-col shadow-2xl overflow-hidden animate-slide-up print-ticket">
+            
+            {/* Modal Header (No print) */}
+            <div className="flex items-center justify-between p-4 bg-editorial-card border-b border-editorial-border/60 no-print">
+              <h3 className="font-serif font-bold text-editorial-text-primary text-lg">Ticket de Venta</h3>
+              <button 
+                onClick={() => setLastReceipt(null)}
+                className="text-editorial-text-muted hover:text-rose-400 transition-colors p-1"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Ticket Printable Content */}
+            <div className="p-6 bg-white text-black font-mono text-xs space-y-4 relative overflow-y-auto max-h-[60vh]" id="ticket-printable-area">
+              <div className="text-center space-y-1 pb-4 border-b border-dashed border-gray-400">
+                <h2 className="font-bold text-lg uppercase tracking-tight">Kalu Comercializadora</h2>
+                <p className="text-[10px]">C.A. / RIF: J-00000000-0</p>
+                <p className="text-[10px] mt-2 font-bold uppercase">{lastReceipt.invoiceNumber || lastReceipt.id}</p>
+                <p className="text-[10px]">{lastReceipt.date}</p>
+              </div>
+
+              <div className="space-y-1">
+                <p><span className="font-bold">Cliente:</span> {lastReceipt.clientName || lastReceipt.entity || 'Cliente Público'}</p>
+                <p><span className="font-bold">Método:</span> {lastReceipt.paymentMethod || 'Efectivo'}</p>
+              </div>
+
+              <div className="border-t border-dashed border-gray-400 my-2" />
+              
+              <table className="w-full text-left text-[10px]">
+                <thead>
+                  <tr className="border-b border-dashed border-gray-400">
+                    <th className="py-1">CANT</th>
+                    <th className="py-1">PRODUCTO</th>
+                    <th className="py-1 text-right">TOTAL</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-dashed divide-gray-200">
+                  {lastReceipt.items && lastReceipt.items.length > 0 ? (
+                    lastReceipt.items.map((it: any, idx: number) => (
+                      <tr key={idx}>
+                        <td className="py-1.5 align-top">{it.quantityKg || it.quantity || 1}</td>
+                        <td className="py-1.5 align-top pr-2">{it.name} <br/><span className="text-[9px] text-gray-500">${parseNum(it.pricePerKg).toFixed(2)}/kg</span></td>
+                        <td className="py-1.5 align-top text-right">${parseNum(it.subtotal).toFixed(2)}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={3} className="py-2 text-center text-gray-500 italic">{lastReceipt.notes || 'Varios Artículos'}</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+
+              <div className="border-t border-dashed border-gray-400 my-2" />
+
+              <div className="space-y-1 text-right">
+                <p className="text-[11px]">Subtotal: ${(parseNum(lastReceipt.amount || lastReceipt.total) / 1.16).toFixed(2)}</p>
+                <p className="text-[11px]">IVA (16%): ${(parseNum(lastReceipt.amount || lastReceipt.total) - (parseNum(lastReceipt.amount || lastReceipt.total) / 1.16)).toFixed(2)}</p>
+                <p className="text-lg font-bold mt-1 uppercase">Total: ${(parseNum(lastReceipt.amount || lastReceipt.total)).toFixed(2)}</p>
+                <p className="text-xs font-bold text-gray-600">Bs. {(parseNum(lastReceipt.amount || lastReceipt.total) * exchangeRate).toFixed(2)}</p>
+              </div>
+
+              <div className="text-center pt-6 text-[9px] text-gray-500 uppercase">
+                <p>¡Gracias por su compra!</p>
+                <p>kalu.com.ve</p>
+              </div>
+            </div>
+
+            {/* Modal Footer actions (No print) */}
+            <div className="p-4 bg-editorial-card border-t border-editorial-border/60 flex gap-3 no-print">
+              <button
+                onClick={() => setLastReceipt(null)}
+                className="flex-1 px-4 py-2 border border-editorial-border text-editorial-text-primary text-xs font-bold uppercase tracking-wider rounded hover:bg-editorial-bg transition-colors"
+              >
+                Cerrar
+              </button>
+              <button
+                onClick={() => window.print()}
+                className="flex-1 px-4 py-2 bg-amber-500 hover:brightness-110 text-white text-xs font-bold uppercase tracking-wider rounded transition-colors flex items-center justify-center gap-2"
+              >
+                <Printer className="w-4 h-4" />
+                Imprimir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
