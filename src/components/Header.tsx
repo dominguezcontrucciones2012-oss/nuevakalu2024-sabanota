@@ -15,9 +15,10 @@ interface HeaderProps {
   notificationCount: number;
   isSidebarOpen?: boolean;
   onToggleSidebar?: () => void;
+  exchangeRate?: number;
 }
 
-export default function Header({ currentView, onSimulateSale, notificationCount, isSidebarOpen = true, onToggleSidebar }: HeaderProps) {
+export default function Header({ currentView, onSimulateSale, notificationCount, isSidebarOpen = true, onToggleSidebar, exchangeRate = 0 }: HeaderProps) {
   const [gatewayStatus, setGatewayStatus] = useState<{ isOnline: boolean, battery: number, lastSeenMs: number }>({ isOnline: false, battery: 0, lastSeenMs: 0 });
 
   useEffect(() => {
@@ -100,8 +101,15 @@ export default function Header({ currentView, onSimulateSale, notificationCount,
         </div>
       </div>
 
-      {/* Right Area: Gateway Status Badge */}
+      {/* Right Area: Exchange Rate & Gateway Status */}
       <div className="flex items-center gap-4">
+        {exchangeRate > 0 && (
+          <div className="flex items-center gap-2 bg-amber-500/10 px-3 py-2 rounded border border-amber-500/30 w-fit animate-in fade-in duration-500">
+            <span className="text-xs font-bold text-amber-500 tracking-widest font-mono">
+              TASA BCV: Bs. {exchangeRate.toFixed(2)} / $
+            </span>
+          </div>
+        )}
         <div className="flex items-center gap-2 bg-black/40 p-2 rounded border border-white/10 w-fit">
           <div className={`w-3 h-3 rounded-full ${gatewayStatus.isOnline ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.8)] animate-pulse' : 'bg-red-500 opacity-50'}`} />
           <span className="text-xs font-bold text-white/80 uppercase tracking-wider">Gateway Android: {gatewayStatus.isOnline ? 'ONLINE' : 'OFFLINE'}</span>

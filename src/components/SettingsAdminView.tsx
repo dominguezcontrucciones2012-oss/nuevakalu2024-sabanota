@@ -365,6 +365,14 @@ export default function SettingsAdminView({
             </div>
 
             <div className="space-y-1.5">
+              <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Tasa de Cambio Oficial (Bs / $)</label>
+              <input
+                type="number" step="0.01" required value={exchangeRate} onChange={e => setExchangeRate(parseFloat(e.target.value) || 0)}
+                className="w-full h-11 px-3 bg-amber-500/10 border border-amber-500/50 rounded text-xs text-amber-500 font-mono font-bold focus:outline-none focus:border-amber-500"
+              />
+            </div>
+
+            <div className="space-y-1.5">
               <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Tasa Impositiva Local de IVA (%)</label>
               <input
                 type="number" required value={taxRate} onChange={e => setTaxRate(parseFloat(e.target.value) || 0)}

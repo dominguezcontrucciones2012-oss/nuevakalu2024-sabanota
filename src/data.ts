@@ -58,14 +58,28 @@ export const REVENUE_CHART_DATA: RevenuePoint[] = [
   { label: '25 Oct', value: 142890 }
 ];
 
+import migratedData from './migrated_data.json';
+
+if (!localStorage.getItem('kalu_inventory')) {
+  localStorage.setItem('kalu_inventory', JSON.stringify(migratedData.products));
+}
+if (!localStorage.getItem('kalu_clients')) {
+  localStorage.setItem('kalu_clients', JSON.stringify(migratedData.clients));
+}
+
+if (!localStorage.getItem('kalu_suppliers')) {
+  localStorage.setItem('kalu_suppliers', JSON.stringify(migratedData.suppliers || []));
+}
+
 // Cheese-Specific Preloaded Data
-export const INITIAL_CHEESE_PRODUCTS: CheeseProduct[] = [];
+export const INITIAL_CHEESE_PRODUCTS: CheeseProduct[] = JSON.parse(localStorage.getItem('kalu_inventory') || '[]');
 
 export const INITIAL_CHEESE_BATCHES: CheeseLedgerBatch[] = [];
 
-export const INITIAL_CLIENTS: ClientProfile[] = [];
+export const INITIAL_CLIENTS: ClientProfile[] = JSON.parse(localStorage.getItem('kalu_clients') || '[]');
 
-export const INITIAL_SUPPLIERS: SupplierProfile[] = [];
+const storedSuppliers = JSON.parse(localStorage.getItem('kalu_suppliers') || '[]');
+export const INITIAL_SUPPLIERS: SupplierProfile[] = storedSuppliers.length > 0 ? storedSuppliers : (migratedData.suppliers || []);
 
 export const INITIAL_BILLS: AccountBill[] = [];
 

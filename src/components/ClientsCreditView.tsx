@@ -134,13 +134,17 @@ export default function ClientsCreditView({
   };
 
   // Filter clients
-  const filteredClients = clients.filter(c => 
-    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (c.email && c.email.toLowerCase().includes(searchQuery.toLowerCase())) ||
-    (c.phone && c.phone.includes(searchQuery))
-  );
+  const filteredClients = clients.filter(c => {
+    try {
+      return (c.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+             (c.email || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+             (c.phone || '').includes(searchQuery);
+    } catch (e) {
+      return false;
+    }
+  });
 
-  const clientsWithDebt = clients.filter(c => c.outstandingDebt > 0);
+  const clientsWithDebt = clients.filter(c => (c.outstandingDebt || 0) > 0);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -245,7 +249,7 @@ export default function ClientsCreditView({
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredClients.map((c) => {
-              const hasDebt = c.outstandingDebt > 0;
+              const hasDebt = (c.outstandingDebt || 0) > 0;
               return (
                 <div key={c.id} className="bg-editorial-card border border-editorial-border rounded p-5 flex flex-col justify-between hover:border-amber-500/40 transition-all duration-300">
                   <div className="space-y-3">
@@ -288,7 +292,7 @@ export default function ClientsCreditView({
                     <div>
                       <span className="text-[9px] text-editorial-text-muted uppercase block">Saldo Deudor</span>
                       <div className={`text-xs font-bold mt-0.5 ${hasDebt ? 'text-rose-400' : 'text-editorial-text-muted/60'}`}>
-                        ${c.outstandingDebt.toFixed(2)}
+                        ${(c.outstandingDebt || 0).toFixed(2)}
                       </div>
                     </div>
                   </div>
@@ -332,7 +336,7 @@ export default function ClientsCreditView({
                             {c.tier}
                           </span>
                         </td>
-                        <td className="py-3 px-3 text-right font-mono font-bold text-rose-400">${c.outstandingDebt.toFixed(2)}</td>
+                        <td className="py-3 px-3 text-right font-mono font-bold text-rose-400">${(c.outstandingDebt || 0).toFixed(2)}</td>
                         <td className="py-3 px-3 text-center">
                           <span className="inline-block px-2.5 py-0.5 rounded-full text-[8px] font-mono font-extrabold bg-rose-950/20 text-rose-400 border border-rose-800/40 uppercase">
                             Vencido / Excedido
@@ -382,7 +386,7 @@ export default function ClientsCreditView({
                 <div className="p-3.5 bg-editorial-bg border border-editorial-border rounded font-mono text-[11px] text-editorial-text-primary space-y-1">
                   <span className="text-[9px] text-editorial-text-muted uppercase">Cliente Acreedor:</span>
                   <p className="font-bold text-xs">{clients.find(c => c.id === payingClientId)?.name}</p>
-                  <p className="text-rose-400 mt-1 font-bold">Adeudo Pendiente: ${clients.find(c => c.id === payingClientId)?.outstandingDebt.toFixed(2)}</p>
+                  <p className="text-rose-400 mt-1 font-bold">Adeudo Pendiente: ${(clients.find(c => c.id === payingClientId)?.outstandingDebt || 0).toFixed(2)}</p>
                 </div>
 
                 <div className="space-y-4">
@@ -527,7 +531,7 @@ export default function ClientsCreditView({
                   </div>
                   <div>
                     <span className="text-editorial-text-muted block text-[10px] uppercase">Adeudo Actual Confirmado:</span>
-                    <span className="font-bold text-rose-400">${hClient?.outstandingDebt.toFixed(2)} USD</span>
+                    <span className="font-bold text-rose-400">${(hClient?.outstandingDebt || 0).toFixed(2)} USD</span>
                   </div>
                 </div>
               </div>

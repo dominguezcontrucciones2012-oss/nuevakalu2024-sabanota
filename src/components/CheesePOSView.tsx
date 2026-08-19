@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOrder, Transaction } from '../types';
 import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap } from 'lucide-react';
 
@@ -38,18 +38,78 @@ export default function CheesePOSView({
   dailyRevenue,
   onAddNotification
 }: CheesePOSViewProps) {
+  // Helper para procesar números y precios de manera segura (Regla estricta 2)
+  const parseNum = (val: any) => {
+    if (typeof val === 'number') return isNaN(val) ? 0 : val;
+    if (!val) return 0;
+    const parsed = parseFloat(String(val).replace(',', '.'));
+    return isNaN(parsed) ? 0 : parsed;
+  };
   const [activeTab, setActiveTab] = useState<'pos' | 'history' | 'closing'>('pos');
   // POS Register States
   const [searchQuery, setSearchQuery] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const f4LastTimeRef = useRef<number>(0);
+  const formRef = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'F4') {
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (isProcessing) {
+          console.warn('[POS] Ignorando F4: Transacción en proceso.');
+          return;
+        }
+
+        const now = Date.now();
+        if (now - f4LastTimeRef.current < 500) {
+          console.warn('[POS] Ignorando F4: Presión rápida (Debounce).');
+          return;
+        }
+        f4LastTimeRef.current = now;
+
+        if (!isPaymentModalOpen) {
+          setIsPaymentModalOpen(true);
+        } else if (formRef.current) {
+          formRef.current.requestSubmit();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isProcessing, isPaymentModalOpen]);
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
   const [qtyInput, setQtyInput] = useState<string>('0');
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const [cart, setCart] = useState<CheeseSaleItem[]>([]);
-  const [customerType, setCustomerType] = useState<'general' | 'client' | 'supplier'>('general');
+  const [cart, setCart] = useState<CheeseSaleItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('pos_cart');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('pos_cart', JSON.stringify(cart));
+  }, [cart]);
+
+  const [customerType, setCustomerType] = useState<'client' | 'supplier'>('client');
   const [selectedClientId, setSelectedClientId] = useState<string>('');
   const [selectedSupplierId, setSelectedSupplierId] = useState<string>('');
-  const [paymentMethod, setPaymentMethod] = useState<string>('Efectivo');
+  const [clientSearchText, setClientSearchText] = useState('');
+  const [isClientDropdownOpen, setIsClientDropdownOpen] = useState(false);
+  const [supplierSearchText, setSupplierSearchText] = useState('');
+  const [isSupplierDropdownOpen, setIsSupplierDropdownOpen] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<string>('Efectivo $');
+  const [paymentReference, setPaymentReference] = useState<string>('');
   const [paidAmountInput, setPaidAmountInput] = useState<string>('');
+  const [addedPayments, setAddedPayments] = useState<{ id: string; method: string; amount: number; reference: string; currency?: string; originalAmount?: number }[]>([]);
+  const [isCreditSale, setIsCreditSale] = useState<boolean>(false);
   const [lastReceipt, setLastReceipt] = useState<any | null>(null);
 
   // Cierre de caja States
@@ -58,21 +118,24 @@ export default function CheesePOSView({
   const [isClosed, setIsClosed] = useState<boolean>(false);
   const [closingReport, setClosingReport] = useState<any | null>(null);
 
-  // Calculate Cart Totals
-  const subtotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
+  // Calculate Cart Totals (Regla estricta 2)
+  const subtotal = cart.reduce((sum, item) => sum + (parseNum(item.subtotal) || (parseNum(item.quantityKg) * parseNum(item.pricePerKg)) || 0), 0);
   const tax = subtotal * 0.16; // 16% IVA
   const total = subtotal + tax;
 
   const handleAddToCart = (product: CheeseProduct, qty: number = 1.0) => {
-    if (product.stockKg <= 0) {
+    const stock = parseNum(product.stockKg);
+    if (stock <= 0) {
       onAddNotification(`El producto ${product.name} está agotado temporalmente.`, 'warning');
       return;
     }
 
-    const availableStock = product.stockKg;
+    const availableStock = stock;
     const existing = cart.find(item => item.productId === product.id);
-    const currentQty = existing ? existing.quantityKg : 0;
-    const newQty = parseFloat((currentQty + qty).toFixed(2));
+    const currentQty = existing ? parseNum(existing.quantityKg) : 0;
+    const addQty = parseNum(qty);
+    const newQty = parseNum((currentQty + addQty).toFixed(2));
+    const pPrice = parseNum(product.sellingPrice);
 
     if (newQty > availableStock) {
       onAddNotification(`Stock insuficiente. Solo quedan ${availableStock} kg de ${product.name}.`, 'warning');
@@ -82,7 +145,7 @@ export default function CheesePOSView({
     if (existing) {
       setCart(prev => prev.map(item => 
         item.productId === product.id 
-          ? { ...item, quantityKg: newQty, subtotal: parseFloat((newQty * product.sellingPrice).toFixed(2)) }
+          ? { ...item, quantityKg: newQty, subtotal: parseNum((newQty * pPrice).toFixed(2)) }
           : item
       ));
     } else {
@@ -91,9 +154,9 @@ export default function CheesePOSView({
         {
           productId: product.id,
           name: product.name,
-          quantityKg: qty,
-          pricePerKg: product.sellingPrice,
-          subtotal: parseFloat((qty * product.sellingPrice).toFixed(2))
+          quantityKg: addQty,
+          pricePerKg: pPrice,
+          subtotal: parseNum((addQty * pPrice).toFixed(2))
         }
       ]);
     }
@@ -106,20 +169,25 @@ export default function CheesePOSView({
     const existing = cart.find(item => item.productId === productId);
     if (!existing) return;
 
-    const newQty = parseFloat((existing.quantityKg + delta).toFixed(2));
+    const currentQty = parseNum(existing.quantityKg);
+    const deltaNum = parseNum(delta);
+    const newQty = parseNum((currentQty + deltaNum).toFixed(2));
+    const pPrice = parseNum(existing.pricePerKg);
+
     if (newQty <= 0) {
-      setCart(prev => prev.filter(item => item.productId !== productId));
+      handleRemoveFromCart(productId);
       return;
     }
 
-    if (newQty > product.stockKg) {
-      onAddNotification(`Stock insuficiente de ${product.name}.`, 'warning');
+    const stock = parseNum(product.stockKg);
+    if (newQty > stock) {
+      onAddNotification(`Stock insuficiente. Máximo ${stock} kg disponibles.`, 'warning');
       return;
     }
 
     setCart(prev => prev.map(item =>
       item.productId === productId
-        ? { ...item, quantityKg: newQty, subtotal: parseFloat((newQty * item.pricePerKg).toFixed(2)) }
+        ? { ...item, quantityKg: newQty, subtotal: parseNum((newQty * pPrice).toFixed(2)) }
         : item
     ));
   };
@@ -128,10 +196,47 @@ export default function CheesePOSView({
     setCart(prev => prev.filter(item => item.productId !== productId));
   };
 
+  const totalAbonado = addedPayments.reduce((sum, p) => sum + p.amount, 0);
+
+  const handleAddPayment = () => {
+    const rawAmount = parseFloat(paidAmountInput);
+    if (isNaN(rawAmount) || rawAmount <= 0) {
+      onAddNotification('Ingrese un monto válido a abonar.', 'warning');
+      return;
+    }
+
+    let amountInUsd = rawAmount;
+    let currency = '$';
+
+    if (paymentMethod !== 'Efectivo $') {
+       amountInUsd = rawAmount / exchangeRate;
+       currency = 'Bs';
+    }
+
+    setAddedPayments([...addedPayments, {
+      id: Date.now().toString(),
+      method: paymentMethod,
+      amount: amountInUsd,
+      originalAmount: rawAmount,
+      currency,
+      reference: paymentReference
+    }]);
+    setPaidAmountInput('');
+    setPaymentReference('');
+  };
+
+  const handleRemovePayment = (id: string) => {
+    setAddedPayments(addedPayments.filter(p => p.id !== id));
+  };
+
   const handleProcessSaleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isProcessing) return;
+    setIsProcessing(true);
+    
     if (cart.length === 0) {
       onAddNotification('El carrito de compras está vacío.', 'warning');
+      setIsProcessing(false);
       return;
     }
 
@@ -140,28 +245,40 @@ export default function CheesePOSView({
 
     if (customerType === 'client' && !selectedClientId) {
       onAddNotification('Por favor, seleccione un cliente para registrar la venta.', 'warning');
+      setIsProcessing(false);
       return;
     }
 
     if (customerType === 'supplier' && !selectedSupplierId) {
       onAddNotification('Por favor, seleccione un productor para registrar la venta en su libreta.', 'warning');
+      setIsProcessing(false);
       return;
     }
 
-    const isCreditPayment = paymentMethod === 'credit' || paymentMethod === 'Libreta de Queso';
-    const parsedPaidInput = parseFloat(paidAmountInput);
-    const paidAmount = isCreditPayment
-      ? (isNaN(parsedPaidInput) ? 0 : parsedPaidInput)
-      : total;
+    if (!isCreditSale && totalAbonado < total) {
+      onAddNotification('El monto total abonado no cubre el valor de la venta.', 'warning');
+      setIsProcessing(false);
+      return;
+    }
 
-    const debtAmount = isCreditPayment ? Math.max(0, total - paidAmount) : 0;
+    const paidAmount = isCreditSale ? totalAbonado : Math.max(total, totalAbonado);
+    const debtAmount = isCreditSale ? Math.max(0, total - totalAbonado) : 0;
+
+    let mainPaymentMethod = 'Multipago';
+    let mainReference = addedPayments.map(p => p.reference).filter(Boolean).join(' | ');
+
+    if (addedPayments.length === 1) {
+      mainPaymentMethod = addedPayments[0].method;
+    } else if (addedPayments.length === 0) {
+      mainPaymentMethod = isCreditSale ? 'Crédito' : 'Efectivo ($)';
+    }
 
     // Process sale through parent state
     onProcessSale({
       client,
       supplier,
       items: cart,
-      paymentMethod: paymentMethod === 'credit' ? 'credit' : paymentMethod,
+      paymentMethod: mainPaymentMethod,
       total,
       paidAmount
     });
@@ -176,17 +293,26 @@ export default function CheesePOSView({
       subtotal,
       tax,
       total,
-      paymentMethod: paymentMethod === 'credit' ? 'Crédito Cuenta' : paymentMethod,
+      paymentMethod: mainPaymentMethod,
+      paymentReference: mainReference,
       paidAmount,
-      debtAmount
+      debtAmount,
+      addedPayments: [...addedPayments]
     };
 
     setLastReceipt(receipt);
     setCart([]);
     setSelectedClientId('');
     setSelectedSupplierId('');
-    setPaymentMethod('Efectivo');
+    setClientSearchText('');
+    setSupplierSearchText('');
+    setPaymentMethod('Efectivo ($)');
+    setPaymentReference('');
     setPaidAmountInput('');
+    setAddedPayments([]);
+    setIsCreditSale(false);
+    setIsProcessing(false);
+    setIsPaymentModalOpen(false);
   };
 
   // Calculate closing calculations
@@ -279,6 +405,8 @@ export default function CheesePOSView({
               setCart(newCart);
               setCustomerType('client');
               setSelectedClientId(order.entityId);
+              const c = clients.find(cl => cl.id === order.entityId);
+              setClientSearchText(c ? (c.name || '') : '');
               setActiveTab('pos');
               onAddNotification(`Pedido de ${order.entityName} cargado a caja. Listo para facturar.`, 'info');
             }}
@@ -313,7 +441,16 @@ export default function CheesePOSView({
             {searchQuery && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                 {products
-                  .filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()) || p.category.toLowerCase().includes(searchQuery.toLowerCase()))
+                  .filter(p => {
+                    try {
+                      return (p.name || '').toLowerCase().includes((searchQuery || '').toLowerCase()) || 
+                             (p.category || '').toLowerCase().includes((searchQuery || '').toLowerCase()) ||
+                             (p.id || '').toLowerCase().includes((searchQuery || '').toLowerCase());
+                    } catch (e) {
+                      console.error('Error filtrando producto:', p, e);
+                      return false;
+                    }
+                  })
                   .map((p) => {
                     const isSoldOut = p.stockKg <= 0;
                     const isLowStock = p.stockKg > 0 && p.stockKg <= p.alertThreshold;
@@ -383,7 +520,7 @@ export default function CheesePOSView({
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  const qty = parseFloat(qtyInput);
+                                  const qty = parseNum(qtyInput);
                                   if (qty > 0) {
                                     handleAddToCart(p, qty);
                                     setSelectedProductId(null);
@@ -419,12 +556,9 @@ export default function CheesePOSView({
               </div>
             )}
 
-            {/* Spacer to push cart to bottom */}
-            <div className="flex-1"></div>
-
             {/* Cart Items at the Bottom of Left Column */}
             {cart.length > 0 && (
-              <div className="mt-8 border-t border-editorial-border/60 pt-4 space-y-1">
+              <div className="mt-4 border-t border-editorial-border/60 pt-4 space-y-1">
                 {cart.map((item, idx) => (
                   <div key={item.productId} className="flex justify-between items-center text-xs text-editorial-text-primary py-1 border-b border-editorial-border/30 last:border-0 hover:bg-editorial-bg/30 px-2 rounded">
                     <span className="font-mono text-[10px] text-editorial-text-muted mr-3">Línea {idx + 1}</span>
@@ -452,15 +586,14 @@ export default function CheesePOSView({
                 Caja Registradora
               </h3>
 
-              <form onSubmit={handleProcessSaleSubmit} className="space-y-4">
+              <div className="space-y-4">
                 {/* Tipo de Destinatario Selector */}
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-mono tracking-wider text-editorial-text-muted uppercase block">
                     Tipo de Destinatario
                   </label>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 gap-2">
                     {[
-                      { type: 'general', label: 'General' },
                       { type: 'client', label: 'Cliente' },
                       { type: 'supplier', label: 'Libreta Quesero' }
                     ].map(t => (
@@ -471,8 +604,8 @@ export default function CheesePOSView({
                           setCustomerType(t.type as any);
                           setSelectedClientId('');
                           setSelectedSupplierId('');
-                          setPaymentMethod('Efectivo');
-                          setPaidAmountInput('');
+                          setClientSearchText('');
+                          setSupplierSearchText('');
                         }}
                         className={`py-1.5 text-[10px] font-mono font-bold uppercase rounded border transition-all cursor-pointer ${
                           customerType === t.type
@@ -486,136 +619,151 @@ export default function CheesePOSView({
                   </div>
                 </div>
 
-                {/* Conditional customer selects */}
+                {/* Conditional customer selects with Autocomplete */}
                 {customerType === 'client' && (
-                  <div className="space-y-1.5">
+                  <div className="space-y-1.5 relative">
                     <label className="text-[10px] font-mono tracking-wider text-editorial-text-muted uppercase block">
-                      Seleccionar Cliente de Tienda
+                      Buscar Cliente de Tienda
                     </label>
                     <div className="relative">
                       <User className="w-3.5 h-3.5 text-editorial-text-muted absolute left-3 top-1/2 -translate-y-1/2" />
-                      <select
-                        value={selectedClientId}
-                        onChange={(e) => setSelectedClientId(e.target.value)}
-                        className="w-full h-10 pl-9 pr-4 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none focus:border-amber-500 font-sans cursor-pointer"
-                      >
-                        <option value="">-- Seleccionar --</option>
-                        {clients.map(c => (
-                          <option key={c.id} value={c.id}>
-                            {c.name} (Adeudo: ${c.outstandingDebt.toFixed(0)} M.N.)
-                          </option>
-                        ))}
-                      </select>
+                      <input
+                        type="text"
+                        placeholder="Escriba para buscar un cliente..."
+                        value={clientSearchText}
+                        onChange={(e) => {
+                          setClientSearchText(e.target.value);
+                          setIsClientDropdownOpen(true);
+                          if (selectedClientId) setSelectedClientId('');
+                        }}
+                        onFocus={() => setIsClientDropdownOpen(true)}
+                        onBlur={() => setTimeout(() => setIsClientDropdownOpen(false), 200)}
+                        className="w-full h-10 pl-9 pr-4 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none focus:border-amber-500 font-sans"
+                      />
+                      {isClientDropdownOpen && clientSearchText && (
+                        <div className="absolute z-10 w-full mt-1 bg-editorial-card border border-editorial-border rounded shadow-lg max-h-48 overflow-y-auto">
+                          {clients.filter(c => {
+                              try {
+                                return (c.name || '').toLowerCase().includes((clientSearchText || '').toLowerCase()) || 
+                                       (c.rfc || '').toLowerCase().includes((clientSearchText || '').toLowerCase()) ||
+                                       (c.phone || '').toLowerCase().includes((clientSearchText || '').toLowerCase()) ||
+                                       (c.id || '').toLowerCase().includes((clientSearchText || '').toLowerCase());
+                              } catch (e) {
+                                console.error('Error filtrando cliente:', c, e);
+                                return false;
+                              }
+                            }
+                          ).length > 0 ? (
+                            clients.filter(c => {
+                                try {
+                                  return (c.name || '').toLowerCase().includes((clientSearchText || '').toLowerCase()) || 
+                                         (c.rfc || '').toLowerCase().includes((clientSearchText || '').toLowerCase()) ||
+                                         (c.phone || '').toLowerCase().includes((clientSearchText || '').toLowerCase()) ||
+                                         (c.id || '').toLowerCase().includes((clientSearchText || '').toLowerCase());
+                                } catch (e) {
+                                  return false;
+                                }
+                              }
+                            ).map(c => (
+                              <div
+                                key={c.id}
+                                onMouseDown={() => {
+                                  setSelectedClientId(c.id);
+                                  setClientSearchText(c.name || '');
+                                  setIsClientDropdownOpen(false);
+                                }}
+                                className="px-4 py-2 hover:bg-amber-500 hover:text-white cursor-pointer text-xs transition-colors border-b border-editorial-border/30 last:border-0"
+                              >
+                                {c.name} 
+                                { (c.outstandingDebt || 0) > 0 && (
+                                  <span className="opacity-75 text-[10px] ml-2">- {c.rfc || 'S/N'} (Adeudo: ${(c.outstandingDebt || 0).toFixed(0)} USD)</span>
+                                )}
+                              </div>
+                            ))
+                          ) : (
+                            <div className="px-4 py-2 text-xs text-editorial-text-muted text-center">No se encontraron coincidencias</div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
 
                 {customerType === 'supplier' && (
-                  <div className="space-y-1.5">
+                  <div className="space-y-1.5 relative">
                     <label className="text-[10px] font-mono tracking-wider text-editorial-text-muted uppercase block">
-                      Productor / Proveedor (Libreta de Queso)
+                      Buscar Productor / Proveedor
                     </label>
                     <div className="relative">
                       <User className="w-3.5 h-3.5 text-editorial-text-muted absolute left-3 top-1/2 -translate-y-1/2" />
-                      <select
-                        value={selectedSupplierId}
-                        onChange={(e) => setSelectedSupplierId(e.target.value)}
-                        className="w-full h-10 pl-9 pr-4 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none focus:border-amber-500 font-sans cursor-pointer"
-                      >
-                        <option value="">-- Seleccionar --</option>
-                        {suppliers.map(s => (
-                          <option key={s.id} value={s.id}>
-                            {s.name} (Le debemos: ${s.balanceOwed.toFixed(0)} | Nos debe: ${(s.storeDebt || 0).toFixed(0)})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                )}
-
-                {/* Payment Method Select */}
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-mono tracking-wider text-editorial-text-muted uppercase block">
-                    Método de Cobro
-                  </label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {(() => {
-                      const methods = ['Efectivo', 'Tarjeta', 'Transferencia'];
-                      if (customerType === 'client') {
-                        methods.push('credit');
-                      } else if (customerType === 'supplier') {
-                        methods.push('Libreta de Queso');
-                      }
-                      return methods.map(m => (
-                        <button
-                          key={m}
-                          type="button"
-                          onClick={() => {
-                            setPaymentMethod(m);
-                            setPaidAmountInput('');
-                          }}
-                          className={`py-2 text-[10px] font-mono font-bold uppercase rounded border transition-all cursor-pointer ${
-                            paymentMethod === m
-                              ? 'bg-amber-500 border-amber-600 text-white'
-                              : 'bg-editorial-bg border-editorial-border text-editorial-text-muted hover:text-editorial-text-primary'
-                          }`}
-                        >
-                          {m === 'credit' ? 'Crédito Cuenta' : m}
-                        </button>
-                      ));
-                    })()}
-                  </div>
-                </div>
-
-                {/* Split Credit / Libreta input */}
-                {(paymentMethod === 'credit' || paymentMethod === 'Libreta de Queso') && (
-                  <div className="bg-amber-500/5 border border-amber-500/30 rounded p-4 space-y-3 font-mono text-xs">
-                    <p className="text-[10px] text-amber-500 uppercase leading-none font-bold tracking-wider">
-                      Intercambio / Cargar a Cuenta
-                    </p>
-                    <div className="space-y-1.5">
-                      <label className="text-[9px] text-editorial-text-muted uppercase block">
-                        ¿Cuánto abona en Efectivo hoy? (0 para todo a crédito)
-                      </label>
                       <input
-                        type="number"
-                        min="0"
-                        max={total}
-                        step="0.01"
-                        value={paidAmountInput}
-                        placeholder={`Total: $${total.toFixed(2)}`}
+                        type="text"
+                        placeholder="Escriba para buscar un productor..."
+                        value={supplierSearchText}
                         onChange={(e) => {
-                          const val = parseFloat(e.target.value) || 0;
-                          setPaidAmountInput(e.target.value);
+                          setSupplierSearchText(e.target.value);
+                          setIsSupplierDropdownOpen(true);
+                          if (selectedSupplierId) setSelectedSupplierId('');
                         }}
-                        className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none focus:border-amber-500 font-mono"
+                        onFocus={() => setIsSupplierDropdownOpen(true)}
+                        onBlur={() => setTimeout(() => setIsSupplierDropdownOpen(false), 200)}
+                        className="w-full h-10 pl-9 pr-4 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none focus:border-amber-500 font-sans"
                       />
-                    </div>
-                    <div className="text-[10px] text-editorial-text-muted space-y-1 pt-2 border-t border-editorial-border/30">
-                      <div className="flex justify-between">
-                        <span>Total de la venta:</span>
-                        <span className="text-editorial-text-primary">${total.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Pago Recibido Hoy:</span>
-                        <span className="text-emerald-400">${(parseFloat(paidAmountInput) || 0).toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between font-bold text-editorial-text-primary pt-0.5 border-t border-dashed border-editorial-border/20">
-                        <span>Cargado a Deuda:</span>
-                        <span className="text-amber-500">
-                          ${Math.max(0, total - (parseFloat(paidAmountInput) || 0)).toFixed(2)}
-                        </span>
-                      </div>
+                      {isSupplierDropdownOpen && supplierSearchText && (
+                        <div className="absolute z-10 w-full mt-1 bg-editorial-card border border-editorial-border rounded shadow-lg max-h-48 overflow-y-auto">
+                          {suppliers.filter(s => {
+                              try {
+                                return (s.name || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) || 
+                                       (s.rfc || s.idNumber || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
+                                       (s.phone || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
+                                       (s.id || '').toLowerCase().includes((supplierSearchText || '').toLowerCase());
+                              } catch (e) {
+                                console.error('Error filtrando proveedor:', s, e);
+                                return false;
+                              }
+                            }
+                          ).length > 0 ? (
+                            suppliers.filter(s => {
+                                try {
+                                  return (s.name || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) || 
+                                         (s.rfc || s.idNumber || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
+                                         (s.phone || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
+                                         (s.id || '').toLowerCase().includes((supplierSearchText || '').toLowerCase());
+                                } catch (e) {
+                                  return false;
+                                }
+                              }
+                            ).map(s => (
+                              <div
+                                key={s.id}
+                                onMouseDown={() => {
+                                  setSelectedSupplierId(s.id);
+                                  setSupplierSearchText(s.name || '');
+                                  setIsSupplierDropdownOpen(false);
+                                }}
+                                className="px-4 py-2 hover:bg-amber-500 hover:text-white cursor-pointer text-xs transition-colors border-b border-editorial-border/30 last:border-0"
+                              >
+                                {s.name} 
+                                { (s.balanceOwed || 0) > 0 && (
+                                  <span className="opacity-75 text-[10px] ml-2">- {s.rfc || s.idNumber || 'S/N'} (Deuda: ${(s.balanceOwed || 0).toFixed(0)})</span>
+                                )}
+                              </div>
+                            ))
+                          ) : (
+                            <div className="px-4 py-2 text-xs text-editorial-text-muted text-center">No se encontraron coincidencias</div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
 
-                <div className="h-px bg-editorial-border/60" />
+                <div className="h-px bg-editorial-border/60 my-4" />
 
                 {/* Calculations summary */}
                 <div className="space-y-1.5 font-mono text-[11px] text-editorial-text-muted">
                   <div className="flex justify-between">
-                    <span>Subtotal:</span>
+                    <span>Total parcial:</span>
                     <span className="text-editorial-text-primary">${subtotal.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between">
@@ -623,107 +771,236 @@ export default function CheesePOSView({
                     <span className="text-editorial-text-primary">${tax.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between font-serif text-lg font-bold text-editorial-text-primary pt-1.5 border-t border-editorial-border/40">
-                    <span className="font-sans text-xs text-editorial-text-muted uppercase font-normal tracking-wider">Total a cobrar:</span>
+                    <span className="font-sans text-xs text-editorial-text-muted uppercase font-normal tracking-wider">TOTAL A COBRAR:</span>
                     <span className="text-amber-500">${total.toFixed(2)}</span>
                   </div>
                 </div>
 
                 <button
-                  type="submit"
+                  type="button"
+                  onClick={() => setIsPaymentModalOpen(true)}
                   disabled={cart.length === 0}
                   className="w-full h-12 bg-amber-500 text-white font-serif font-bold text-md tracking-tight flex items-center justify-center gap-2 hover:brightness-110 active:scale-98 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                 >
                   <ShoppingCart className="w-4 h-4" />
-                  <span>Registrar y Procesar Venta</span>
-                </button>
-              </form>
-            </div>
-
-            {/* Last Generated Ticket / Receipt Box */}
-            {lastReceipt && (
-              <div className="bg-editorial-card border border-editorial-border rounded p-6 font-mono text-xs text-editorial-text-primary space-y-4 relative overflow-hidden">
-                <div className="absolute top-0 right-0 bg-emerald-500/10 text-emerald-400 border-b border-l border-emerald-500/30 px-3 py-1 text-[9px] font-bold uppercase tracking-wider">
-                  ÉXITO
-                </div>
-                <div className="text-center space-y-1">
-                  <h4 className="font-serif text-md font-extrabold text-editorial-text-primary uppercase tracking-tight">QUESERÍA KALU</h4>
-                  <p className="text-[10px] text-editorial-text-muted">AV. CONSTITUCIÓN #1420</p>
-                  <p className="text-[9px] text-editorial-text-muted/60">{lastReceipt.date} • {lastReceipt.id}</p>
-                </div>
-                
-                <div className="border-t border-dashed border-editorial-border/60 my-2" />
-                
-                <div className="space-y-1">
-                  <span className="text-[9px] text-editorial-text-muted uppercase">Cliente:</span>
-                  <p className="font-semibold text-[11px]">{lastReceipt.clientName || lastReceipt.entity || 'Cliente General'}</p>
-                </div>
-
-                <div className="border-t border-dashed border-editorial-border/60 my-2" />
-
-                <div className="space-y-1.5">
-                  {lastReceipt.items ? lastReceipt.items.map((it: any, idx: number) => (
-                    <div key={idx} className="flex justify-between text-[11px]">
-                      <span className="truncate max-w-[180px]">{it.name}</span>
-                      <span>${it.subtotal.toFixed(2)}</span>
-                    </div>
-                  )) : (
-                    <div className="flex justify-between text-[11px]">
-                      <span className="truncate max-w-[180px]">{lastReceipt.notes || 'Varios Artículos'}</span>
-                      <span>${(lastReceipt.total || lastReceipt.amount || 0).toFixed(2)}</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="border-t border-dashed border-editorial-border/60 my-2" />
-
-                <div className="space-y-1 text-[11px] text-right">
-                  <div className="flex justify-between">
-                    <span className="text-editorial-text-muted">Subtotal:</span>
-                    <span>${(lastReceipt.subtotal !== undefined ? lastReceipt.subtotal : (lastReceipt.total || lastReceipt.amount || 0) / 1.16).toFixed(2)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-editorial-text-muted">IVA (16.0%):</span>
-                    <span>${(lastReceipt.tax !== undefined ? lastReceipt.tax : (lastReceipt.total || lastReceipt.amount || 0) - (lastReceipt.total || lastReceipt.amount || 0) / 1.16).toFixed(2)}</span>
-                  </div>
-                  {lastReceipt.debtAmount > 0 ? (
-                    <>
-                      <div className="flex justify-between font-bold text-editorial-text-primary pt-1 border-t border-editorial-border/40">
-                        <span>Total de la Venta:</span>
-                        <span>${(lastReceipt.total || lastReceipt.amount || 0).toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between text-emerald-400">
-                        <span>Pagado en Efectivo:</span>
-                        <span>${(lastReceipt.paidAmount !== undefined ? lastReceipt.paidAmount : (lastReceipt.total || lastReceipt.amount || 0)).toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between font-bold text-amber-500">
-                        <span>Cargado a Deuda/Libreta:</span>
-                        <span>${(lastReceipt.debtAmount || 0).toFixed(2)}</span>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="flex justify-between font-bold text-sm text-amber-500 pt-1 border-t border-editorial-border/40">
-                      <span>Total Pagado:</span>
-                      <span>${(lastReceipt.total || lastReceipt.amount || 0).toFixed(2)}</span>
-                    </div>
-                  )}
-                  <div className="text-[9px] text-editorial-text-muted pt-1">
-                    Método: {lastReceipt.paymentMethod}
-                  </div>
-                </div>
-
-                <div className="text-center text-[9px] text-editorial-text-muted/60 pt-3 border-t border-dashed border-editorial-border/60">
-                  ¡Gracias por apoyar el comercio de Martín Niño!
-                </div>
-
-                <button
-                  onClick={() => window.print()}
-                  className="w-full py-2 bg-editorial-bg hover:bg-editorial-card border border-editorial-border text-[10px] font-bold uppercase tracking-widest text-editorial-text-primary flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  Imprimir Comprobante
+                  <span>Pasar a modo cobro (F4)</span>
                 </button>
               </div>
+            </div>
+
+            {/* Payment Modal Overlay */}
+            {isPaymentModalOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+                <div className="bg-editorial-card border border-editorial-border rounded p-6 w-full max-w-4xl shadow-2xl relative animate-in fade-in zoom-in-95 duration-200">
+                  <button type="button" onClick={() => setIsPaymentModalOpen(false)} className="absolute top-4 right-4 text-editorial-text-muted hover:text-amber-500 transition-colors cursor-pointer">
+                    <span className="text-3xl leading-none">&times;</span>
+                  </button>
+                  
+                  <div className="mb-6 border-b border-editorial-border/60 pb-4">
+                    <h3 className="font-serif text-xl font-bold text-amber-500 tracking-tight uppercase">
+                      PROCESAR COBRO (MULTIPAGO)
+                    </h3>
+                    <p className="text-xs text-editorial-text-muted mt-1 font-mono">Registra los abonos mixtos y finaliza la venta</p>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+                     {/* Left Panel: Breakdowns & Summary */}
+                     <div className="md:col-span-5 flex flex-col gap-4">
+                       <div className="bg-editorial-bg border border-editorial-border rounded p-4 space-y-3">
+                          <div className="flex justify-between items-center text-sm">
+                            <span className="font-mono uppercase tracking-widest text-editorial-text-muted">TOTAL VENTA</span>
+                            <div className="text-right">
+                              <div className="font-mono text-xl font-bold text-editorial-text-primary">${total.toFixed(2)}</div>
+                              <div className="font-mono text-[10px] text-editorial-text-muted">Bs {(total * exchangeRate).toFixed(2)}</div>
+                            </div>
+                          </div>
+                          <div className="flex justify-between items-center text-sm">
+                            <span className="font-mono uppercase tracking-widest text-editorial-text-muted">ABONADO</span>
+                            <div className="text-right">
+                              <div className="font-mono text-lg font-bold text-emerald-400">${totalAbonado.toFixed(2)}</div>
+                              <div className="font-mono text-[10px] text-emerald-400/70">Bs {(totalAbonado * exchangeRate).toFixed(2)}</div>
+                            </div>
+                          </div>
+                          
+                          <div className="h-px bg-editorial-border/60 my-2" />
+                          
+                          {totalAbonado >= total ? (
+                            <div className="flex justify-between items-center text-sm">
+                              <span className="font-mono uppercase tracking-widest text-amber-500">VUELTO / CAMBIO</span>
+                              <div className="text-right">
+                                <div className="font-mono text-2xl font-bold text-amber-500">${(totalAbonado - total).toFixed(2)}</div>
+                                <div className="font-mono text-[10px] text-amber-500/70">Bs {((totalAbonado - total) * exchangeRate).toFixed(2)}</div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex justify-between items-center text-sm">
+                              <span className="font-mono uppercase tracking-widest text-rose-400">RESTANTE</span>
+                              <div className="text-right">
+                                <div className="font-mono text-2xl font-bold text-rose-400">${(total - totalAbonado).toFixed(2)}</div>
+                                <div className="font-mono text-[10px] text-rose-400/70">Bs {((total - totalAbonado) * exchangeRate).toFixed(2)}</div>
+                              </div>
+                            </div>
+                          )}
+                       </div>
+
+                       {/* List of Added Payments */}
+                       <div className="flex-1 bg-editorial-bg border border-editorial-border rounded p-4 flex flex-col">
+                         <span className="font-mono text-[10px] uppercase tracking-widest text-editorial-text-muted mb-3 block">Abonos Registrados</span>
+                         <div className="flex-1 overflow-y-auto space-y-2 max-h-40 pr-2">
+                           {addedPayments.length === 0 ? (
+                             <div className="text-[10px] text-editorial-text-muted text-center py-4 font-mono">Aún no se han añadido pagos.</div>
+                           ) : (
+                             addedPayments.map(p => (
+                               <div key={p.id} className="flex justify-between items-center bg-editorial-card border border-editorial-border p-2 rounded text-xs animate-in fade-in slide-in-from-left-2 duration-200">
+                                 <div className="flex flex-col">
+                                   <span className="font-bold text-editorial-text-primary uppercase text-[10px]">{p.method}</span>
+                                   {p.reference && <span className="text-[9px] text-editorial-text-muted font-mono tracking-wider">REF: {p.reference}</span>}
+                                 </div>
+                                 <div className="flex items-center gap-3">
+                                   <div className="text-right">
+                                     <div className="font-mono font-bold text-amber-500">{p.currency} {(p.originalAmount || p.amount).toFixed(2)}</div>
+                                     {p.currency !== '$' && <div className="font-mono text-[9px] text-editorial-text-muted">~${p.amount.toFixed(2)}</div>}
+                                   </div>
+                                   <button type="button" onClick={() => handleRemovePayment(p.id)} className="text-rose-400 hover:text-rose-500 cursor-pointer text-xs leading-none" title="Eliminar pago">&times;</button>
+                                 </div>
+                               </div>
+                             ))
+                           )}
+                         </div>
+                       </div>
+                     </div>
+
+                     {/* Right Panel: Add Payment Interface */}
+                     <div className="md:col-span-7 flex flex-col gap-4">
+                       <div className="bg-editorial-bg border border-editorial-border rounded p-4">
+                          <label className="font-mono text-[10px] uppercase tracking-widest text-editorial-text-muted block mb-3">Agregar Nuevo Abono</label>
+                          <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-4">
+                            {['Efectivo $', 'Efectivo Bs', 'Tarjeta / Punto', 'Pago Móvil', 'BioPago'].map(m => (
+                              <button
+                                key={m}
+                                type="button"
+                                onClick={() => {
+                                  setPaymentMethod(m);
+                                  setPaymentReference('');
+                                  setPaidAmountInput('');
+                                }}
+                                className={`py-2 px-1 text-[9px] font-mono font-bold uppercase rounded border transition-all cursor-pointer text-center ${
+                                  paymentMethod === m
+                                    ? 'bg-amber-500 border-amber-500 text-black shadow-[0_0_10px_rgba(245,158,11,0.2)]'
+                                    : 'bg-editorial-card border-editorial-border text-editorial-text-muted hover:text-editorial-text-primary'
+                                }`}
+                              >
+                                {m}
+                              </button>
+                            ))}
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-4 mb-4">
+                            <div className="space-y-2">
+                              <label className="font-mono text-[10px] uppercase tracking-widest text-editorial-text-muted block">
+                                MONTO A ABONAR ({paymentMethod === 'Efectivo $' ? '$' : 'Bs'})
+                              </label>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={paidAmountInput}
+                                onChange={(e) => setPaidAmountInput(e.target.value)}
+                                placeholder={`Ej: ${paymentMethod === 'Efectivo $' ? Math.max(0, total - totalAbonado).toFixed(2) : (Math.max(0, total - totalAbonado) * exchangeRate).toFixed(2)}`}
+                                className="w-full h-10 px-3 bg-editorial-card border border-amber-500/50 rounded text-lg text-amber-500 font-mono font-bold focus:outline-none focus:border-amber-500"
+                              />
+                            </div>
+                            
+                            {/* Reference Inputs */}
+                            {(paymentMethod === 'Pago Móvil' || paymentMethod === 'BioPago' || paymentMethod === 'Tarjeta / Punto') && (
+                              <div className="space-y-2 animate-in fade-in duration-200">
+                                <label className="font-mono text-[10px] uppercase tracking-widest text-amber-500 block">
+                                  {paymentMethod === 'Tarjeta / Punto' ? 'APROBACIÓN PUNTO' : 'REFERENCIA'}
+                                </label>
+                                <input
+                                  type="text"
+                                  value={paymentReference}
+                                  onChange={(e) => setPaymentReference(e.target.value)}
+                                  placeholder="N° Ref..."
+                                  className="w-full h-10 px-3 bg-editorial-card border border-editorial-border rounded text-sm text-editorial-text-primary focus:outline-none focus:border-amber-500 font-mono"
+                                />
+                              </div>
+                            )}
+                          </div>
+                          
+                          <button
+                            type="button"
+                            onClick={handleAddPayment}
+                            className="w-full h-10 border border-amber-500 text-amber-500 font-mono text-[11px] font-bold tracking-widest uppercase hover:bg-amber-500 hover:text-black transition-colors cursor-pointer rounded"
+                          >
+                            + AGREGAR ABONO A LA CUENTA
+                          </button>
+                       </div>
+
+                       {/* Credit Toggle */}
+                       {(customerType === 'client' || customerType === 'supplier') && (
+                         <div className="mt-auto">
+                            <button
+                              type="button"
+                              onClick={() => setIsCreditSale(!isCreditSale)}
+                              className={`w-full py-3 px-4 flex items-center justify-between rounded border transition-all cursor-pointer ${
+                                isCreditSale
+                                  ? 'bg-amber-500/10 border-amber-500 text-amber-500'
+                                  : 'bg-editorial-bg border-editorial-border text-editorial-text-muted hover:text-editorial-text-primary hover:border-editorial-border/80'
+                              }`}
+                            >
+                              <span className="font-mono text-[11px] font-bold uppercase tracking-wider">
+                                {customerType === 'client' ? 'VENTA A CRÉDITO / FIADO' : 'LIBRETA QUESERO'}
+                              </span>
+                              <div className={`w-4 h-4 rounded-sm border flex items-center justify-center transition-colors ${
+                                isCreditSale ? 'border-amber-500 bg-amber-500' : 'border-editorial-text-muted'
+                              }`}>
+                                {isCreditSale && <div className="w-2 h-2 bg-black rounded-sm" />}
+                              </div>
+                            </button>
+                            {isCreditSale && (
+                               <p className="text-[9px] text-editorial-text-muted mt-2 font-mono">
+                                 Nota: El monto restante de ${(total - totalAbonado).toFixed(2)} (Bs {((total - totalAbonado) * exchangeRate).toFixed(2)}) se enviará a cuenta por cobrar automáticamente.
+                               </p>
+                            )}
+                         </div>
+                       )}
+                     </div>
+                  </div>
+
+                  {/* Action Buttons Footer */}
+                  <form onSubmit={handleProcessSaleSubmit} className="pt-6 mt-6 border-t border-editorial-border/60 flex items-center justify-end gap-4">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsPaymentModalOpen(false);
+                        setCart([]);
+                        setSelectedClientId('');
+                        setSelectedSupplierId('');
+                        setClientSearchText('');
+                        setSupplierSearchText('');
+                        setAddedPayments([]);
+                        setIsCreditSale(false);
+                        onAddNotification('Factura congelada y carrito limpiado exitosamente.', 'info');
+                      }}
+                      className="h-12 px-6 bg-editorial-bg border border-editorial-border text-editorial-text-primary font-serif font-bold text-[11px] tracking-widest uppercase hover:bg-editorial-card transition-all cursor-pointer rounded"
+                    >
+                      Congelar Factura
+                    </button>
+                    
+                    <button
+                      type="submit"
+                      disabled={isProcessing || (!isCreditSale && totalAbonado < total)}
+                      className="h-12 px-8 bg-amber-500 text-black font-serif font-bold text-[13px] tracking-widest uppercase flex items-center justify-center gap-2 hover:brightness-110 active:scale-98 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded shadow-[0_0_15px_rgba(245,158,11,0.2)]"
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                      <span>{isProcessing ? 'PROCESANDO...' : 'FACTURAR / CONFIRMAR VENTA (F4)'}</span>
+                    </button>
+                  </form>
+                </div>
+              </div>
             )}
+
           </div>
         </div>
       )}

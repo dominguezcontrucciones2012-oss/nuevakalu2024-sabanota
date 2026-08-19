@@ -21,11 +21,11 @@ export const db = initializeFirestore(app, {
   localCache: persistentLocalCache({tabManager: persistentMultipleTabManager()})
 });
 
-// Use emulator in local development
-if (import.meta.env.DEV) {
-  console.log("Conectando al emulador local de Firestore...");
-  connectFirestoreEmulator(db, '127.0.0.1', 8080);
-}
+// Use emulator in local development (COMENTADO POR SEGURIDAD)
+// if (import.meta.env.DEV) {
+//   console.log("Conectando al emulador local de Firestore...");
+//   connectFirestoreEmulator(db, '127.0.0.1', 8080);
+// }
 
 // Initialize Cloud Storage and get a reference to the service
 export const storage = getStorage(app);

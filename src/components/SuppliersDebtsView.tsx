@@ -156,7 +156,7 @@ export default function SuppliersDebtsView({
           onClick={() => setShowAddForm(!showAddForm)}
           className="flex items-center gap-2 px-4 py-2 bg-editorial-text-primary text-editorial-bg font-mono text-xs uppercase font-bold hover:bg-editorial-text-primary/90 transition-colors cursor-pointer whitespace-nowrap"
         >
-          {showAddForm ? 'Cancelar' : <><Plus className="w-4 h-4" /> Nuevo Proveedor</>}
+          {showAddForm ? <span>Cancelar</span> : <><Plus className="w-4 h-4" /> <span>Nuevo Proveedor</span></>}
         </button>
       </div>
 

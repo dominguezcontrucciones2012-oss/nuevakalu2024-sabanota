@@ -28,9 +28,10 @@ interface SidebarProps {
   isAdmin: boolean;
   userRole?: string;
   userName?: string;
+  isOpen?: boolean;
 }
 
-export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, userRole = 'cajero', userName = 'Invitado' }: SidebarProps) {
+export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, userRole = 'cajero', userName = 'Invitado', isOpen = true }: SidebarProps) {
   const getInitials = (name: string) => {
     return name.substring(0, 2).toUpperCase();
   };
@@ -126,7 +127,9 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
     : allMenuItems;
 
   return (
-    <aside className="w-80 border-r border-editorial-border bg-editorial-bg flex flex-col justify-between p-8 min-h-screen sticky top-0 shrink-0 h-screen select-none overflow-y-auto">
+    <aside className={`transition-all duration-300 ease-in-out border-r border-editorial-border bg-editorial-bg flex flex-col justify-between py-8 min-h-screen sticky top-0 shrink-0 h-screen select-none overflow-y-auto overflow-x-hidden ${
+      isOpen ? 'w-80 px-8 opacity-100' : 'w-0 px-0 opacity-0 border-r-0'
+    }`}>
       {/* Top Branding Section */}
       <div className="flex flex-col gap-8">
         <div className="flex items-center gap-4">

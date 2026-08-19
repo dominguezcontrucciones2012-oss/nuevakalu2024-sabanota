@@ -69,6 +69,7 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
   const [currentView, setCurrentView] = useState<ViewType>('portal-dashboard');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   // Unified States for Cheese ERP
   const [cheeseProducts, setCheeseProducts] = useState<CheeseProduct[]>(INITIAL_CHEESE_PRODUCTS);
@@ -132,6 +133,18 @@ export default function App() {
       unsubUsers();
     };
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem('kalu_inventory', JSON.stringify(cheeseProducts));
+  }, [cheeseProducts]);
+
+  useEffect(() => {
+    localStorage.setItem('kalu_clients', JSON.stringify(clients));
+  }, [clients]);
+
+  useEffect(() => {
+    localStorage.setItem('kalu_suppliers', JSON.stringify(suppliers));
+  }, [suppliers]);
 
   // Help alert helper
   const addNotification = (message: string, type: 'success' | 'info' | 'warning' = 'info') => {
@@ -594,15 +607,14 @@ export default function App() {
 
   // 2. Inventory Adjustment (Adjust single SKU stock / details)
   const handleUpdateProduct = async (id: string, updated: Partial<CheeseProduct>) => {
+    // Always update local state immediately so UI reacts instantly
+    setCheeseProducts((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, ...updated } : p))
+    );
     try {
       await updateDoc(doc(db, 'products', id), updated);
-      setCheeseProducts((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, ...updated } : p))
-      );
     } catch (error) {
-      console.error("Error updating product in Firebase:", error);
-      addNotification('Error al actualizar el producto en la nube', 'warning');
-      throw error;
+      console.warn("Product not in Firebase or network error, updated locally:", error);
     }
   };
 
@@ -979,8 +991,14 @@ export default function App() {
   };
 
   // 9. Administration
-  const handleUpdateSettings = (newSettings: Partial<BusinessSettings>) => {
-    setSettings((prev) => ({ ...prev, ...newSettings }));
+  const handleUpdateSettings = async (newSettings: Partial<BusinessSettings>) => {
+    setSettings((prev) => ({ ...prev, ...newSettings })); // Optimistic update
+    try {
+      await setDoc(doc(db, 'settings', 'general'), newSettings, { merge: true });
+    } catch (error) {
+      console.error("Error saving settings to Firebase:", error);
+      addNotification("Error de red: La tasa y ajustes se guardaron solo localmente.", "warning");
+    }
   };
 
 
@@ -1004,6 +1022,7 @@ export default function App() {
         isAdmin={currentUser?.role === 'admin'}
         userRole={currentUser?.role || 'cajero'}
         userName={currentUser?.name}
+        isOpen={isSidebarOpen}
       />
 
       {/* Main Canvas Frame */}
@@ -1013,6 +1032,9 @@ export default function App() {
           currentView={currentView}
           onSimulateSale={() => addNotification('Simulador de venta reemplazado por el Punto de Venta real.', 'info')}
           notificationCount={complaints.filter(c => c.status === 'Pendiente').length + mobileOrders.filter(o => o.status === 'Pendiente').length}
+          isSidebarOpen={isSidebarOpen}
+          onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+          exchangeRate={settings.exchangeRate || 45.00}
         />
 
         {/* Scrollable Main View Stage */}
