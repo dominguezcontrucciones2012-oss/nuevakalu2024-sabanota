@@ -368,7 +368,7 @@ export default function ClientsCreditView({
                   <div className="mt-4 pt-3 border-t border-editorial-border/60 grid grid-cols-2 gap-2 text-center font-mono">
                     <div className="border-r border-editorial-border/60">
                       <span className="text-[9px] text-editorial-text-muted uppercase block">Puntos Acum.</span>
-                      <div className="text-xs font-bold text-emerald-400 flex items-center justify-center gap-0.5 mt-0.5">
+                      <div className="text-xs font-bold text-amber-400 flex items-center justify-center gap-0.5 mt-0.5">
                         <Award className="w-3 h-3" />
                         <span>{c.loyaltyPoints} pts</span>
                       </div>
@@ -470,7 +470,19 @@ export default function ClientsCreditView({
                 <div className="p-3.5 bg-editorial-bg border border-editorial-border rounded font-mono text-[11px] text-editorial-text-primary space-y-1">
                   <span className="text-[9px] text-editorial-text-muted uppercase">Cliente Acreedor:</span>
                   <p className="font-bold text-xs">{clients.find(c => c.id === payingClientId)?.name}</p>
-                  <p className="text-rose-400 mt-1 font-bold">Adeudo Pendiente: ${(clients.find(c => c.id === payingClientId)?.outstandingDebt || 0).toFixed(2)}</p>
+                  <p 
+                    className="text-rose-400 mt-1 font-bold cursor-pointer hover:text-rose-300 transition-colors"
+                    onClick={() => {
+                       const amt = clients.find(c => c.id === payingClientId)?.outstandingDebt || 0;
+                       setPayCashUsd(amt.toFixed(2));
+                       setPayCashBs('');
+                       setPayPagoMovil('');
+                       setPayPos('');
+                       setPayBiopago('');
+                    }}
+                  >
+                    Adeudo Pendiente: ${(clients.find(c => c.id === payingClientId)?.outstandingDebt || 0).toFixed(2)}
+                  </p>
                 </div>
 
                 <div className="space-y-4">
@@ -484,12 +496,12 @@ export default function ClientsCreditView({
                   <div className="space-y-3">
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1">
-                        <label className="text-[9px] font-mono text-emerald-400 uppercase">Efectivo USD</label>
-                        <input type="number" value={payCashUsd} onChange={e => setPayCashUsd(e.target.value)} className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-emerald-500 outline-none" placeholder="$0.00" />
+                        <label className="text-[9px] font-mono text-amber-400 uppercase">Efectivo USD</label>
+                        <input type="number" value={payCashUsd} onChange={e => setPayCashUsd(e.target.value)} className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none" placeholder="$0.00" />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-[9px] font-mono text-emerald-400 uppercase">Efectivo Bs</label>
-                        <input type="number" value={payCashBs} onChange={e => setPayCashBs(e.target.value)} className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-emerald-500 outline-none" placeholder="Bs 0.00" />
+                        <label className="text-[9px] font-mono text-amber-400 uppercase">Efectivo Bs</label>
+                        <input type="number" value={payCashBs} onChange={e => setPayCashBs(e.target.value)} className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none" placeholder="Bs 0.00" />
                       </div>
                     </div>
 
@@ -537,7 +549,7 @@ export default function ClientsCreditView({
                   </button>
                   <button
                     type="submit"
-                    className="flex-1 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] font-serif font-bold uppercase cursor-pointer"
+                    className="flex-1 py-2 bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-serif font-bold uppercase cursor-pointer"
                   >
                     Confirmar Abono
                   </button>
@@ -646,14 +658,14 @@ export default function ClientsCreditView({
                             <td className="py-4 px-4 text-editorial-text-muted text-[10px]">{t.date}</td>
                             <td className="py-4 px-4 text-editorial-text-muted text-[10px] truncate max-w-[100px]">{t.invoice}</td>
                             <td className="py-4 px-4">
-                              <span className={`inline-block px-2 py-0.5 rounded text-[9px] uppercase border font-extrabold ${isAbono ? 'bg-emerald-950/30 border-emerald-800 text-emerald-400' : 'bg-rose-950/30 border-rose-800 text-rose-400'}`}>
+                              <span className={`inline-block px-2 py-0.5 rounded text-[9px] uppercase border font-extrabold ${isAbono ? 'bg-amber-950/30 border-amber-800 text-amber-400' : 'bg-rose-950/30 border-rose-800 text-rose-400'}`}>
                                 {t.type}
                               </span>
                               <div className="text-[9px] text-editorial-text-muted mt-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
                                 Vía {t.method} {t.notes && `• ${t.notes}`}
                               </div>
                             </td>
-                            <td className={`py-4 px-4 text-right font-bold text-sm ${isAbono ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            <td className={`py-4 px-4 text-right font-bold text-sm ${isAbono ? 'text-amber-400' : 'text-rose-400'}`}>
                               {isAbono ? '-' : '+'}${t.amount.toFixed(2)}
                             </td>
                             <td className="py-4 px-4 text-right font-extrabold text-amber-500 bg-editorial-card/50 border-l border-editorial-border text-sm">

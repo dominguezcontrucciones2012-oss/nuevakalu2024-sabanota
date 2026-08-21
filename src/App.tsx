@@ -271,9 +271,11 @@ export default function App() {
     clientId?: string,
     paymentMethodType?: string,
     supplierId?: string,
-    paidAmount?: number
+    paidAmount?: number,
+    totalAmount?: number,
+    addedPayments?: any[]
   ) => {
-    const saleTotal = saleItems.reduce((sum, item) => sum + item.subtotal, 0);
+    const saleTotal = totalAmount !== undefined ? totalAmount : saleItems.reduce((sum, item) => sum + item.subtotal, 0);
     const amountPaid = paidAmount !== undefined ? paidAmount : saleTotal;
     const debtAmount = Math.max(0, saleTotal - amountPaid);
 
@@ -403,7 +405,8 @@ export default function App() {
       isIncome: true,
       status: 'Completado',
       paymentMethod: finalPaymentMethod,
-      items: saleItems // Saving items to show in the ticket later
+      items: saleItems, // Saving items to show in the ticket later
+      addedPayments: addedPayments || []
     };
     
     // Save to Local State immediately (which triggers localStorage backup)
@@ -603,21 +606,32 @@ export default function App() {
     addNotification(`Intercambio en Libreta de Queso: Se han compensado $${netAmount.toLocaleString()} M.N. de deudas cruzadas.`, 'success');
   };
 
-  const handlePaySupplierRemainingBalance = (supplierId: string, amount: number, paymentSource: string) => {
-    setSuppliers(prev => prev.map(s => s.id === supplierId ? { ...s, balanceOwed: Math.max(0, s.balanceOwed - amount) } : s));
+  const handlePaySupplierRemainingBalance = async (supplierId: string, amount: number, paymentSource: string, note?: string) => {
+    const sup = suppliers.find(s => s.id === supplierId);
+    if (!sup) return;
+    const newBalance = Math.max(0, sup.balanceOwed - amount);
+    
+    setSuppliers(prev => prev.map(s => s.id === supplierId ? { ...s, balanceOwed: newBalance } : s));
+
+    try {
+      await updateDoc(doc(db, 'suppliers', supplierId), { balance: newBalance, debt: newBalance, balanceOwed: newBalance });
+    } catch (err) {
+      console.error("Error updating supplier balance in Firebase:", err);
+    }
 
     if (paymentSource !== 'Dejar como Saldo Pendiente') {
       setBalance(prev => prev - amount);
-      const sup = suppliers.find(s => s.id === supplierId);
       const newTx: Transaction = {
         id: `TX-${Date.now().toString().slice(-4)}`,
-        entity: sup ? sup.name : 'Productor',
+        entity: sup.name,
         category: 'compras',
         date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
         invoiceNumber: `PAG-NET-${Math.floor(Math.random() * 9000 + 1000)}`,
         amount: amount,
         isIncome: false,
-        status: 'Completado'
+        status: 'Completado',
+        notes: note || `Pago de saldo. Fuente: ${paymentSource}`,
+        paymentMethod: paymentSource
       };
       setTransactions(prev => [newTx, ...prev]);
       try {
@@ -1374,7 +1388,9 @@ export default function App() {
                   sale.client?.id || undefined,
                   sale.paymentMethod,
                   sale.supplier?.id || undefined,
-                  sale.paidAmount
+                  sale.paidAmount,
+                  sale.total,
+                  sale.addedPayments
                 )
               }
               salesHistory={transactions.filter(t => t.category === 'ventas')}

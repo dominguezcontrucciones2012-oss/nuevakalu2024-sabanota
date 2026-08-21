@@ -13,7 +13,31 @@ export const getUnitLabel = (product: any): string => {
 
 export const parseSafeDecimal = (val: any): number => {
   if (val === undefined || val === null || val === '') return 0;
-  const str = String(val).replace(/[^0-9.,-]/g, '').replace(',', '.');
+  if (typeof val === 'number') return isNaN(val) ? 0 : val;
+  
+  let str = String(val).trim().replace(/[^0-9.,-]/g, '');
+  if (!str) return 0;
+
+  if (str.includes('.') && str.includes(',')) {
+    if (str.indexOf('.') < str.indexOf(',')) {
+      str = str.replace(/\./g, '').replace(',', '.');
+    } else {
+      str = str.replace(/,/g, '');
+    }
+  } else if (str.includes(',')) {
+    const parts = str.split(',');
+    if (parts.length === 2 && parts[1].length === 3 && parseInt(parts[0], 10) > 0) {
+      str = str.replace(',', '');
+    } else {
+      str = str.replace(',', '.');
+    }
+  } else if (str.includes('.')) {
+    const parts = str.split('.');
+    if (parts.length === 2 && parts[1].length === 3 && parseInt(parts[0], 10) > 0) {
+      str = str.replace('.', '');
+    }
+  }
+
   const num = parseFloat(str);
   return isNaN(num) ? 0 : num;
 };

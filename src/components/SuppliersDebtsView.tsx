@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { SupplierProfile, AccountBill, Transaction, CheeseProduct } from '../types';
 import { Truck, Store, Phone, Plus, BadgeAlert, FileCheck, CheckCircle, ExternalLink, Calendar, Eye, Wallet, CreditCard, Inbox, X, Search, Trash2 } from 'lucide-react';
+import { parseSafeDecimal } from '../utils';
 
 interface SuppliersDebtsViewProps {
   suppliers: SupplierProfile[];
@@ -13,7 +14,7 @@ interface SuppliersDebtsViewProps {
   onPaySupplierBill: (billId: string, supplierId: string, amount: number) => void;
   onRecordSupplierStorePayment?: (supplierId: string, amount: number, method: string, note: string, movementType: 'cargo' | 'abono') => void;
   onNetSupplierBalances?: (supplierId: string) => void;
-  onPaySupplierRemainingBalance?: (supplierId: string, amount: number, paymentSource: string) => void;
+  onPaySupplierRemainingBalance?: (supplierId: string, amount: number, paymentSource: string, note?: string) => void;
   onLoadPurchase?: (purchase: {
     supplierId: string;
     items: { productId: string; quantityKg: number; purchasePrice: number; sellingPrice: number; marginPercent: number; name: string; createNewItem?: boolean; }[];
@@ -96,6 +97,7 @@ export default function SuppliersDebtsView({
 
   // Pago a Él (Pay Supplier)
   const [payToThemAmount, setPayToThemAmount] = useState('');
+  const [payToThemCurrency, setPayToThemCurrency] = useState<'USD' | 'VES'>('USD');
   const [payToThemSource, setPayToThemSource] = useState('Efectivo / Caja Chica');
 
   // Abono de Él (Supplier Pays Us / Takes Credit)
@@ -124,12 +126,15 @@ export default function SuppliersDebtsView({
     } else if (modal === 'pagar') {
       const s = suppliers.find(sup => sup.id === supplierId);
       setPayToThemAmount(s ? s.balanceOwed.toString() : '');
+      setPayToThemCurrency('USD');
       setPayToThemSource('Efectivo / Caja Chica');
+
     } else if (modal === 'abonar') {
       const s = suppliers.find(sup => sup.id === supplierId);
       setPayToUsAmount('');
-      setPayToUsCurrency('USD');
-      setPayToUsMethod('Efectivo / Caja Chica');
+      setPayToThemAmount('');
+      setPayToThemCurrency('USD');
+      setPayToThemSource('Efectivo / Caja Chica');
       setPayToUsNote('');
       setPayToUsMovementType('abono');
     }
@@ -764,6 +769,11 @@ export default function SuppliersDebtsView({
               }
 
               if (activeModal === 'pagar') {
+                const inputAmt = parseSafeDecimal(payToThemAmount) || 0;
+                const usdAmount = payToThemCurrency === 'VES' ? inputAmt / exchangeRate : inputAmt;
+                const isOverpaid = usdAmount > s.balanceOwed;
+                const isValidAmount = inputAmt > 0 && !isOverpaid;
+
                 return (
                   <div className="flex flex-col h-full">
                     {/* Header */}
@@ -776,9 +786,25 @@ export default function SuppliersDebtsView({
                     {/* Content */}
                     <div className="p-5 space-y-4 flex-1 overflow-y-auto">
                       <div className="bg-amber-500/10 border border-amber-500/30 rounded p-4 text-center">
-                        <span className="text-[10px] font-mono uppercase text-neutral-400 block tracking-wider">Le Debemos Actualmente</span>
-                        <span className="font-mono text-3xl font-extrabold text-amber-500 block mt-1">$ {(s.balanceOwed || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD</span>
-                        <span className="text-xs font-mono text-amber-500/70 block mt-1">Bs {(s.balanceOwed * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
+                        <span className="text-[10px] font-mono uppercase text-neutral-400 block tracking-wider">Deuda Pendiente con el Productor</span>
+                        <span 
+                          onClick={() => {
+                            setPayToThemAmount((s.balanceOwed || 0).toFixed(2));
+                            setPayToThemCurrency('USD');
+                          }}
+                          className="font-mono text-3xl font-extrabold text-amber-500 block mt-1 cursor-pointer hover:underline hover:text-amber-400 transition-colors"
+                        >
+                          $ {(s.balanceOwed || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD
+                        </span>
+                        <span 
+                          onClick={() => {
+                            setPayToThemAmount(((s.balanceOwed || 0) * exchangeRate).toFixed(2));
+                            setPayToThemCurrency('VES');
+                          }}
+                          className="text-xs font-mono text-amber-500/70 block mt-1 cursor-pointer hover:underline hover:text-amber-400 transition-colors"
+                        >
+                          Bs {((s.balanceOwed || 0) * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                        </span>
                       </div>
                       
                       {s.balanceOwed > 0 && (s.storeDebt || 0) > 0 && (
@@ -796,10 +822,46 @@ export default function SuppliersDebtsView({
                         </div>
                       )}
 
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto a Pagar ($)</label>
-                        <input type="number" step="0.01" value={payToThemAmount} onChange={e => setPayToThemAmount(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" placeholder="0.00" />
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPayToThemCurrency('USD');
+                            setPayToThemAmount(String(s.balanceOwed));
+                          }}
+                          className="px-3 py-1.5 bg-neutral-800 border border-amber-500/50 hover:bg-amber-500/20 text-amber-500 text-[10px] font-mono font-bold uppercase rounded transition-colors cursor-pointer"
+                        >
+                          Liquidar Saldo Total
+                        </button>
                       </div>
+
+                      <div className="flex gap-4">
+                        <div className="space-y-1.5 flex-[2]">
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto a Pagar</label>
+                          <input type="text" inputMode="decimal" value={payToThemAmount} onChange={e => setPayToThemAmount(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" placeholder="0.00" />
+                        </div>
+                        <div className="space-y-1.5 flex-[1]">
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Moneda</label>
+                          <select value={payToThemCurrency} onChange={e => setPayToThemCurrency(e.target.value as 'USD' | 'VES')} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
+                            <option value="USD">Dólares ($)</option>
+                            <option value="VES">Bolívares (Bs)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {payToThemCurrency === 'VES' && inputAmt > 0 && (
+                        <div className="text-right text-[10px] font-mono text-neutral-400">
+                          Equivalente: <strong className="text-amber-500">${usdAmount.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</strong> (Tasa: {exchangeRate})
+                        </div>
+                      )}
+
+                      {isOverpaid && (
+                        <div className="bg-rose-950/40 border border-rose-900 rounded p-3 text-xs text-rose-400 font-mono flex items-start gap-2">
+                          <BadgeAlert className="w-4 h-4 shrink-0 mt-0.5" />
+                          <span>El monto ingresado no puede superar el saldo pendiente de <strong>${s.balanceOwed.toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD</strong>.</span>
+                        </div>
+                      )}
+
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-mono text-neutral-400 uppercase block">Fuente de Pago</label>
                         <select value={payToThemSource} onChange={e => setPayToThemSource(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
@@ -809,14 +871,16 @@ export default function SuppliersDebtsView({
                       </div>
                       <div className="pt-2">
                         <button
+                          disabled={!isValidAmount}
                           onClick={() => {
-                            const amt = Number(payToThemAmount);
-                            if (isNaN(amt) || amt <= 0) return onAddNotification('Monto inválido', 'warning');
-                            onPaySupplierRemainingBalance?.(s.id, amt, payToThemSource);
-                            onAddNotification(`Pago de $${amt.toFixed(2)} USD a ${s.name} registrado exitosamente.`, 'success');
+                            if (!isValidAmount) return;
+                            const note = `Liquidación de deuda a productor. Pago de ${payToThemCurrency === 'USD' ? '$' : 'Bs '}${inputAmt} ${payToThemCurrency} (Tasa: ${exchangeRate}). Fuente: ${payToThemSource}`;
+                            
+                            onPaySupplierRemainingBalance?.(s.id, usdAmount, payToThemSource, note);
+                            onAddNotification(`Pago de $${usdAmount.toFixed(2)} USD a ${s.name} registrado exitosamente.`, 'success');
                             setActiveModal(null);
                           }}
-                          className="w-full py-3 bg-amber-600 hover:bg-amber-500 text-neutral-900 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer"
+                          className="w-full py-3 bg-amber-600 hover:bg-amber-500 text-neutral-900 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           Efectuar Pago
                         </button>
@@ -840,8 +904,24 @@ export default function SuppliersDebtsView({
                     <div className="p-5 space-y-4 flex-1 overflow-y-auto">
                       <div className="bg-neutral-800 border border-neutral-700 rounded p-4 text-center">
                         <span className="text-[10px] font-mono uppercase text-neutral-400 block tracking-wider">Él Nos Debe Actualmente</span>
-                        <span className="font-mono text-3xl font-extrabold text-amber-500 block mt-1">$ {(s.storeDebt || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD</span>
-                        <span className="text-xs font-mono text-neutral-500 block mt-1">Bs {((s.storeDebt || 0) * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
+                        <span 
+                          onClick={() => {
+                            setPayToUsAmount((s.storeDebt || 0).toFixed(2));
+                            setPayToUsCurrency('USD');
+                          }}
+                          className="font-mono text-3xl font-extrabold text-amber-500 block mt-1 cursor-pointer hover:underline hover:text-amber-400 transition-colors"
+                        >
+                          $ {(s.storeDebt || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD
+                        </span>
+                        <span 
+                          onClick={() => {
+                            setPayToUsAmount(((s.storeDebt || 0) * exchangeRate).toFixed(2));
+                            setPayToUsCurrency('VES');
+                          }}
+                          className="text-xs font-mono text-neutral-500 block mt-1 cursor-pointer hover:underline hover:text-amber-400 transition-colors"
+                        >
+                          Bs {((s.storeDebt || 0) * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                        </span>
                       </div>
 
                       <div className="space-y-1.5">
@@ -855,7 +935,7 @@ export default function SuppliersDebtsView({
                       <div className="flex gap-4">
                         <div className="space-y-1.5 flex-[2]">
                           <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto</label>
-                          <input type="number" step="0.01" value={payToUsAmount} onChange={e => setPayToUsAmount(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" placeholder="0.00" />
+                          <input type="text" inputMode="decimal" value={payToUsAmount} onChange={e => setPayToUsAmount(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" placeholder="0.00" />
                         </div>
                         <div className="space-y-1.5 flex-[1]">
                           <label className="text-[10px] font-mono text-neutral-400 uppercase block">Moneda</label>
@@ -883,7 +963,7 @@ export default function SuppliersDebtsView({
                       <div className="pt-2">
                         <button
                           onClick={() => {
-                            const inputAmt = Number(payToUsAmount);
+                            const inputAmt = parseSafeDecimal(payToUsAmount);
                             if (isNaN(inputAmt) || inputAmt <= 0) return onAddNotification('Monto inválido', 'warning');
                             const usdAmount = payToUsCurrency === 'VES' ? inputAmt / exchangeRate : inputAmt;
                             
