@@ -126,18 +126,23 @@ export interface CheeseSaleItem {
 export interface ClientProfile {
   id: string;
   name: string;
-  email: string;
+  cedula?: string;
+  rfc?: string;
   phone: string;
+  email: string;
+  address?: string;
+  birthday?: string;
+  pin?: string;
+  tier: 'Bronce' | 'Plata' | 'Oro' | 'VIP';
   loyaltyPoints: number;
   outstandingDebt: number;
-  rfc?: string;
-  tier?: 'Bronce' | 'Plata' | 'Oro' | 'VIP';
 }
 
 export interface SupplierProfile {
   id: string;
   name: string;
   idNumber?: string;
+  cedula?: string;
   contact: string;
   phone: string;
   email: string;
@@ -147,6 +152,8 @@ export interface SupplierProfile {
   address?: string;
   productsSupplied?: string[];
   rfc?: string;
+  birthday?: string;
+  pin?: string;
   isCheeseProducer?: boolean;
   isEmployee?: boolean;
 }

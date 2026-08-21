@@ -1042,14 +1042,29 @@ export default function App() {
   };
 
   // 5. Clients & Credit repayments
-  const handleAddClient = (client: Omit<ClientProfile, 'id' | 'outstandingDebt' | 'loyaltyPoints'>) => {
+  const handleAddClient = async (client: Omit<ClientProfile, 'id' | 'outstandingDebt' | 'loyaltyPoints'>) => {
     const newCli: ClientProfile = {
       ...client,
       id: `cli-${Date.now()}`,
       outstandingDebt: 0,
       loyaltyPoints: 10
     };
-    setClients((prev) => [...prev, newCli]);
+    try {
+      await setDoc(doc(db, 'clients', newCli.id), newCli);
+    } catch (err) {
+      console.error("Error al crear cliente:", err);
+      addNotification("Error al guardar cliente en base de datos", "warning");
+    }
+  };
+
+  const handleUpdateClient = async (clientId: string, updates: Partial<ClientProfile>) => {
+    try {
+      await updateDoc(doc(db, 'clients', clientId), updates);
+      addNotification("Perfil de cliente actualizado", "success");
+    } catch (err) {
+      console.error("Error al actualizar cliente:", err);
+      addNotification("Error al actualizar cliente", "warning");
+    }
   };
 
   const handleRecordDebtPayment = async (clientId: string, amount: number, paymentMethod: string, notes?: string, paymentBreakdown?: any) => {
@@ -1126,13 +1141,28 @@ export default function App() {
   };
 
   // 6. Suppliers & Repayments of accounts payable
-  const handleAddSupplier = (sup: Omit<SupplierProfile, 'id' | 'balanceOwed'>) => {
+  const handleAddSupplier = async (sup: Omit<SupplierProfile, 'id' | 'balanceOwed'>) => {
     const newSup: SupplierProfile = {
       ...sup,
       id: `sup-${Date.now()}`,
       balanceOwed: 0
     };
-    setSuppliers((prev) => [...prev, newSup]);
+    try {
+      await setDoc(doc(db, 'suppliers', newSup.id), newSup);
+    } catch (err) {
+      console.error("Error al crear proveedor:", err);
+      addNotification("Error al guardar proveedor en base de datos", "warning");
+    }
+  };
+
+  const handleUpdateSupplier = async (supplierId: string, updates: Partial<SupplierProfile>) => {
+    try {
+      await updateDoc(doc(db, 'suppliers', supplierId), updates);
+      addNotification("Perfil de proveedor actualizado", "success");
+    } catch (err) {
+      console.error("Error al actualizar proveedor:", err);
+      addNotification("Error al actualizar proveedor", "warning");
+    }
   };
 
   const handlePaySupplierBill = (billId: string, supplierId: string, amount: number) => {
@@ -1180,6 +1210,28 @@ export default function App() {
     // Decrease balance
     setBalance((prev) => prev - newExp.amount);
 
+    // Update Tesorería
+    const currentInitials = settings?.sabanotaInitials || {
+      drawerUsd: 0, drawerBs: 0, bankBalanceBs: 0, bankBalanceUsd: 0, totalCapital: 0
+    };
+    
+    const updatedSabanota = { ...currentInitials };
+    const exchangeRate = settings?.exchangeRate || 45;
+    
+    // Asumimos que paymentMethod puede ser "Efectivo" o "Transferencia" o "Tarjeta" etc
+    const method = (newExp as any).paymentMethod || 'Efectivo';
+    if (method.includes('Efectivo')) {
+       // Asumiendo Efectivo USD
+       updatedSabanota.drawerUsd -= newExp.amount;
+    } else {
+       // Asumiendo Bs convertido
+       updatedSabanota.bankBalanceBs -= (newExp.amount * exchangeRate);
+    }
+
+    updatedSabanota.totalCapital = updatedSabanota.drawerUsd + (updatedSabanota.drawerBs / exchangeRate) + (updatedSabanota.bankBalanceBs / exchangeRate) + updatedSabanota.bankBalanceUsd;
+
+    handleUpdateSettings({ sabanotaInitials: updatedSabanota });
+
     // Log transaction
     const newTx: Transaction = {
       id: `TX-${Date.now().toString().slice(-4)}`,
@@ -1189,7 +1241,8 @@ export default function App() {
       invoiceNumber: `EG-${Math.floor(Math.random() * 8000 + 1000)}`,
       amount: newExp.amount,
       isIncome: false,
-      status: 'Completado'
+      status: 'Completado',
+      paymentMethod: method
     };
     setTransactions((prev) => [newTx, ...prev]);
   };
@@ -1350,6 +1403,7 @@ export default function App() {
             <ClientsCreditView
               clients={clients}
               onAddClient={handleAddClient}
+              onUpdateClient={handleUpdateClient}
               onRecordDebtPayment={handleRecordDebtPayment}
               onAddNotification={addNotification}
             />
@@ -1363,6 +1417,7 @@ export default function App() {
               businessBalance={balance}
               exchangeRate={42.50}
               onAddSupplier={handleAddSupplier}
+              onUpdateSupplier={handleUpdateSupplier}
               onPaySupplierBill={handlePaySupplierBill}
               onRecordSupplierStorePayment={handleRecordSupplierStorePayment}
               onNetSupplierBalances={handleNetSupplierBalances}

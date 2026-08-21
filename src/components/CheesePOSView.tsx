@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOrder, Transaction } from '../types';
-import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap } from 'lucide-react';
-import { parseSafeDecimal, formatCurrency, formatQuantity } from '../utils';
+import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye } from 'lucide-react';
+import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '../utils';
+import { collection, addDoc, getDocs, query, orderBy, doc, updateDoc } from 'firebase/firestore';
+import { db } from '../services/firebase';
 
 interface CheesePOSViewProps {
   exchangeRate: number;
@@ -41,7 +43,7 @@ export default function CheesePOSView({
 }: CheesePOSViewProps) {
   // Helper para procesar números y precios de manera segura (Regla estricta 2)
   const parseNum = (val: any) => parseSafeDecimal(val);
-  const [activeTab, setActiveTab] = useState<'pos' | 'history' | 'closing'>('pos');
+  const [activeTab, setActiveTab] = useState<'pos' | 'history' | 'closing' | 'closing_history'>('pos');
   // POS Register States
   const [searchQuery, setSearchQuery] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -109,17 +111,42 @@ export default function CheesePOSView({
   const [lastReceipt, setLastReceipt] = useState<any | null>(null);
 
   // Cierre de caja States
-  const [startingCash, setStartingCash] = useState<number>(1500);
-  const [actualCash, setActualCash] = useState<number>(1500);
+  const [startingCash, setStartingCash] = useState<number>(() => {
+    return settings?.defaultStartingCash || Number(localStorage.getItem('kalu_starting_cash')) || 0;
+  });
+  const [actualCash, setActualCash] = useState<number>(() => {
+    return settings?.defaultStartingCash || Number(localStorage.getItem('kalu_starting_cash')) || 0;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('kalu_starting_cash', startingCash.toString());
+  }, [startingCash]);
   const [isClosed, setIsClosed] = useState<boolean>(false);
   const [closingReport, setClosingReport] = useState<any | null>(null);
+  const [closingsHistory, setClosingsHistory] = useState<any[]>([]);
+  const [selectedAuditClosing, setSelectedAuditClosing] = useState<any | null>(null);
+
+  useEffect(() => {
+    const fetchClosings = async () => {
+      try {
+        const q = query(collection(db, 'cashClosings'), orderBy('timestamp', 'desc'));
+        const querySnapshot = await getDocs(q);
+        const data = querySnapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
+        setClosingsHistory(data);
+      } catch (error) {
+        console.error('Error cargando historial de cierres:', error);
+      }
+    };
+    fetchClosings();
+  }, [isClosed]);
 
   // Calculate Cart Totals (Regla estricta 2)
   const { subtotal, tax, total } = React.useMemo(() => {
     const sub = cart.reduce((sum, item) => sum + (parseNum(item.subtotal) || (parseNum(item.quantityKg) * parseNum(item.pricePerKg)) || 0), 0);
-    const tx = sub * 0.16; // 16% IVA
+    const rate = settings?.taxRate !== undefined ? settings.taxRate : 5;
+    const tx = sub * (rate / 100);
     return { subtotal: sub, tax: tx, total: sub + tx };
-  }, [cart]);
+  }, [cart, settings?.taxRate]);
 
   const handleAddToCart = (product: CheeseProduct, qty: number = 1.0) => {
     const stock = parseNum(product.stockKg);
@@ -154,7 +181,8 @@ export default function CheesePOSView({
           name: product.name,
           quantityKg: addQty,
           pricePerKg: pPrice,
-          subtotal: parseNum((addQty * pPrice).toFixed(2))
+          subtotal: parseNum((addQty * pPrice).toFixed(2)),
+          unit: product.unit || getUnitLabel(product) as any
         }
       ]);
     }
@@ -314,40 +342,118 @@ export default function CheesePOSView({
   };
 
   // Calculate closing calculations
-  // Ventas puras (Categoría 'ventas')
-  const cashSales = salesHistory.filter(s => s.paymentMethod === 'Efectivo').reduce((sum, s) => sum + s.total, 0);
-  const cardSales = salesHistory.filter(s => s.paymentMethod === 'Tarjeta').reduce((sum, s) => sum + s.total, 0);
-  const transferSales = salesHistory.filter(s => s.paymentMethod === 'Transferencia').reduce((sum, s) => sum + s.total, 0);
+  // Helper to extract amount from sales (handling multipago)
+  const getSalesTotalByMethod = (method: string) => {
+    return salesHistory.reduce((sum, s) => {
+      if (s.addedPayments && s.addedPayments.length > 0) {
+        const amountInMethod = s.addedPayments
+          .filter((p: any) => p.method === method || (method === 'Efectivo' && p.method === 'Efectivo $') || (method === 'Transferencia' && p.method === 'Pago Móvil') || (method === 'Tarjeta' && p.method === 'Tarjeta / Punto'))
+          .reduce((acc: number, p: any) => acc + p.amount, 0);
+        return sum + amountInMethod;
+      }
+      return sum + (s.paymentMethod === method || (method === 'Efectivo $' && s.paymentMethod === 'Efectivo') ? s.total : 0);
+    }, 0);
+  };
 
-  // Cobros de deudas a clientes (Categoría 'credito' y es ingreso)
-  const todayCreditIncome = allTransactions.filter(t => t.category === 'credito' && t.isIncome);
-  const creditIncomeCash = todayCreditIncome.filter(t => t.paymentMethod === 'Efectivo').reduce((sum, t) => sum + t.amount, 0);
-  const creditIncomeCard = todayCreditIncome.filter(t => t.paymentMethod === 'Tarjeta').reduce((sum, t) => sum + t.amount, 0);
-  const creditIncomeTransfer = todayCreditIncome.filter(t => t.paymentMethod === 'Transferencia').reduce((sum, t) => sum + t.amount, 0);
+  const getTransactionsTotalByMethod = (method: string, category: string, isIncome: boolean) => {
+    return allTransactions
+      .filter(t => t.category === category && t.isIncome === isIncome && (t.paymentMethod === method || (method === 'Efectivo $' && t.paymentMethod === 'Efectivo')))
+      .reduce((sum, t) => sum + t.amount, 0);
+  };
 
-  // Gastos (Categoría 'gastos' y no es ingreso)
-  const todayExpenses = allTransactions.filter(t => t.category === 'gastos' && !t.isIncome);
-  const expensesCash = todayExpenses.filter(t => t.paymentMethod === 'Efectivo' || !t.paymentMethod).reduce((sum, t) => sum + t.amount, 0);
+  // 1. Efectivo USD ($)
+  const salesCashUsd = getSalesTotalByMethod('Efectivo $');
+  const incomeCashUsd = getTransactionsTotalByMethod('Efectivo $', 'credito', true);
+  const totalCashUsd = salesCashUsd + incomeCashUsd;
 
-  // Efectivo total calculado en caja = Fondo Inicial + Ventas Efectivo + Abonos Efectivo - Gastos Efectivo
-  const totalCalculated = startingCash + cashSales + creditIncomeCash - expensesCash;
+  // 2. Efectivo Bs
+  const salesCashBs = getSalesTotalByMethod('Efectivo Bs');
+  const incomeCashBs = getTransactionsTotalByMethod('Efectivo Bs', 'credito', true);
+  const totalCashBs = salesCashBs + incomeCashBs;
+
+  // 3. Punto de Venta / Tarjetas
+  const salesCard = getSalesTotalByMethod('Tarjeta / Punto') + getSalesTotalByMethod('Tarjeta');
+  const incomeCard = getTransactionsTotalByMethod('Tarjeta / Punto', 'credito', true) + getTransactionsTotalByMethod('Tarjeta', 'credito', true);
+  const totalCard = salesCard + incomeCard;
+
+  // 4. Pago Móvil
+  const salesMobile = getSalesTotalByMethod('Pago Móvil') + getSalesTotalByMethod('Transferencia');
+  const incomeMobile = getTransactionsTotalByMethod('Pago Móvil', 'credito', true) + getTransactionsTotalByMethod('Transferencia', 'credito', true);
+  const totalMobile = salesMobile + incomeMobile;
+
+  // 5. Biopago
+  const salesBiopago = getSalesTotalByMethod('BioPago');
+  const incomeBiopago = getTransactionsTotalByMethod('BioPago', 'credito', true);
+  const totalBiopago = salesBiopago + incomeBiopago;
+
+  // 6. Ventas a Crédito (Fiado)
+  const totalCreditSales = salesHistory.reduce((sum, s) => sum + (s.paymentMethod === 'Crédito' || s.debtAmount > 0 ? (s.debtAmount || s.total) : 0), 0);
+
+  // 7. Gastos en Efectivo USD (Asumiendo que gastos son en USD principalmente para la gaveta)
+  const expensesCashUsd = getTransactionsTotalByMethod('Efectivo $', 'gastos', false) + getTransactionsTotalByMethod('Efectivo', 'gastos', false);
+
+  // Efectivo total calculado en caja (Gaveta USD) = Fondo Inicial + Ventas USD + Abonos USD - Gastos USD
+  const totalCalculated = startingCash + salesCashUsd + incomeCashUsd - expensesCashUsd;
   const difference = actualCash - totalCalculated;
 
-  const handlePerformClosing = () => {
-    setIsClosed(true);
-    setClosingReport({
-      id: `CLO-${Date.now().toString().slice(-4)}`,
-      date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-      startingCash,
-      cashSales,
-      cardSales,
-      transferSales,
-      totalRevenue: cashSales + cardSales + transferSales,
-      actualCash,
-      difference,
-      status: difference === 0 ? 'Balance Perfecto' : difference > 0 ? 'Sobrante' : 'Faltante'
-    });
-    onAddNotification('Cierre de caja registrado y bloqueado con éxito.', 'success');
+  const handlePerformClosing = async () => {
+    try {
+      const report = {
+        id: `CLO-${Date.now().toString().slice(-4)}`,
+        date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+        startingCash,
+        salesCashUsd,
+        incomeCashUsd,
+        totalCashUsd,
+        salesCashBs,
+        incomeCashBs,
+        totalCashBs,
+        totalCard,
+        totalMobile,
+        totalBiopago,
+        totalCreditSales,
+        expensesCashUsd,
+        totalCalculated,
+        actualCash,
+        difference,
+        status: difference === 0 ? 'Balance Perfecto' : difference > 0 ? 'Sobrante' : 'Faltante',
+        timestamp: new Date().toISOString()
+      };
+      
+      await addDoc(collection(db, 'cashClosings'), report);
+
+      // Actualizar tesorería (sabanotaInitials) en Firebase
+      const currentInitials = settings?.sabanotaInitials || {
+        drawerUsd: 0, drawerBs: 0, bankBalanceBs: 0, bankBalanceUsd: 0, totalCapital: 0
+      };
+
+      // Sumar ingresos a bancos según los métodos (asumiendo totalCard y totalMobile van a bankBalanceBs/bankBalanceUsd según la moneda, aquí simplificamos todo Bs a bankBalanceBs)
+      // Ajuste real según requerimientos:
+      const updatedSabanota = {
+        ...currentInitials,
+        drawerUsd: currentInitials.drawerUsd + totalCashUsd - expensesCashUsd,
+        drawerBs: currentInitials.drawerBs + totalCashBs,
+        bankBalanceBs: currentInitials.bankBalanceBs + totalMobile + totalBiopago + totalCard,
+      };
+      
+      // El totalCapital aumenta según las ganancias, lo sumamos crudo aquí para el patrimonio
+      updatedSabanota.totalCapital = updatedSabanota.drawerUsd + (updatedSabanota.drawerBs / exchangeRate) + (updatedSabanota.bankBalanceBs / exchangeRate) + updatedSabanota.bankBalanceUsd;
+
+      try {
+        await updateDoc(doc(db, 'settings', 'general'), {
+          sabanotaInitials: updatedSabanota
+        });
+      } catch (err) {
+        console.error("Error updating tesorería", err);
+      }
+
+      setIsClosed(true);
+      setClosingReport(report);
+      onAddNotification('Cierre de caja registrado y Tesorería actualizada.', 'success');
+    } catch (error) {
+      console.error('Error al guardar cierre de caja:', error);
+      onAddNotification('Error al guardar el cierre en la nube. Reintente.', 'warning');
+    }
   };
 
   return (
@@ -378,6 +484,14 @@ export default function CheesePOSView({
         >
           Cierre de Caja Diario
         </button>
+        <button
+          onClick={() => setActiveTab('closing_history')}
+          className={`pb-3 font-serif text-lg font-bold tracking-tight transition-all border-b-2 relative -bottom-[2px] cursor-pointer ${
+            activeTab === 'closing_history' ? 'border-amber-500 text-editorial-text-primary' : 'border-transparent text-editorial-text-muted hover:text-editorial-text-primary'
+          }`}
+        >
+          Historial de Cierres
+        </button>
       </div>
 
       {/* Early Warning System for Mobile Orders */}
@@ -387,7 +501,7 @@ export default function CheesePOSView({
             <Smartphone className="w-6 h-6 text-rose-500" />
             <div>
               <p className="text-sm font-bold text-rose-400">¡NUEVO PEDIDO MÓVIL ENTRANTE!</p>
-              <p className="text-xs text-editorial-text-muted">El cliente {order.entityName} ha solicitado {order.items.length} producto(s) por un total de ${order.total.toLocaleString()} USD.</p>
+              <p className="text-xs text-editorial-text-muted">El cliente {order.entityName} ha solicitado {order.items.length} producto(s) por un total de ${(order.total || 0).toLocaleString()} USD.</p>
             </div>
           </div>
           <button
@@ -398,7 +512,8 @@ export default function CheesePOSView({
                 name: item.name,
                 pricePerKg: item.price,
                 quantityKg: item.quantity,
-                subtotal: item.subtotal
+                subtotal: item.subtotal,
+                unit: item.unit
               }));
               setCart(newCart);
               setCustomerType('client');
@@ -469,7 +584,7 @@ export default function CheesePOSView({
                         <div className="space-y-1">
                           <div className="flex justify-between items-start">
                             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">
-                              {p.category} • {p.origin.split(' ')[0]}
+                              {p.category} • {(p.origin || '').split(' ')[0]}
                             </span>
                             {isSoldOut ? (
                               <span className="text-[8px] font-mono font-extrabold bg-rose-950/20 text-rose-400 border border-rose-800/40 px-2 py-0.5 rounded uppercase">
@@ -485,7 +600,7 @@ export default function CheesePOSView({
                             {p.name}
                           </h3>
                           <p className="font-mono text-xs text-amber-500 font-bold pt-1">
-                            ${p.sellingPrice.toFixed(2)} <span className="text-[10px] text-editorial-text-muted font-normal font-sans">/ kg</span>
+                            ${p.sellingPrice.toFixed(2)} <span className="text-[10px] text-editorial-text-muted font-normal font-sans">/ {getUnitLabel(p).toLowerCase()}</span>
                           </p>
                         </div>
 
@@ -512,7 +627,7 @@ export default function CheesePOSView({
                                 className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-sm text-editorial-text-primary font-mono focus:outline-none focus:border-amber-500"
                                 placeholder="Cant."
                               />
-                              <span className="text-xs text-editorial-text-muted">kg/un</span>
+                              <span className="text-xs text-editorial-text-muted">{getUnitLabel(p)}</span>
                             </div>
                             <div className="flex gap-2">
                               <button
@@ -544,7 +659,7 @@ export default function CheesePOSView({
                         ) : (
                           <div className="mt-4 pt-3 border-t border-editorial-border/60 flex items-center justify-between">
                             <span className="font-mono text-[10px] text-editorial-text-muted">
-                              Stock: <span className="font-sans font-bold text-editorial-text-primary">{p.stockKg.toFixed(1)} kg</span>
+                              Stock: <span className="font-sans font-bold text-editorial-text-primary">{p.stockKg.toFixed(1)} {getUnitLabel(p)}</span>
                             </span>
                           </div>
                         )}
@@ -562,7 +677,7 @@ export default function CheesePOSView({
                     <span className="font-mono text-[10px] text-editorial-text-muted mr-3">Línea {idx + 1}</span>
                     <span className="flex-1 truncate font-semibold">{item.name}</span>
                     <div className="flex items-center gap-4 ml-4">
-                      <span className="font-mono text-editorial-text-muted">{item.quantityKg} kg/un x ${item.pricePerKg.toFixed(2)}</span>
+                      <span className="font-mono text-editorial-text-muted">{item.quantityKg} {getUnitLabel(item)} x ${item.pricePerKg.toFixed(2)}</span>
                       <span className="font-mono font-bold text-amber-500">${item.subtotal.toFixed(2)}</span>
                       <button
                         onClick={() => handleRemoveFromCart(item.productId)}
@@ -765,7 +880,7 @@ export default function CheesePOSView({
                     <span className="text-editorial-text-primary">${subtotal.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span>IVA (16%):</span>
+                    <span>IVA ({settings?.taxRate ?? 5}%):</span>
                     <span className="text-editorial-text-primary">${tax.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between font-serif text-lg font-bold text-editorial-text-primary pt-1.5 border-t border-editorial-border/40">
@@ -1129,31 +1244,31 @@ export default function CheesePOSView({
                 {/* Audit matching calculations */}
                 <div className="bg-editorial-bg border border-editorial-border rounded p-4 font-mono text-xs space-y-2.5">
                   <div className="flex justify-between text-editorial-text-muted">
-                    <span>Fondo Inicial de Caja:</span>
+                    <span>Fondo Inicial de Caja USD:</span>
                     <span className="text-editorial-text-primary">${startingCash.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between text-editorial-text-muted">
-                    <span>(+) Ventas Registradas en Efectivo:</span>
-                    <span className="text-emerald-400">+${cashSales.toFixed(2)}</span>
+                    <span>(+) Ventas Efectivo USD:</span>
+                    <span className="text-emerald-400">+${salesCashUsd.toFixed(2)}</span>
                   </div>
-                  {creditIncomeCash > 0 && (
+                  {incomeCashUsd > 0 && (
                     <div className="flex justify-between text-editorial-text-muted">
-                      <span>(+) Ingresos por Cobranza (Efectivo):</span>
-                      <span className="text-emerald-400">+${creditIncomeCash.toFixed(2)}</span>
+                      <span>(+) Abonos Efectivo USD:</span>
+                      <span className="text-emerald-400">+${incomeCashUsd.toFixed(2)}</span>
                     </div>
                   )}
-                  {expensesCash > 0 && (
+                  {expensesCashUsd > 0 && (
                     <div className="flex justify-between text-editorial-text-muted">
-                      <span>(-) Salidas por Gastos (Efectivo):</span>
-                      <span className="text-rose-400">-${expensesCash.toFixed(2)}</span>
+                      <span>(-) Gastos Efectivo USD:</span>
+                      <span className="text-rose-400">-${expensesCashUsd.toFixed(2)}</span>
                     </div>
                   )}
                   <div className="flex justify-between font-bold border-t border-editorial-border/40 pt-2 text-editorial-text-primary">
-                    <span>(=) Efectivo Esperado en Caja:</span>
+                    <span>(=) Esperado en Gaveta USD:</span>
                     <span>${totalCalculated.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between text-editorial-text-muted mt-2">
-                    <span>(-) Efectivo Físico Declarado:</span>
+                    <span>(-) Efectivo Físico Real USD:</span>
                     <span className="text-editorial-text-primary">${actualCash.toFixed(2)}</span>
                   </div>
 
@@ -1181,19 +1296,27 @@ export default function CheesePOSView({
           {/* Report output column */}
           <div className="lg:col-span-5 space-y-6">
             <div className="bg-editorial-card border border-editorial-border rounded p-6 space-y-4">
-              <h4 className="font-serif text-lg font-bold text-editorial-text-primary tracking-tight">Resumen No-Efectivo de Hoy</h4>
-              <div className="font-mono text-xs space-y-3">
-                <div className="flex justify-between p-3 bg-editorial-bg rounded border border-editorial-border">
-                  <span className="text-editorial-text-muted">Ventas y Cobros por Tarjeta:</span>
-                  <span className="font-bold text-editorial-text-primary">${(cardSales + creditIncomeCard).toFixed(2)}</span>
+              <h4 className="font-serif text-lg font-bold text-editorial-text-primary tracking-tight">Tarjetas de Resumen</h4>
+              <div className="font-mono text-xs grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="flex flex-col p-3 bg-editorial-bg rounded border border-editorial-border">
+                  <span className="text-[10px] uppercase text-editorial-text-muted">💳 Punto de Venta</span>
+                  <span className="font-bold text-editorial-text-primary text-lg">${totalCard.toFixed(2)}</span>
                 </div>
-                <div className="flex justify-between p-3 bg-editorial-bg rounded border border-editorial-border">
-                  <span className="text-editorial-text-muted">Ventas y Cobros Transferencia:</span>
-                  <span className="font-bold text-editorial-text-primary">${(transferSales + creditIncomeTransfer).toFixed(2)}</span>
+                <div className="flex flex-col p-3 bg-editorial-bg rounded border border-editorial-border">
+                  <span className="text-[10px] uppercase text-editorial-text-muted">📲 Pago Móvil</span>
+                  <span className="font-bold text-editorial-text-primary text-lg">${totalMobile.toFixed(2)}</span>
                 </div>
-                <div className="flex justify-between p-3 bg-amber-500/10 text-amber-500 border border-amber-500/30 rounded">
-                  <span>Facturado Total Hoy:</span>
-                  <span className="font-bold">${(cashSales + cardSales + transferSales).toFixed(2)}</span>
+                <div className="flex flex-col p-3 bg-editorial-bg rounded border border-editorial-border">
+                  <span className="text-[10px] uppercase text-editorial-text-muted">🧬 Biopago</span>
+                  <span className="font-bold text-editorial-text-primary text-lg">${totalBiopago.toFixed(2)}</span>
+                </div>
+                <div className="flex flex-col p-3 bg-editorial-bg rounded border border-editorial-border">
+                  <span className="text-[10px] uppercase text-editorial-text-muted">💵 Efectivo Bs</span>
+                  <span className="font-bold text-editorial-text-primary text-lg">${totalCashBs.toFixed(2)}</span>
+                </div>
+                <div className="col-span-1 md:col-span-2 flex flex-col p-3 bg-amber-500/10 text-amber-500 border border-amber-500/30 rounded">
+                  <span className="text-[10px] uppercase">📋 Total Fiado Hoy</span>
+                  <span className="font-bold text-lg">${totalCreditSales.toFixed(2)}</span>
                 </div>
               </div>
             </div>
@@ -1209,16 +1332,20 @@ export default function CheesePOSView({
 
                 <div className="space-y-1.5 text-[11px]">
                   <div className="flex justify-between">
-                    <span className="text-editorial-text-muted">Fondo Apertura:</span>
+                    <span className="text-editorial-text-muted">Fondo Apertura USD:</span>
                     <span>${closingReport.startingCash.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-editorial-text-muted">Venta Efectivo:</span>
-                    <span>${closingReport.cashSales.toFixed(2)}</span>
+                    <span className="text-editorial-text-muted">Total Ingresos USD:</span>
+                    <span>${closingReport.totalCashUsd.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-editorial-text-muted">Gastos USD:</span>
+                    <span className="text-rose-400">-${closingReport.expensesCashUsd.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between font-bold text-editorial-text-primary pt-1 border-t border-editorial-border/30">
-                    <span>Total Teórico:</span>
-                    <span>${(closingReport.startingCash + closingReport.cashSales).toFixed(2)}</span>
+                    <span>Total Teórico Gaveta USD:</span>
+                    <span>${closingReport.totalCalculated.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-editorial-text-muted">Contado Real:</span>
@@ -1236,6 +1363,92 @@ export default function CheesePOSView({
                 </div>
               </div>
             )}
+
+            {/* Tarjeta del Último Cierre (Si hay alguno en el historial) */}
+            {closingsHistory.length > 0 && activeTab === 'closing' && (
+              <div className="bg-editorial-bg border border-editorial-border rounded p-6 font-mono text-xs mt-4">
+                <h4 className="font-serif text-sm font-bold text-editorial-text-primary uppercase mb-3 flex items-center gap-2"><Archive className="w-4 h-4 text-amber-500" /> Último Cierre Registrado</h4>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between">
+                    <span className="text-editorial-text-muted">Fecha y Hora:</span>
+                    <span className="text-editorial-text-primary font-bold">{new Date(closingsHistory[0].timestamp).toLocaleString('es-ES')}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-editorial-text-muted">Reporte:</span>
+                    <span className="text-editorial-text-primary">{closingsHistory[0].id}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-editorial-text-muted">Recaudado USD:</span>
+                    <span className="text-emerald-400 font-bold">${(closingsHistory[0].totalCashUsd || 0).toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-editorial-border/30 pt-1.5 mt-1.5">
+                    <span className="text-editorial-text-muted">Estado del Cuadre:</span>
+                    <span className={`font-bold ${closingsHistory[0].difference === 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {closingsHistory[0].status}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'closing_history' && (
+        <div className="bg-editorial-card border border-editorial-border rounded p-6">
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="font-serif text-2xl font-bold text-editorial-text-primary tracking-tight">
+              Historial de Cierres de Caja
+            </h3>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-editorial-border text-[10px] font-mono text-editorial-text-muted uppercase tracking-wider">
+                  <th className="py-3 px-4">Fecha / Hora</th>
+                  <th className="py-3 px-4">Reporte ID</th>
+                  <th className="py-3 px-4">Recaudado USD</th>
+                  <th className="py-3 px-4">Efectivo Real</th>
+                  <th className="py-3 px-4">Cuadre</th>
+                  <th className="py-3 px-4 text-center">Acción</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-editorial-border/60 font-sans">
+                {closingsHistory.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-8 text-center text-editorial-text-muted">
+                      No hay cierres de caja registrados en el sistema.
+                    </td>
+                  </tr>
+                ) : (
+                  closingsHistory.map((c) => (
+                    <tr key={c.docId} className="hover:bg-editorial-bg/40 transition-all">
+                      <td className="py-3.5 px-4 font-mono">{new Date(c.timestamp).toLocaleString('es-ES')}</td>
+                      <td className="py-3.5 px-4 font-mono font-bold text-editorial-text-primary">{c.id}</td>
+                      <td className="py-3.5 px-4 text-emerald-400 font-bold font-mono">${(c.totalCashUsd || 0).toFixed(2)}</td>
+                      <td className="py-3.5 px-4 font-mono">${(c.actualCash || 0).toFixed(2)}</td>
+                      <td className="py-3.5 px-4">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                          c.difference === 0 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
+                        }`}>
+                          {c.status}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 text-center">
+                        <button
+                          onClick={() => setSelectedAuditClosing(c)}
+                          className="px-3 py-1.5 text-[10px] font-mono border border-amber-500 text-amber-500 hover:bg-amber-500 hover:text-black rounded transition-all cursor-pointer inline-flex items-center gap-1.5 font-bold uppercase tracking-wider"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          Auditar
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -1285,7 +1498,7 @@ export default function CheesePOSView({
                     lastReceipt.items.map((it: any, idx: number) => (
                       <tr key={idx}>
                         <td className="py-1.5 align-top">{it.quantityKg || it.quantity || 1}</td>
-                        <td className="py-1.5 align-top pr-2">{it.name} <br/><span className="text-[9px] text-gray-500">${parseNum(it.pricePerKg).toFixed(2)}/kg</span></td>
+                        <td className="py-1.5 align-top pr-2">{it.name} <br/><span className="text-[9px] text-gray-500">${parseNum(it.pricePerKg).toFixed(2)}/{it.unit ? getUnitLabel(it).toLowerCase() : 'kg'}</span></td>
                         <td className="py-1.5 align-top text-right">${parseNum(it.subtotal).toFixed(2)}</td>
                       </tr>
                     ))
@@ -1300,10 +1513,22 @@ export default function CheesePOSView({
               <div className="border-t border-dashed border-gray-400 my-2" />
 
               <div className="space-y-1 text-right">
-                <p className="text-[11px]">Subtotal: ${(parseNum(lastReceipt.amount || lastReceipt.total) / 1.16).toFixed(2)}</p>
-                <p className="text-[11px]">IVA (16%): ${(parseNum(lastReceipt.amount || lastReceipt.total) - (parseNum(lastReceipt.amount || lastReceipt.total) / 1.16)).toFixed(2)}</p>
-                <p className="text-lg font-bold mt-1 uppercase">Total: ${(parseNum(lastReceipt.amount || lastReceipt.total)).toFixed(2)}</p>
-                <p className="text-xs font-bold text-gray-600">Bs. {(parseNum(lastReceipt.amount || lastReceipt.total) * exchangeRate).toFixed(2)}</p>
+                {(() => {
+                  const activeTaxRate = settings?.taxRate !== undefined ? settings.taxRate : 5;
+                  const divisor = 1 + (activeTaxRate / 100);
+                  const receiptTotal = parseNum(lastReceipt.amount || lastReceipt.total);
+                  const receiptSubtotal = lastReceipt.subtotal !== undefined ? parseNum(lastReceipt.subtotal) : receiptTotal / divisor;
+                  const receiptTax = lastReceipt.tax !== undefined ? parseNum(lastReceipt.tax) : receiptTotal - receiptSubtotal;
+                  
+                  return (
+                    <>
+                      <p className="text-[11px]">Subtotal: ${receiptSubtotal.toFixed(2)}</p>
+                      <p className="text-[11px]">IVA ({activeTaxRate}%): ${receiptTax.toFixed(2)}</p>
+                      <p className="text-lg font-bold mt-1 uppercase">Total: ${receiptTotal.toFixed(2)}</p>
+                      <p className="text-xs font-bold text-gray-600">Bs. {(receiptTotal * exchangeRate).toFixed(2)}</p>
+                    </>
+                  );
+                })()}
               </div>
 
               <div className="text-center pt-6 text-[9px] text-gray-500 uppercase">
@@ -1326,6 +1551,84 @@ export default function CheesePOSView({
               >
                 <Printer className="w-4 h-4" />
                 Imprimir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Audit Modal */}
+      {selectedAuditClosing && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-editorial-card border border-editorial-border rounded w-full max-w-2xl flex flex-col shadow-2xl overflow-hidden animate-slide-up">
+            <div className="flex items-center justify-between p-4 bg-editorial-bg border-b border-editorial-border">
+              <h3 className="font-serif font-bold text-amber-500 text-lg flex items-center gap-2">
+                <Archive className="w-5 h-5" />
+                Auditoría de Cierre: {selectedAuditClosing.id}
+              </h3>
+              <button 
+                onClick={() => setSelectedAuditClosing(null)}
+                className="text-editorial-text-muted hover:text-rose-400 transition-colors p-1"
+              >
+                <span className="text-2xl leading-none">&times;</span>
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto max-h-[70vh] space-y-6">
+              
+              <div className="grid grid-cols-2 gap-4 text-sm font-mono">
+                <div className="bg-editorial-bg p-3 border border-editorial-border rounded">
+                  <div className="text-[10px] text-editorial-text-muted uppercase">Fecha del Cierre</div>
+                  <div className="font-bold text-editorial-text-primary mt-1">{new Date(selectedAuditClosing.timestamp).toLocaleString('es-ES')}</div>
+                </div>
+                <div className="bg-editorial-bg p-3 border border-editorial-border rounded">
+                  <div className="text-[10px] text-editorial-text-muted uppercase">Estado del Cuadre</div>
+                  <div className={`font-bold mt-1 ${selectedAuditClosing.difference === 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {selectedAuditClosing.status} ({selectedAuditClosing.difference > 0 ? '+' : ''}{selectedAuditClosing.difference < 0 ? '-' : ''}${Math.abs(selectedAuditClosing.difference).toFixed(2)})
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="font-serif text-md font-bold text-editorial-text-primary border-b border-editorial-border pb-2 mb-3">Balance de Gaveta (Efectivo USD)</h4>
+                <div className="space-y-2 text-xs font-mono">
+                  <div className="flex justify-between"><span className="text-editorial-text-muted">Fondo Inicial:</span> <span>${(selectedAuditClosing.startingCash || 0).toFixed(2)}</span></div>
+                  <div className="flex justify-between"><span className="text-editorial-text-muted">Ingresos Ventas USD:</span> <span className="text-emerald-400">+${(selectedAuditClosing.salesCashUsd || 0).toFixed(2)}</span></div>
+                  <div className="flex justify-between"><span className="text-editorial-text-muted">Ingresos Abonos USD:</span> <span className="text-emerald-400">+${(selectedAuditClosing.incomeCashUsd || 0).toFixed(2)}</span></div>
+                  <div className="flex justify-between"><span className="text-editorial-text-muted">Egresos / Gastos USD:</span> <span className="text-rose-400">-${(selectedAuditClosing.expensesCashUsd || 0).toFixed(2)}</span></div>
+                  <div className="flex justify-between pt-2 border-t border-editorial-border/30 font-bold"><span className="text-editorial-text-primary">Efectivo Esperado:</span> <span>${(selectedAuditClosing.totalCalculated || 0).toFixed(2)}</span></div>
+                  <div className="flex justify-between font-bold"><span className="text-editorial-text-primary">Efectivo Físico Contado:</span> <span>${(selectedAuditClosing.actualCash || 0).toFixed(2)}</span></div>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="font-serif text-md font-bold text-editorial-text-primary border-b border-editorial-border pb-2 mb-3">Ingresos por Otros Medios</h4>
+                <div className="grid grid-cols-2 gap-3 text-xs font-mono">
+                  <div className="bg-editorial-bg p-2 rounded flex justify-between">
+                    <span className="text-editorial-text-muted">Punto / Tarjeta:</span>
+                    <span className="font-bold">${(selectedAuditClosing.totalCard || 0).toFixed(2)}</span>
+                  </div>
+                  <div className="bg-editorial-bg p-2 rounded flex justify-between">
+                    <span className="text-editorial-text-muted">Pago Móvil:</span>
+                    <span className="font-bold">${(selectedAuditClosing.totalMobile || 0).toFixed(2)}</span>
+                  </div>
+                  <div className="bg-editorial-bg p-2 rounded flex justify-between">
+                    <span className="text-editorial-text-muted">Biopago:</span>
+                    <span className="font-bold">${(selectedAuditClosing.totalBiopago || 0).toFixed(2)}</span>
+                  </div>
+                  <div className="bg-editorial-bg p-2 rounded flex justify-between">
+                    <span className="text-editorial-text-muted">Efectivo Bs:</span>
+                    <span className="font-bold">${(selectedAuditClosing.totalCashBs || 0).toFixed(2)}</span>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+            <div className="p-4 bg-editorial-bg border-t border-editorial-border flex justify-end">
+              <button
+                onClick={() => setSelectedAuditClosing(null)}
+                className="px-6 py-2 border border-editorial-border text-editorial-text-primary text-xs font-bold uppercase tracking-wider rounded hover:bg-editorial-card transition-colors"
+              >
+                Cerrar Auditoría
               </button>
             </div>
           </div>

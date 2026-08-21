@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BusinessSettings, UserIdentity } from '../types';
 import {
   Settings,
@@ -38,9 +38,9 @@ export default function SettingsAdminView({
 
   // General Settings Form States
   const [businessName, setBusinessName] = useState(settings.businessName);
+  const [taxRate, setTaxRate] = useState(settings.taxRate === 16 || settings.taxRate === undefined ? 5 : settings.taxRate);
   const [exchangeRate, setExchangeRate] = useState(settings.exchangeRate || 45.00);
-  const [taxRate, setTaxRate] = useState(settings.taxRate);
-  const [defaultStartingCash, setDefaultStartingCash] = useState(settings.defaultStartingCash);
+  const [defaultStartingCash, setDefaultStartingCash] = useState(settings.defaultStartingCash || 0);
   const [emergencyAlertMode, setEmergencyAlertMode] = useState(settings.emergencyAlertMode);
 
   // Sabanota Initials States
@@ -49,6 +49,12 @@ export default function SettingsAdminView({
   const [bankBalanceBs, setBankBalanceBs] = useState(settings.sabanotaInitials?.bankBalanceBs || 0);
   const [bankBalanceUsd, setBankBalanceUsd] = useState(settings.sabanotaInitials?.bankBalanceUsd || 0);
   const [totalCapital, setTotalCapital] = useState(settings.sabanotaInitials?.totalCapital || 0);
+
+  useEffect(() => {
+    if (settings.taxRate === 16 || settings.taxRate === undefined) {
+      setTaxRate(5);
+    }
+  }, [settings.taxRate]);
 
   // User Administration States
   const [showAddUserForm, setShowAddUserForm] = useState(false);
@@ -109,14 +115,28 @@ export default function SettingsAdminView({
   };
   const [isMaintRunning, setIsMaintRunning] = useState(false);
 
-  const handleSaveSettings = (e: React.FormEvent) => {
+  const handleSaveOperational = (e: React.FormEvent) => {
     e.preventDefault();
     onUpdateSettings({
-      businessName,
-      taxRate,
-      defaultStartingCash,
-      emergencyAlertMode,
-      exchangeRate,
+      businessName: businessName || 'Negocio',
+      exchangeRate: exchangeRate || 45,
+      emergencyAlertMode: !!emergencyAlertMode
+    });
+    onAddNotification('Parámetros operativos guardados.', 'success');
+  };
+
+  const handleSaveTax = (e: React.FormEvent) => {
+    e.preventDefault();
+    onUpdateSettings({
+      taxRate: taxRate !== undefined ? taxRate : 5
+    });
+    onAddNotification('Configuración fiscal (IVA) actualizada.', 'success');
+  };
+
+  const handleSaveInitials = (e: React.FormEvent) => {
+    e.preventDefault();
+    onUpdateSettings({
+      defaultStartingCash: defaultStartingCash || 0,
       sabanotaInitials: {
         drawerUsd,
         drawerBs,
@@ -125,7 +145,7 @@ export default function SettingsAdminView({
         totalCapital
       }
     });
-    onAddNotification('Configuración general de Quesería KALU guardada con éxito.', 'success');
+    onAddNotification('Saldos iniciales de apertura fijados.', 'success');
   };
 
 
@@ -348,11 +368,16 @@ export default function SettingsAdminView({
       </div>
 
       {activeSubTab === 'config' && (
-        <form onSubmit={handleSaveSettings} className="bg-editorial-card border border-editorial-border rounded p-6 space-y-6">
+        <div className="space-y-6">
           <div className="space-y-1">
             <h3 className="font-serif text-2xl font-bold text-editorial-text-primary">Ajustes Generales de Operación</h3>
             <p className="text-xs text-editorial-text-muted">Configure los parámetros contables, de facturación y alertas críticas del negocio.</p>
           </div>
+
+          <form onSubmit={handleSaveOperational} className="bg-editorial-card border border-editorial-border rounded p-6 space-y-6">
+            <h4 className="text-sm font-bold font-serif text-editorial-text-primary border-b border-editorial-border/60 pb-2">
+              Parámetros Operativos
+            </h4>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-1.5">
@@ -364,26 +389,10 @@ export default function SettingsAdminView({
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Fondo de Caja Fijo por Defecto ($ M.N.)</label>
-              <input
-                type="number" required value={defaultStartingCash} onChange={e => setDefaultStartingCash(parseFloat(e.target.value) || 0)}
-                className="w-full h-11 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary font-mono focus:outline-none focus:border-amber-500"
-              />
-            </div>
-
-            <div className="space-y-1.5">
               <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Tasa de Cambio Oficial (Bs / $)</label>
               <input
                 type="number" step="0.01" required value={exchangeRate} onChange={e => setExchangeRate(parseFloat(e.target.value) || 0)}
                 className="w-full h-11 px-3 bg-amber-500/10 border border-amber-500/50 rounded text-xs text-amber-500 font-mono font-bold focus:outline-none focus:border-amber-500"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Tasa Impositiva Local de IVA (%)</label>
-              <input
-                type="number" required value={taxRate} onChange={e => setTaxRate(parseFloat(e.target.value) || 0)}
-                className="w-full h-11 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary font-mono focus:outline-none focus:border-amber-500"
               />
             </div>
 
@@ -403,11 +412,51 @@ export default function SettingsAdminView({
             </div>
           </div>
 
-          <div className="pt-6 mt-6 border-t border-editorial-border">
-            <h4 className="text-sm font-bold font-serif text-editorial-text-primary mb-4 flex items-center gap-2">
+          <div className="pt-4 border-t border-editorial-border flex justify-end">
+            <button
+              type="submit"
+              className="px-6 h-10 bg-amber-500 text-white font-serif font-bold text-xs tracking-wider uppercase hover:brightness-110 transition-all cursor-pointer"
+            >
+              Guardar Parámetros
+            </button>
+          </div>
+        </form>
+
+          <form onSubmit={handleSaveTax} className="bg-editorial-card border border-editorial-border rounded p-6 space-y-6">
+            <h4 className="text-sm font-bold font-serif text-editorial-text-primary border-b border-editorial-border/60 pb-2">
+              Configuración Fiscal
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Tasa Impositiva Local de IVA (%)</label>
+                <input
+                  type="number" required value={taxRate} onChange={e => setTaxRate(parseFloat(e.target.value) || 0)}
+                  className="w-full h-11 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary font-mono focus:outline-none focus:border-amber-500"
+                />
+              </div>
+            </div>
+            <div className="pt-4 border-t border-editorial-border flex justify-end">
+              <button
+                type="submit"
+                className="px-6 h-10 bg-amber-500 text-white font-serif font-bold text-xs tracking-wider uppercase hover:brightness-110 transition-all cursor-pointer"
+              >
+                Actualizar IVA
+              </button>
+            </div>
+          </form>
+
+          <form onSubmit={handleSaveInitials} className="bg-editorial-card border border-editorial-border rounded p-6 space-y-6">
+            <h4 className="text-sm font-bold font-serif text-editorial-text-primary flex items-center gap-2 border-b border-editorial-border/60 pb-2">
               <Database className="w-4 h-4 text-emerald-500" /> Saldos Iniciales de Apertura (Sabanota)
             </h4>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Fondo de Caja Fijo por Defecto ($ M.N.)</label>
+                <input
+                  type="number" required value={defaultStartingCash} onChange={e => setDefaultStartingCash(parseFloat(e.target.value) || 0)}
+                  className="w-full h-11 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary font-mono focus:outline-none focus:border-amber-500"
+                />
+              </div>
               <div className="space-y-1.5">
                 <label className="text-[10px] font-mono uppercase tracking-widest text-editorial-text-muted">Fondo Inicial Gaveta ($ USD)</label>
                 <input
@@ -454,17 +503,17 @@ export default function SettingsAdminView({
                 />
               </div>
             </div>
-          </div>
 
-          <div className="pt-4 border-t border-editorial-border flex justify-end">
-            <button
-              type="submit"
-              className="px-6 h-12 bg-amber-500 text-white font-serif font-bold text-xs tracking-wider uppercase hover:brightness-110 transition-all cursor-pointer"
-            >
-              Guardar Cambios de Configuración
-            </button>
-          </div>
-        </form>
+            <div className="pt-4 border-t border-editorial-border flex justify-end">
+              <button
+                type="submit"
+                className="px-6 h-10 bg-amber-500 text-white font-serif font-bold text-xs tracking-wider uppercase hover:brightness-110 transition-all cursor-pointer"
+              >
+                Fijar Saldos Iniciales
+              </button>
+            </div>
+          </form>
+        </div>
       )}
 
       {activeSubTab === 'users' && (

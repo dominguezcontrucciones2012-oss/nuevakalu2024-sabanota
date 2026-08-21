@@ -7,6 +7,7 @@ interface ClientsCreditViewProps {
   exchangeRate?: number;
   salesHistory?: any[];
   onAddClient: (client: Omit<ClientProfile, 'id' | 'loyaltyPoints' | 'outstandingDebt'>) => void;
+  onUpdateClient?: (id: string, updates: Partial<ClientProfile>) => void;
   onRecordDebtPayment: (clientId: string, amount: number, method: string, notes?: string, paymentBreakdown?: any) => void;
   onAddNotification: (msg: string, type: 'success' | 'info' | 'warning') => void;
 }
@@ -16,6 +17,7 @@ export default function ClientsCreditView({
   exchangeRate = 42.50,
   salesHistory = [],
   onAddClient,
+  onUpdateClient,
   onRecordDebtPayment,
   onAddNotification
 }: ClientsCreditViewProps) {
@@ -28,6 +30,21 @@ export default function ClientsCreditView({
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [tier, setTier] = useState<'Bronce' | 'Plata' | 'Oro' | 'VIP'>('Bronce');
+  const [cedula, setCedula] = useState('');
+  const [address, setAddress] = useState('');
+  const [birthday, setBirthday] = useState('');
+  const [pin, setPin] = useState('');
+
+  // Edit states
+  const [editingClient, setEditingClient] = useState<ClientProfile | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editCedula, setEditCedula] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editAddress, setEditAddress] = useState('');
+  const [editBirthday, setEditBirthday] = useState('');
+  const [editPin, setEditPin] = useState('');
+  const [editTier, setEditTier] = useState<'Bronce' | 'Plata' | 'Oro' | 'VIP'>('Bronce');
 
   // Pay Debt States
   const [payingClientId, setPayingClientId] = useState<string | null>(null);
@@ -56,20 +73,68 @@ export default function ClientsCreditView({
     ).toFixed(2)
   );
 
+  const openEditModal = (c: ClientProfile) => {
+    setEditingClient(c);
+    setEditName(c.name || '');
+    setEditCedula(c.cedula || c.rfc || '');
+    setEditPhone(c.phone || '');
+    setEditEmail(c.email || '');
+    setEditAddress(c.address || '');
+    setEditBirthday(c.birthday || '');
+    setEditPin(c.pin || '');
+    setEditTier(c.tier || 'Bronce');
+  };
+
+  const handleUpdateClientSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingClient || !onUpdateClient) return;
+    
+    const ced4 = editCedula.length >= 4 ? editCedula.slice(-4) : '';
+    const ph = editingClient.phone ? editingClient.phone.replace(/\D/g, '') : '';
+    const ph4 = ph.length >= 4 ? ph.slice(-4) : '0000';
+    
+    onUpdateClient(editingClient.id, {
+      name: editName,
+      cedula: editCedula,
+      rfc: editCedula,
+      phone: editPhone,
+      email: editEmail,
+      address: editAddress,
+      birthday: editBirthday,
+      pin: editPin || (editCedula ? ced4 : ph4),
+      tier: editTier
+    });
+    setEditingClient(null);
+  };
+
   const handleCreateClient = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name) return;
+    
+    const ced4 = cedula.length >= 4 ? cedula.slice(-4) : '';
+    const ph = phone ? phone.replace(/\D/g, '') : '';
+    const ph4 = ph.length >= 4 ? ph.slice(-4) : '0000';
+    
     onAddClient({
       name,
       email,
       phone,
-      tier
+      tier,
+      cedula,
+      rfc: cedula,
+      address,
+      birthday,
+      pin: pin || (cedula ? ced4 : ph4)
     });
     onAddNotification(`Perfil de cliente ${name} registrado con éxito.`, 'success');
     setName('');
     setEmail('');
     setPhone('');
     setTier('Bronce');
+    setCedula('');
+    setAddress('');
+    setBirthday('');
+    setPin('');
     setShowAddForm(false);
   };
 
@@ -264,6 +329,7 @@ export default function ClientsCreditView({
                         {c.tier}
                       </span>
                       <span className="text-[10px] font-mono text-editorial-text-muted">ID: {c.id}</span>
+                      <button onClick={() => openEditModal(c)} className="ml-2 text-[10px] text-amber-500 hover:text-amber-400">✏️ Editar</button>
                     </div>
 
                     <div>
@@ -271,8 +337,26 @@ export default function ClientsCreditView({
                       <div className="flex flex-col gap-1 mt-2 text-[11px] text-editorial-text-muted">
                         <div className="flex items-center gap-1.5">
                           <Phone className="w-3.5 h-3.5 shrink-0" />
-                          <span>{c.phone || 'Sin número'}</span>
+                          <a href={`tel:${c.phone}`} className="hover:text-amber-500 transition-colors">{c.phone || 'Sin número'}</a>
                         </div>
+                        {(c.cedula || c.rfc) && (
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <span className="text-[10px] font-bold text-editorial-text-muted/60 mt-0.5">C.I / RIF:</span>
+                            <span className="truncate">{c.cedula || c.rfc}</span>
+                          </div>
+                        )}
+                        {c.address && (
+                          <div className="flex items-start gap-1.5 mt-1">
+                            <span className="text-[10px] font-bold text-editorial-text-muted/60 mt-0.5">Ubic:</span>
+                            <span className="truncate">{c.address}</span>
+                          </div>
+                        )}
+                        {c.birthday && (
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <span className="text-[10px] font-bold text-editorial-text-muted/60">Cump:</span>
+                            <span>{c.birthday}</span>
+                          </div>
+                        )}
                         <div className="flex items-center gap-1.5">
                           <Mail className="w-3.5 h-3.5 shrink-0" />
                           <span className="truncate">{c.email || 'Sin correo'}</span>
@@ -586,6 +670,59 @@ export default function ClientsCreditView({
           </div>
         );
       })()}
+      {/* EDIT MODAL */}
+      {editingClient && (
+        <div className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4">
+          <div className="bg-editorial-card border border-editorial-border rounded-lg max-w-2xl w-full p-6 relative shadow-2xl">
+            <button onClick={() => setEditingClient(null)} className="absolute top-4 right-4 text-editorial-text-muted hover:text-rose-500">
+              <X className="w-6 h-6" />
+            </button>
+            <h3 className="font-serif text-2xl font-bold text-editorial-text-primary mb-6">Editar Cliente</h3>
+            <form onSubmit={handleUpdateClientSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Nombre</label>
+                <input type="text" required value={editName} onChange={e => setEditName(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Cédula / RIF</label>
+                <input type="text" value={editCedula} onChange={e => setEditCedula(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Teléfono</label>
+                <input type="text" value={editPhone} onChange={e => setEditPhone(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Correo Electrónico</label>
+                <input type="email" value={editEmail} onChange={e => setEditEmail(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Dirección</label>
+                <input type="text" value={editAddress} onChange={e => setEditAddress(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Cumpleaños</label>
+                <input type="date" value={editBirthday} onChange={e => setEditBirthday(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN Acceso</label>
+                <input type="text" maxLength={4} value={editPin} onChange={e => setEditPin(e.target.value)} placeholder="4 dígitos" className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none font-mono tracking-widest" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Nivel (Tier)</label>
+                <select value={editTier} onChange={(e: any) => setEditTier(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none">
+                  <option value="Bronce">Bronce</option>
+                  <option value="Plata">Plata</option>
+                  <option value="Oro">Oro</option>
+                  <option value="VIP">VIP</option>
+                </select>
+              </div>
+              <div className="md:col-span-2 pt-4 flex justify-end">
+                <button type="submit" className="px-6 h-10 bg-amber-500 hover:bg-amber-400 text-editorial-bg font-serif font-bold text-xs tracking-wider uppercase rounded transition-all">Guardar Cambios</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

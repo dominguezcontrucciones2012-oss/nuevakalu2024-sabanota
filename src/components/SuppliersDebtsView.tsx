@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { SupplierProfile, AccountBill, Transaction, CheeseProduct } from '../types';
-import { Truck, Store, Phone, Plus, BadgeAlert, FileCheck, CheckCircle, ExternalLink, Calendar, Eye, Wallet, CreditCard, Inbox, X, Search } from 'lucide-react';
+import { Truck, Store, Phone, Plus, BadgeAlert, FileCheck, CheckCircle, ExternalLink, Calendar, Eye, Wallet, CreditCard, Inbox, X, Search, Trash2 } from 'lucide-react';
 
 interface SuppliersDebtsViewProps {
   suppliers: SupplierProfile[];
@@ -9,6 +9,7 @@ interface SuppliersDebtsViewProps {
   businessBalance: number;
   exchangeRate: number;
   onAddSupplier: (sup: Omit<SupplierProfile, 'id' | 'balanceOwed'>) => void;
+  onUpdateSupplier?: (id: string, updates: Partial<SupplierProfile>) => void;
   onPaySupplierBill: (billId: string, supplierId: string, amount: number) => void;
   onRecordSupplierStorePayment?: (supplierId: string, amount: number, method: string, note: string, movementType: 'cargo' | 'abono') => void;
   onNetSupplierBalances?: (supplierId: string) => void;
@@ -29,6 +30,7 @@ export default function SuppliersDebtsView({
   businessBalance,
   exchangeRate,
   onAddSupplier,
+  onUpdateSupplier,
   onPaySupplierBill,
   onRecordSupplierStorePayment,
   onNetSupplierBalances,
@@ -49,6 +51,20 @@ export default function SuppliersDebtsView({
   const [rfc, setRfc] = useState('');
   const [isCheeseProducer, setIsCheeseProducer] = useState(true);
   const [isEmployee, setIsEmployee] = useState(false);
+  const [birthday, setBirthday] = useState('');
+  const [pin, setPin] = useState('');
+
+  // Edit states
+  const [editingSupplier, setEditingSupplier] = useState<SupplierProfile | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editCedula, setEditCedula] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editContactName, setEditContactName] = useState('');
+  const [editAddress, setEditAddress] = useState('');
+  const [editBirthday, setEditBirthday] = useState('');
+  const [editPin, setEditPin] = useState('');
+  const [editIsCheeseProducer, setEditIsCheeseProducer] = useState(false);
+  const [editIsEmployee, setEditIsEmployee] = useState(false);
 
   // New Modal System States
   // New Modal System States
@@ -56,6 +72,18 @@ export default function SuppliersDebtsView({
   const [activeModal, setActiveModal] = useState<'historial' | 'recibir' | 'pagar' | 'abonar' | null>(null);
   const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Date filters for historial
+  const [historialStartDate, setHistorialStartDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 15);
+    return d.toISOString().split('T')[0];
+  });
+  const [historialEndDate, setHistorialEndDate] = useState(() => {
+    const d = new Date();
+    return d.toISOString().split('T')[0];
+  });
+  const [showAllTime, setShowAllTime] = useState(false);
 
   // Forms State for Modals
   // Recibir Queso
@@ -107,9 +135,50 @@ export default function SuppliersDebtsView({
     }
   };
 
+  const openEditModal = (s: SupplierProfile) => {
+    setEditingSupplier(s);
+    setEditName(s.name || '');
+    setEditCedula(s.cedula || s.rfc || '');
+    setEditPhone(s.phone || '');
+    setEditContactName(s.contactName || '');
+    setEditAddress(s.address || '');
+    setEditBirthday(s.birthday || '');
+    setEditPin(s.pin || '');
+    setEditIsCheeseProducer(s.isCheeseProducer || false);
+    setEditIsEmployee(s.isEmployee || false);
+  };
+
+  const handleUpdateSupplierSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSupplier || !onUpdateSupplier) return;
+    
+    const ced4 = editCedula.length >= 4 ? editCedula.slice(-4) : '';
+    const ph = editingSupplier.phone ? editingSupplier.phone.replace(/\D/g, '') : '';
+    const ph4 = ph.length >= 4 ? ph.slice(-4) : '0000';
+    
+    onUpdateSupplier(editingSupplier.id, {
+      name: editName,
+      cedula: editCedula,
+      rfc: editCedula,
+      phone: editPhone,
+      contactName: editContactName,
+      address: editAddress,
+      birthday: editBirthday,
+      pin: editPin || (editCedula ? ced4 : ph4),
+      isCheeseProducer: editIsCheeseProducer,
+      isEmployee: editIsEmployee
+    });
+    setEditingSupplier(null);
+  };
+
   const handleCreateSupplier = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name) return;
+    
+    const ced4 = rfc.length >= 4 ? rfc.slice(-4) : '';
+    const ph = phone ? phone.replace(/\D/g, '') : '';
+    const ph4 = ph.length >= 4 ? ph.slice(-4) : '0000';
+    
     onAddSupplier({
       name,
       contact: contactName || 'Sin contacto',
@@ -118,8 +187,11 @@ export default function SuppliersDebtsView({
       email: '',
       address,
       rfc,
+      cedula: rfc,
       isCheeseProducer,
-      isEmployee
+      isEmployee,
+      birthday,
+      pin: pin || (rfc ? ced4 : ph4)
     });
     onAddNotification(`Proveedor ${name} registrado con éxito.`, 'success');
     setName('');
@@ -129,6 +201,8 @@ export default function SuppliersDebtsView({
     setRfc('');
     setIsCheeseProducer(true);
     setIsEmployee(false);
+    setBirthday('');
+    setPin('');
     setShowAddForm(false);
   };
 
@@ -228,6 +302,14 @@ export default function SuppliersDebtsView({
             </label>
           </div>
 
+                    <div className="space-y-1.5">
+            <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Cumpleaños</label>
+            <input type="date" value={birthday} onChange={e => setBirthday(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+          </div>
+          <div className="space-y-1.5 md:col-span-2">
+            <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN Acceso (4 dígitos)</label>
+            <input type="text" maxLength={4} value={pin} onChange={e => setPin(e.target.value)} placeholder="Autogenerado" className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary font-mono tracking-widest focus:outline-none" />
+          </div>
           <div className="md:col-span-3 pt-4 border-t border-editorial-border/40 flex justify-end">
             <button
               type="submit"
@@ -261,6 +343,7 @@ export default function SuppliersDebtsView({
                   {s.name.slice(0, 2).toUpperCase()}
                 </div>
                 <span className="font-mono text-[9px] text-editorial-text-muted/60">ID PROV: {s.id}</span>
+                <button onClick={() => openEditModal(s)} className="text-[10px] text-amber-500 hover:text-amber-400">✏️ Editar</button>
               </div>
 
               <div className="space-y-1">
@@ -281,6 +364,22 @@ export default function SuppliersDebtsView({
                   <p className="text-xs font-mono text-editorial-text-primary mt-0.5">{s.rfc}</p>
                 </div>
               )}
+              {(s.phone || s.birthday) && (
+                <div className="pt-2 border-t border-editorial-border/30 mt-2 grid grid-cols-2 gap-2">
+                  {s.phone && (
+                    <div>
+                      <span className="text-[9px] font-mono uppercase text-editorial-text-muted/60">Teléfono:</span>
+                      <p className="text-[11px] font-mono mt-0.5"><a href={`tel:${s.phone}`} className="text-amber-500 hover:text-amber-400">{s.phone}</a></p>
+                    </div>
+                  )}
+                  {s.birthday && (
+                    <div>
+                      <span className="text-[9px] font-mono uppercase text-editorial-text-muted/60">Cumpleaños:</span>
+                      <p className="text-[11px] font-mono mt-0.5 text-editorial-text-primary">{s.birthday}</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="mt-3 pt-3 border-t border-editorial-border/60 space-y-2">
@@ -288,7 +387,7 @@ export default function SuppliersDebtsView({
                 <div>
                   <span className="text-[9px] font-mono uppercase text-editorial-text-muted block leading-none mb-1">Cuentas por Pagar</span>
                   <span className={`font-mono font-bold text-xs ${s.balanceOwed > 0 ? 'text-amber-500' : 'text-editorial-text-muted/60'}`}>
-                    $ {s.balanceOwed.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                    $ {(s.balanceOwed || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
                   </span>
                   <span className="block text-[9px] font-mono text-editorial-text-muted/80 mt-0.5">
                     Bs {(s.balanceOwed * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -359,54 +458,151 @@ export default function SuppliersDebtsView({
             onClick={() => setActiveModal(null)}
           />
           
-          {/* Right-anchored Drawer */}
-          <div className="fixed right-0 top-0 h-screen overflow-hidden w-full sm:w-[450px] max-w-full bg-neutral-900 border-l border-neutral-700 shadow-2xl z-50 animate-slide-left flex flex-col">
+          {/* Dynamic Modal/Drawer Container */}
+          <div className={
+            activeModal === 'historial'
+              ? "fixed inset-0 m-auto h-fit max-h-[90vh] overflow-hidden w-full max-w-3xl bg-neutral-900 border border-neutral-700 shadow-2xl z-50 rounded-lg flex flex-col"
+              : "fixed right-0 top-0 h-screen overflow-hidden w-full sm:w-[450px] max-w-full bg-neutral-900 border-l border-neutral-700 shadow-2xl z-50 animate-slide-left flex flex-col"
+          }>
             {(() => {
               const s = suppliers.find(sup => sup.id === selectedSupplierId);
               if (!s) return null;
 
               if (activeModal === 'historial') {
-                const supTx = transactions.filter(t => t.entity.includes(s.name));
+                const supTxRaw = transactions.filter(t => t.entity.includes(s.name));
+                
+                // Parse dates and sort chronologically for balance calculation (oldest first)
+                const sortedAllTx = supTxRaw.map(tx => {
+                  const parts = tx.date.split(',')[0].split('/'); // assuming DD/MM/YYYY
+                  const time = tx.date.split(',')[1]?.trim() || "00:00:00";
+                  let d = new Date();
+                  if (parts.length === 3) {
+                    d = new Date(`${parts[2]}-${parts[1]}-${parts[0]}T${time}`);
+                    if (isNaN(d.getTime())) d = new Date();
+                  }
+                  return { ...tx, parsedDate: d };
+                }).sort((a, b) => a.parsedDate.getTime() - b.parsedDate.getTime());
+
+                // Calculate running balance
+                let currentBalance = 0;
+                const txWithBalance = sortedAllTx.map(tx => {
+                  let sum = 0;
+                  let rest = 0;
+                  
+                  if (tx.isIncome) {
+                    sum = tx.amount;
+                    currentBalance += sum;
+                  } else {
+                    rest = tx.amount;
+                    currentBalance -= rest;
+                  }
+                  
+                  return {
+                    ...tx,
+                    sum,
+                    rest,
+                    runningBalance: currentBalance
+                  };
+                });
+
+                // Reverse for display (newest first, or keep chronological if preferred)
+                // Kardex format is usually newest last, so we can keep chronological
+                
+                // Apply filters
+                const filteredTx = showAllTime ? txWithBalance : txWithBalance.filter(tx => {
+                  const txDate = tx.parsedDate.toISOString().split('T')[0];
+                  return txDate >= historialStartDate && txDate <= historialEndDate;
+                });
+
                 return (
-                  <div className="flex flex-col h-full overflow-hidden">
+                  <div className="flex flex-col h-full overflow-hidden w-full max-w-full">
                     {/* Header */}
                     <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
-                      <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><Eye className="w-5 h-5 text-amber-500"/> Historial de Movimientos</h3>
+                      <div>
+                        <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><Eye className="w-5 h-5 text-amber-500"/> Estado de Cuenta: {s.name}</h3>
+                        <p className="text-[10px] font-mono text-neutral-400 mt-1 uppercase">Historial de Movimientos y Saldo Progresivo</p>
+                      </div>
                       <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
                         <X className="w-5 h-5" />
                       </button>
                     </div>
-                    {/* Content */}
-                    <div className="p-5 overflow-y-auto space-y-4 font-sans flex-1">
-                      {supTx.length === 0 ? (
-                         <p className="text-neutral-500 text-center py-8">No hay transacciones registradas.</p>
-                      ) : (
-                        supTx.map(tx => {
-                           let catLabel: string = tx.category;
-                           if (tx.category === 'credito') catLabel = 'Consumo POS (Fiado)';
-                           else if (tx.category === 'compras') catLabel = 'Recepción Productor';
-                           return (
-                             <div key={tx.id} className="flex flex-col p-4 bg-neutral-800/50 border border-neutral-700 rounded-lg hover:border-neutral-500 transition-colors shadow-sm">
-                               <div className="flex justify-between items-start mb-2 border-b border-neutral-700/50 pb-2">
-                                 <div>
-                                   <p className="font-bold text-neutral-100 text-sm">{tx.date}</p>
-                                   <p className="text-[10px] text-neutral-400 font-mono uppercase mt-0.5">{catLabel} | Ref: {tx.invoiceNumber}</p>
-                                 </div>
-                                 <div className="text-right shrink-0">
-                                   <p className={`font-mono font-bold text-sm ${tx.isIncome ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                     {tx.isIncome ? '+' : '-'}${tx.amount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
-                                   </p>
-                                 </div>
-                               </div>
-                               {(tx.notes || tx.paymentMethod) && (
-                                  <div className="bg-neutral-900/50 rounded p-2 text-xs font-mono text-amber-500/90 leading-relaxed border border-neutral-800">
-                                    {tx.notes || tx.paymentMethod}
-                                  </div>
-                               )}
-                             </div>
-                           );
-                        })
-                      )}
+
+                    {/* Date Filters */}
+                    <div className="bg-neutral-900 p-4 border-b border-neutral-800 flex flex-wrap gap-4 items-end shrink-0">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-500 uppercase">Desde</label>
+                        <input type="date" value={historialStartDate} disabled={showAllTime} onChange={e => {setHistorialStartDate(e.target.value); setShowAllTime(false);}} className="h-9 px-3 bg-neutral-800 border border-neutral-700 rounded text-xs text-neutral-100 focus:border-amber-500 outline-none disabled:opacity-50" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-500 uppercase">Hasta</label>
+                        <input type="date" value={historialEndDate} disabled={showAllTime} onChange={e => {setHistorialEndDate(e.target.value); setShowAllTime(false);}} className="h-9 px-3 bg-neutral-800 border border-neutral-700 rounded text-xs text-neutral-100 focus:border-amber-500 outline-none disabled:opacity-50" />
+                      </div>
+                      <button
+                        onClick={() => setShowAllTime(!showAllTime)}
+                        className={`h-9 px-4 text-xs font-mono font-bold uppercase rounded border transition-colors ${showAllTime ? 'bg-amber-500 text-neutral-900 border-amber-500' : 'bg-neutral-800 text-neutral-400 border-neutral-700 hover:text-amber-500 hover:border-amber-500'}`}
+                      >
+                        {showAllTime ? 'Viendo Historial Completo' : 'Ver Todo el Historial'}
+                      </button>
+                    </div>
+
+                    {/* Content Table */}
+                    <div className="p-0 font-sans flex-1 bg-neutral-950 overflow-x-auto max-h-[60vh] overflow-y-auto">
+                      <table className="w-full min-w-[700px] text-left border-collapse text-xs">
+                        <thead className="sticky top-0 bg-neutral-900 shadow-sm z-10">
+                          <tr className="border-b border-neutral-800 text-[10px] font-mono text-neutral-500 uppercase tracking-wider">
+                            <th className="py-3 px-4 font-normal whitespace-nowrap">Fecha</th>
+                            <th className="py-3 px-4 font-normal whitespace-nowrap">Tipo</th>
+                            <th className="py-3 px-4 font-normal whitespace-nowrap">Descripción</th>
+                            <th className="py-3 px-4 text-right font-normal whitespace-nowrap">Suma (+)</th>
+                            <th className="py-3 px-4 text-right font-normal whitespace-nowrap">Resta (-)</th>
+                            <th className="py-3 px-4 text-right font-normal whitespace-nowrap">Saldo</th>
+                            <th className="py-3 px-4 text-center font-normal whitespace-nowrap">Acciones</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-800/50">
+                          {filteredTx.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="py-12 text-center text-neutral-500">No hay movimientos en este periodo.</td>
+                            </tr>
+                          ) : (
+                            filteredTx.map((tx) => {
+                               let catLabel: string = tx.category;
+                               if (tx.category === 'credito') catLabel = 'Consumo POS';
+                               else if (tx.category === 'compras') catLabel = 'Recepción Queso';
+                               
+                               return (
+                                 <tr key={tx.id} className="hover:bg-neutral-800/30 transition-colors">
+                                   <td className="py-3 px-4 whitespace-nowrap text-neutral-300 font-mono text-[10px]">{tx.date.split(',')[0]}</td>
+                                   <td className="py-3 px-4 whitespace-nowrap">
+                                     <span className="inline-block px-2 py-1 rounded bg-neutral-800 border border-neutral-700 text-[10px] font-mono uppercase text-neutral-300">
+                                       {catLabel}
+                                     </span>
+                                   </td>
+                                   <td className="py-3 px-4 text-neutral-400 whitespace-nowrap">
+                                     <div className="max-w-[250px] truncate" title={tx.notes || tx.paymentMethod || `Ref: ${tx.invoiceNumber}`}>
+                                       {tx.notes || tx.paymentMethod || `Ref: ${tx.invoiceNumber}`}
+                                     </div>
+                                   </td>
+                                   <td className="py-3 px-4 text-right font-mono font-bold text-amber-500 whitespace-nowrap">
+                                     {tx.sum > 0 ? `+${tx.sum.toLocaleString('es-MX', {minimumFractionDigits: 2})}` : '-'}
+                                   </td>
+                                   <td className="py-3 px-4 text-right font-mono font-bold text-rose-500 whitespace-nowrap">
+                                     {tx.rest > 0 ? `-${tx.rest.toLocaleString('es-MX', {minimumFractionDigits: 2})}` : '-'}
+                                   </td>
+                                   <td className="py-3 px-4 text-right font-mono font-bold text-neutral-200 whitespace-nowrap">
+                                     ${tx.runningBalance.toLocaleString('es-MX', {minimumFractionDigits: 2})}
+                                   </td>
+                                   <td className="py-3 px-4 text-center whitespace-nowrap">
+                                      <button title="Eliminar registro (Temporalmente Deshabilitado)" className="p-1.5 text-neutral-600 hover:text-rose-500 transition-colors rounded">
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                   </td>
+                                 </tr>
+                               );
+                            })
+                          )}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
                 );
@@ -517,7 +713,7 @@ export default function SuppliersDebtsView({
 
                       {s.storeDebt > 0 && receivePayment === 'A la Libreta' && (
                         <div className="bg-rose-950/20 border border-rose-900/50 rounded p-4 text-xs text-rose-300 font-mono leading-relaxed">
-                          ⚠️ El productor debe <strong>${s.storeDebt.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</strong> por fiados en el POS.<br/>
+                          ⚠️ El productor debe <strong>${(s.storeDebt || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</strong> por fiados en el POS.<br/>
                           Esta deuda será cobrada automáticamente del subtotal.
                         </div>
                       )}
@@ -581,7 +777,7 @@ export default function SuppliersDebtsView({
                     <div className="p-5 space-y-4 flex-1 overflow-y-auto">
                       <div className="bg-amber-500/10 border border-amber-500/30 rounded p-4 text-center">
                         <span className="text-[10px] font-mono uppercase text-neutral-400 block tracking-wider">Le Debemos Actualmente</span>
-                        <span className="font-mono text-3xl font-extrabold text-amber-500 block mt-1">$ {s.balanceOwed.toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD</span>
+                        <span className="font-mono text-3xl font-extrabold text-amber-500 block mt-1">$ {(s.balanceOwed || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD</span>
                         <span className="text-xs font-mono text-amber-500/70 block mt-1">Bs {(s.balanceOwed * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
                       </div>
                       
@@ -713,6 +909,60 @@ export default function SuppliersDebtsView({
             })()}
           </div>
         </>
+      )}
+      {/* EDIT MODAL */}
+      {editingSupplier && (
+        <div className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4">
+          <div className="bg-editorial-card border border-editorial-border rounded-lg max-w-2xl w-full p-6 relative shadow-2xl overflow-y-auto max-h-[90vh]">
+            <button onClick={() => setEditingSupplier(null)} className="absolute top-4 right-4 text-editorial-text-muted hover:text-rose-500">
+              <X className="w-6 h-6" />
+            </button>
+            <h3 className="font-serif text-2xl font-bold text-editorial-text-primary mb-6">Editar Proveedor</h3>
+            <form onSubmit={handleUpdateSupplierSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Nombre Empresa</label>
+                <input type="text" required value={editName} onChange={e => setEditName(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Cédula / RIF</label>
+                <input type="text" value={editCedula} onChange={e => setEditCedula(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Teléfono</label>
+                <input type="text" value={editPhone} onChange={e => setEditPhone(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Vendedor / Contacto</label>
+                <input type="text" value={editContactName} onChange={e => setEditContactName(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Cumpleaños</label>
+                <input type="date" value={editBirthday} onChange={e => setEditBirthday(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Dirección</label>
+                <input type="text" value={editAddress} onChange={e => setEditAddress(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN Acceso</label>
+                <input type="text" maxLength={4} value={editPin} onChange={e => setEditPin(e.target.value)} placeholder="4 dígitos" className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none font-mono tracking-widest" />
+              </div>
+              <div className="space-y-2 pt-1 flex flex-col justify-center">
+                <label className="flex items-center gap-2 cursor-pointer text-xs text-editorial-text-primary">
+                  <input type="checkbox" checked={editIsCheeseProducer} onChange={e => setEditIsCheeseProducer(e.target.checked)} className="accent-amber-500 w-4 h-4 cursor-pointer" />
+                  <span>Es Productor de Queso</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer text-xs text-editorial-text-primary">
+                  <input type="checkbox" checked={editIsEmployee} onChange={e => setEditIsEmployee(e.target.checked)} className="accent-amber-500 w-4 h-4 cursor-pointer" />
+                  <span>Es Personal / Obrero</span>
+                </label>
+              </div>
+              <div className="md:col-span-2 pt-4 flex justify-end">
+                <button type="submit" className="px-6 h-10 bg-amber-500 hover:bg-amber-400 text-editorial-bg font-serif font-bold text-xs tracking-wider uppercase rounded transition-all">Guardar Cambios</button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

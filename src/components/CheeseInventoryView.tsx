@@ -21,7 +21,8 @@ import {
   Sparkles,
   RefreshCw,
   Clock,
-  CheckCircle
+  CheckCircle,
+  Search
 } from 'lucide-react';
 
 interface CheeseInventoryViewProps {
@@ -54,6 +55,9 @@ export default function CheeseInventoryView({
   onAddNotification
 }: CheeseInventoryViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<'stock' | 'adjust' | 'purchase' | 'ledger' | 'ai' | 'excel'>('stock');
+
+  // Search State
+  const [searchTerm, setSearchTerm] = useState('');
 
   // New Product States
   const [showAddForm, setShowAddForm] = useState(false);
@@ -273,6 +277,27 @@ export default function CheeseInventoryView({
               <h3 className="font-serif text-2xl font-bold text-editorial-text-primary">Stock Activo de KALU</h3>
               <p className="text-xs text-editorial-text-muted">Control de precio y costo de producto</p>
             </div>
+
+            <div className="flex-1 max-w-md mx-4 relative">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-editorial-text-muted" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                placeholder="🔍 Buscar por ID, nombre, código o categoría..."
+                className="w-full h-10 pl-9 pr-10 bg-editorial-bg border border-editorial-border rounded-lg text-xs text-editorial-text-primary focus:outline-none focus:border-amber-500 font-sans transition-colors"
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-editorial-text-muted hover:text-rose-400 cursor-pointer"
+                >
+                  ✖
+                </button>
+              )}
+            </div>
+
             <div className="flex gap-2 mt-4 sm:mt-0">
               <button
                 onClick={() => csvFileInputRef.current?.click()}
@@ -409,8 +434,19 @@ export default function CheeseInventoryView({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-editorial-border/60">
-                  {products.map((p) => {
-                    const isSoldOut = p.stockKg <= 0;
+                  {(() => {
+                    const filteredProducts = products.filter(p => {
+                      const term = searchTerm.trim().toLowerCase();
+                      if (!term) return true;
+                      const matchId = String(p?.id ?? '').toLowerCase().includes(term);
+                      const matchName = String(p?.name ?? '').toLowerCase().includes(term);
+                      const matchCategory = String(p?.category ?? '').toLowerCase().includes(term);
+                      const matchCode = String((p as any)?.code ?? (p as any)?.barcode ?? '').toLowerCase().includes(term);
+                      return matchId || matchName || matchCategory || matchCode;
+                    });
+                    
+                    return filteredProducts.map((p) => {
+                      const isSoldOut = p.stockKg <= 0;
                     const isLowStock = p.stockKg > 0 && p.stockKg <= p.alertThreshold;
                     const isEditing = editingProduct?.id === p.id;
 
@@ -538,7 +574,8 @@ export default function CheeseInventoryView({
                         </td>
                       </tr>
                     );
-                  })}
+                  });
+                  })()}
                 </tbody>
               </table>
             </div>

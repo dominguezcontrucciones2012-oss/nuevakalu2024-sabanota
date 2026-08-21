@@ -104,6 +104,8 @@ export default function MobilePortalsView({
   // Login inputs
   const [clientPhoneInput, setClientPhoneInput] = useState<string>('');
   const [supplierPhoneInput, setSupplierPhoneInput] = useState<string>('');
+  const [clientPinInput, setClientPinInput] = useState<string>('');
+  const [supplierPinInput, setSupplierPinInput] = useState<string>('');
 
   // Shopping Catalog Local States (Separate for each portal)
   const [clientSearch, setClientSearch] = useState('');
@@ -124,19 +126,35 @@ export default function MobilePortalsView({
     e.preventDefault();
     const phoneClean = clientPhoneInput.trim();
     if (!phoneClean) {
-      onAddNotification('Por favor ingrese su número de teléfono.', 'warning');
+      onAddNotification('Por favor ingrese su usuario o teléfono.', 'warning');
       return;
     }
-    // Search client by phone or name
-    const found = clients.find(
-      c => c.phone.replace(/\D/g, '').includes(phoneClean.replace(/\D/g, '')) || 
-           c.name.toLowerCase().includes(phoneClean.toLowerCase())
+    
+    const found = clients.find(c => 
+      (c.phone && c.phone.replace(/\D/g, '').includes(phoneClean.replace(/\D/g, ''))) || 
+      (c.name && c.name.toLowerCase().includes(phoneClean.toLowerCase())) ||
+      (c.cedula && c.cedula.includes(phoneClean)) ||
+      (c.rfc && c.rfc.includes(phoneClean))
     );
 
     if (found) {
-      setLoggedClient(found);
-      setClientCart([]);
-      onAddNotification(`¡Sesión iniciada como Cliente: ${found.name}!`, 'success');
+      // PIN Check
+      let expectedPin = '0000';
+      if (found.pin) expectedPin = found.pin;
+      else if (found.cedula && found.cedula.length >= 4) expectedPin = found.cedula.slice(-4);
+      else if (found.rfc && found.rfc.length >= 4) expectedPin = found.rfc.slice(-4);
+      else if (found.phone) {
+         const ph = found.phone.replace(/\D/g, '');
+         if (ph.length >= 4) expectedPin = ph.slice(-4);
+      }
+      
+      if (clientPinInput === expectedPin) {
+        setLoggedClient(found);
+        setClientCart([]);
+        onAddNotification(`¡Sesión iniciada como Cliente: ${found.name}!`, 'success');
+      } else {
+         onAddNotification('El PIN ingresado es incorrecto.', 'warning');
+      }
     } else {
       onAddNotification('No se encontró ningún cliente registrado con esos datos.', 'warning');
     }
@@ -147,21 +165,36 @@ export default function MobilePortalsView({
     e.preventDefault();
     const phoneClean = supplierPhoneInput.trim();
     if (!phoneClean) {
-      onAddNotification('Por favor ingrese su número de teléfono de productor.', 'warning');
+      onAddNotification('Por favor ingrese su usuario o teléfono.', 'warning');
       return;
     }
-    // Search supplier by phone or name
     const found = suppliers.find(
-      s => s.phone.replace(/\D/g, '').includes(phoneClean.replace(/\D/g, '')) || 
-           s.name.toLowerCase().includes(phoneClean.toLowerCase())
+      s => (s.phone && s.phone.replace(/\D/g, '').includes(phoneClean.replace(/\D/g, ''))) || 
+           (s.name && s.name.toLowerCase().includes(phoneClean.toLowerCase())) ||
+           (s.cedula && s.cedula.includes(phoneClean)) ||
+           (s.rfc && s.rfc.includes(phoneClean))
     );
 
     if (found) {
-      setLoggedSupplier(found);
-      setSupplierCart([]);
-      onAddNotification(`¡Sesión iniciada en Portal de Productores: ${found.name}!`, 'success');
+      // PIN Check
+      let expectedPin = '0000';
+      if (found.pin) expectedPin = found.pin;
+      else if (found.cedula && found.cedula.length >= 4) expectedPin = found.cedula.slice(-4);
+      else if (found.rfc && found.rfc.length >= 4) expectedPin = found.rfc.slice(-4);
+      else if (found.phone) {
+         const ph = found.phone.replace(/\D/g, '');
+         if (ph.length >= 4) expectedPin = ph.slice(-4);
+      }
+
+      if (supplierPinInput === expectedPin) {
+        setLoggedSupplier(found);
+        setSupplierCart([]);
+        onAddNotification(`¡Sesión iniciada como Productor: ${found.name}!`, 'success');
+      } else {
+        onAddNotification('El PIN ingresado es incorrecto.', 'warning');
+      }
     } else {
-      onAddNotification('No se encontró ningún productor con ese número o nombre.', 'warning');
+      onAddNotification('No se encontró ningún productor con esos datos.', 'warning');
     }
   };
 
@@ -377,13 +410,24 @@ export default function MobilePortalsView({
 
                   <form onSubmit={handleClientLoginSubmit} className="space-y-4 bg-zinc-950/50 p-4 rounded-xl border border-zinc-800">
                     <div className="space-y-1">
-                      <label className="text-[9px] font-mono uppercase text-zinc-400 block">Número de Celular / Nombre:</label>
+                      <label className="text-[9px] font-mono uppercase text-zinc-400 block">Cédula, Celular o Nombre:</label>
                       <input
                         type="text"
-                        placeholder="Ej. 961 123 4567 o Antonio"
+                        placeholder="Ej. 15082352, o Antonio"
                         value={clientPhoneInput}
                         onChange={(e) => setClientPhoneInput(e.target.value)}
                         className="w-full bg-zinc-900 border border-zinc-700 rounded px-2.5 py-2 text-xs text-zinc-100 focus:outline-none focus:border-amber-500 font-mono"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-mono uppercase text-zinc-400 block">PIN de Acceso (4 dígitos):</label>
+                      <input
+                        type="password"
+                        maxLength={4}
+                        placeholder="••••"
+                        value={clientPinInput}
+                        onChange={(e) => setClientPinInput(e.target.value)}
+                        className="w-full bg-zinc-900 border border-zinc-700 rounded px-2.5 py-2 text-xs text-zinc-100 focus:outline-none focus:border-amber-500 font-mono tracking-[0.5em] text-center"
                       />
                     </div>
                     
@@ -402,10 +446,10 @@ export default function MobilePortalsView({
                           <button
                             key={c.id}
                             type="button"
-                            onClick={() => setClientPhoneInput(c.name)}
+                            onClick={() => setClientPhoneInput(c?.name || '')}
                             className="bg-zinc-800 hover:bg-zinc-700 text-[8px] text-zinc-300 px-1.5 py-0.5 rounded transition-all"
                           >
-                            {c.name.split(' ')[0]}
+                            {(c?.name || 'Cliente').split(' ')[0]}
                           </button>
                         ))}
                       </div>
@@ -630,13 +674,23 @@ export default function MobilePortalsView({
 
                   <form onSubmit={handleSupplierLoginSubmit} className="space-y-4 bg-slate-950/50 p-4 rounded-xl border border-slate-800">
                     <div className="space-y-1">
-                      <label className="text-[9px] font-mono uppercase text-slate-400 block">Número de Productor / Celular:</label>
+                      <label className="text-[9px] font-mono uppercase text-slate-400 block">Cédula, Celular o Nombre:</label>
                       <input
                         type="text"
-                        placeholder="Ej. Martín Niño, o teléfono"
+                        placeholder="Ej. 15082352, o Martín Niño"
                         value={supplierPhoneInput}
                         onChange={(e) => setSupplierPhoneInput(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 font-mono"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-mono uppercase text-editorial-text-muted/70 block">PIN de Acceso (4 dígitos):</label>
+                      <input
+                        type="password"
+                        maxLength={4}
+                        placeholder="••••"
+                        value={supplierPinInput}
+                        onChange={(e) => setSupplierPinInput(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 font-mono tracking-[0.5em] text-center"
                       />
                     </div>
                     
@@ -655,10 +709,10 @@ export default function MobilePortalsView({
                           <button
                             key={s.id}
                             type="button"
-                            onClick={() => setSupplierPhoneInput(s.name)}
+                            onClick={() => setSupplierPhoneInput(s?.name || '')}
                             className="bg-slate-800 hover:bg-slate-700 text-[8px] text-slate-300 px-1.5 py-0.5 rounded transition-all"
                           >
-                            {s.name.split(' ')[0]}
+                            {(s?.name || 'Productor').split(' ')[0]}
                           </button>
                         ))}
                       </div>
@@ -976,7 +1030,7 @@ export default function MobilePortalsView({
                   <div className="text-right space-y-1">
                     <div className="text-xs font-mono text-editorial-text-muted">Total:</div>
                     <div className="text-sm font-mono font-bold text-editorial-text-primary">
-                      ${order.total.toLocaleString('es-MX', { minimumFractionDigits: 2 })} M.N.
+                      ${(order.total || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} M.N.
                     </div>
                     <div>
                       <span className={`px-2 py-0.5 rounded text-[9px] font-mono uppercase font-bold inline-block ${

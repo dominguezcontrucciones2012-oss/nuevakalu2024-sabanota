@@ -246,10 +246,10 @@ export default function KardexView() {
                       {m.newStock} <span className="text-[10px] font-normal">{m.unit}</span>
                     </td>
                     <td className="px-4 py-3 align-top text-right text-editorial-text-muted whitespace-nowrap">
-                      ${m.unitCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      ${(m.unitCost || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td className="px-4 py-3 align-top text-right text-editorial-text-primary font-medium whitespace-nowrap">
-                      ${m.totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      ${(m.totalCost || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                   </tr>
                 );

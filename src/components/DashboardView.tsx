@@ -120,22 +120,22 @@ export default function DashboardView({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <div className="space-y-1 border-l-2 border-emerald-500 pl-4">
             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Efectivo Físico ($ USD)</span>
-            <div className="font-serif text-2xl font-bold text-emerald-400">${currentDrawerUsd.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
+            <div className="font-serif text-2xl font-bold text-emerald-400">${(currentDrawerUsd || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
             <p className="text-[9px] text-editorial-text-muted">Fondo Inicial: ${sabanotaInitials.drawerUsd.toFixed(2)}</p>
           </div>
           <div className="space-y-1 border-l-2 border-emerald-500 pl-4">
             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Efectivo Físico (Bs)</span>
-            <div className="font-serif text-2xl font-bold text-emerald-400">Bs {currentDrawerBs.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
+            <div className="font-serif text-2xl font-bold text-emerald-400">Bs {(currentDrawerBs || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
             <p className="text-[9px] text-editorial-text-muted">Fondo Inicial: Bs {sabanotaInitials.drawerBs.toFixed(2)}</p>
           </div>
           <div className="space-y-1 border-l-2 border-indigo-500 pl-4">
             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Saldo en Bancos (Bs / USD)</span>
-            <div className="font-serif text-2xl font-bold text-indigo-400">Bs {currentBankBs.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
-            <div className="font-serif text-sm font-bold text-indigo-400/80">${currentBankUsd.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
+            <div className="font-serif text-2xl font-bold text-indigo-400">Bs {(currentBankBs || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
+            <div className="font-serif text-sm font-bold text-indigo-400/80">${(currentBankUsd || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
           </div>
           <div className="space-y-1 border-l-2 border-amber-500 pl-4">
             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Capital / Patrimonio Actual</span>
-            <div className="font-serif text-2xl font-bold text-amber-500">${totalPatrimony.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
+            <div className="font-serif text-2xl font-bold text-amber-500">${(totalPatrimony || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
             <p className="text-[9px] text-editorial-text-muted">Arranque: ${sabanotaInitials.totalCapital.toFixed(2)}</p>
           </div>
         </div>
@@ -162,7 +162,7 @@ export default function DashboardView({
           <div className="space-y-1">
             <span className="text-[9px] font-mono tracking-widest text-editorial-text-muted uppercase">Cartera por Cobrar (Clientes)</span>
             <div className="font-serif text-3xl font-extrabold text-amber-500">
-              ${totalOutstandingReceivable.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+              ${(totalOutstandingReceivable || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
             </div>
           </div>
           <button
@@ -179,7 +179,7 @@ export default function DashboardView({
           <div className="space-y-1">
             <span className="text-[9px] font-mono tracking-widest text-editorial-text-muted uppercase">Pasivos por Pagar (Proveedores)</span>
             <div className="font-serif text-3xl font-extrabold text-rose-400">
-              ${totalOutstandingPayable.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+              ${(totalOutstandingPayable || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
             </div>
           </div>
           <button
@@ -242,7 +242,7 @@ export default function DashboardView({
 
                   <div className="text-right font-mono shrink-0 pl-2">
                     <span className={`font-bold ${tx.isIncome ? 'text-emerald-400' : 'text-editorial-text-primary'}`}>
-                      {tx.isIncome ? '+' : '-'}${tx.amount.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                      {tx.isIncome ? '+' : '-'}${(tx.amount || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
                     </span>
                     <span className="block text-[9px] font-semibold text-editorial-text-muted/60 mt-1 uppercase">{tx.category}</span>
                   </div>

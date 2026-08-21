@@ -1,16 +1,3 @@
-export const getUnitLabel = (product: any): string => {
-  if (product && typeof product.unit === 'string' && product.unit.trim() !== '') {
-    const u = product.unit.trim().toLowerCase();
-    if (u === 'i' || u === 'item' || u === 'items') return 'Und';
-    return product.unit;
-  }
-  const cat = (product?.category || '').toLowerCase();
-  if (cat.includes('queso') || cat.includes('pesable') || cat.includes('charcuteria') || cat.includes('lacteo')) {
-    return 'Kg';
-  }
-  return 'Und';
-};
-
 export const parseSafeDecimal = (val: any): number => {
   if (val === undefined || val === null || val === '') return 0;
   const str = String(val).replace(/[^0-9.,-]/g, '').replace(',', '.');
