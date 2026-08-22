@@ -25,6 +25,7 @@ export interface Transaction {
     mobile: number;
     mobileRef?: string;
   };
+  isVoided?: boolean;
 }
 
 export interface UserIdentity {
@@ -54,9 +55,7 @@ export interface ActivityStream {
   type: 'sale' | 'auth' | 'warning' | 'info';
   amount?: number;
 }
-
-export type ViewType = 'portal-dashboard' | 'pos-terminal' | 'access-control' | 'inventory' | 'kardex' | 'clients' | 'suppliers' | 'finances' | 'support' | 'settings' | 'mobile-portals' | 'contador-ia';
-
+export type ViewType = 'portal-dashboard' | 'pos-terminal' | 'access-control' | 'inventory' | 'kardex' | 'clients' | 'suppliers' | 'finances' | 'support' | 'settings' | 'mobile-portals' | 'contador-ia' | 'cheese-trips';
 export interface MobileOrder {
   id: string;
   type: 'client' | 'supplier'; // client order for cheese OR supplier order for supplies/food (repuestos/comida)
@@ -85,7 +84,7 @@ export interface RevenuePoint {
 export interface CheeseProduct {
   id: string;
   name: string;
-  category: 'Fresco' | 'Semicurado' | 'Curado' | 'Azul' | 'Especial';
+  category: 'Fresco' | 'Semicurado' | 'Curado' | 'Azul' | 'Especial' | 'Víveres';
   stockKg: number;
   purchasePrice: number; // Cost of purchase per kg
   sellingPrice: number;  // Sale price per kg
@@ -101,7 +100,7 @@ export interface KardexMovement {
   productId: string;
   productName: string;
   unit: 'Kg' | 'Lt' | 'Und';
-  type: 'ENTRADA_COMPRA' | 'SALIDA_VENTA' | 'MERMA_DANO' | 'AJUSTE_MANUAL';
+  type: 'ENTRADA_COMPRA' | 'SALIDA_VENTA' | 'MERMA_DANO' | 'AJUSTE_MANUAL' | 'SALIDA_VIAJE' | 'ENTRADA_VIVERES';
   quantity: number;
   previousStock: number;
   newStock: number;
@@ -217,5 +216,61 @@ export interface BusinessSettings {
     bankBalanceUsd: number;
     totalCapital: number;
   };
+  centralVaultBalance?: CentralVaultBalance;
 }
 
+export interface CentralVaultBalance {
+  usd: number;
+  bs: number;
+  bankBs: number;
+  bankUsd: number;
+}
+
+export interface TripInvoiceItem {
+  description: string;
+  quantity: number;
+  unitCostUsd: number;
+  totalCostUsd: number;
+}
+
+export interface TripInvoice {
+  id: string;
+  supplierName: string;
+  invoiceNumber?: string;
+  date: string;
+  totalUsd: number;
+  items: TripInvoiceItem[];
+  receiptImageUrl?: string;
+  isMerchandiseReturn?: boolean; // If true, this invoice represents goods brought back (Víveres)
+}
+
+export interface CheeseTrip {
+  id: string;
+  tripNumber: number;
+  date: string;
+  destination: string;
+  clientId?: string;
+  clientName?: string;
+  driverOrResponsible: string;
+  status: 'en_ruta' | 'liquidado';
+  cheeseProductId: string;
+  cheeseProductName: string;
+  dispatchedKg: number;
+  costPerKgUsd: number;
+  dispatchedCostValue: number;
+  cashTakenUsd?: number;
+  cashTakenBs?: number;
+  totalBagValueUsd?: number;
+  invoices: TripInvoice[];
+  totalInvoicesValueUsd: number;
+  cashReturnedUsd: number;
+  cashReturnedBs: number;
+  bankReturnedBs: number;
+  bankReturnedUsd: number;
+  bcvRateAtSettlement: number;
+  totalSettlementValueUsd: number;
+  netProfitUsd: number;
+  notes?: string;
+  settledAt?: string;
+  createdAt: string;
+}

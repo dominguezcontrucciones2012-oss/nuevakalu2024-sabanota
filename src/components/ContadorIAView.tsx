@@ -1,16 +1,40 @@
 import React, { useState } from 'react';
-import { Lock, Mic, Calculator, BrainCircuit, Image as ImageIcon, Receipt, Calendar, ArrowRight } from 'lucide-react';
+import { Lock, Mic, Calculator, BrainCircuit, Image as ImageIcon, Receipt, Calendar, ArrowRight, Truck } from 'lucide-react';
 import InvoiceUploadView from './contador/InvoiceUploadView';
 import AIAssistantWidget from './contador/AIAssistantWidget';
 import VoiceNotesView from './contador/VoiceNotesView';
 import PhotoAlbumView from './contador/PhotoAlbumView';
+import CentralVaultView from './contador/CentralVaultView';
+import CheeseTripsView from './CheeseTripsView';
+import { CentralVaultBalance, Transaction, CheeseTrip, CheeseProduct, ClientProfile } from '../types';
 
 interface ContadorIAViewProps {
   isAdmin: boolean;
+  vaultBalance: CentralVaultBalance;
+  onAddTransaction: (tx: Partial<Transaction>) => void;
+  exchangeRate: number;
+  cheeseTrips?: CheeseTrip[];
+  cheeseProducts?: CheeseProduct[];
+  clients?: ClientProfile[];
+  transactions?: Transaction[];
+  onCreateTrip?: (trip: Omit<CheeseTrip, 'id'>) => Promise<void>;
+  onUpdateTrip?: (id: string, updates: Partial<CheeseTrip>) => Promise<void>;
+  onSettleTrip?: (id: string, settlementData: Partial<CheeseTrip>) => Promise<void>;
+  onAddNotification?: (msg: string, type: 'success'|'info'|'warning') => void;
 }
 
-export default function ContadorIAView({ isAdmin }: ContadorIAViewProps) {
+export default function ContadorIAView({ 
+  isAdmin, vaultBalance, onAddTransaction, exchangeRate,
+  cheeseTrips, cheeseProducts, clients, transactions,
+  onCreateTrip, onUpdateTrip, onSettleTrip, onAddNotification
+}: ContadorIAViewProps) {
   const [activeModule, setActiveModule] = useState<string | null>(null);
+  const [modulePayload, setModulePayload] = useState<any>(null);
+
+  const handleNavigateToModule = (moduleId: string | null, payload?: any) => {
+    setActiveModule(moduleId);
+    setModulePayload(payload);
+  };
 
   if (!isAdmin) {
     return (
@@ -25,6 +49,13 @@ export default function ContadorIAView({ isAdmin }: ContadorIAViewProps) {
   }
 
   const modules = [
+    {
+      id: 'central-vault',
+      title: 'Bóveda Banco Central',
+      desc: 'Gestión financiera mayor, cuentas bancarias y caja fuerte principal.',
+      icon: Calculator,
+      color: 'amber'
+    },
     {
       id: 'voice-notes',
       title: 'Bloc de Notas por Voz',
@@ -43,8 +74,8 @@ export default function ContadorIAView({ isAdmin }: ContadorIAViewProps) {
       id: 'budget-control',
       title: 'Control Presupuestario',
       desc: 'Análisis financiero automatizado y detección de desviaciones en tiempo real.',
-      icon: Calculator,
-      color: 'amber'
+      icon: BrainCircuit,
+      color: 'blue'
     },
     {
       id: 'invoice-upload',
@@ -52,13 +83,44 @@ export default function ContadorIAView({ isAdmin }: ContadorIAViewProps) {
       desc: 'Escaneo y lectura OCR mediante Gemini IA para registro instantáneo de gastos.',
       icon: Receipt,
       color: 'rose'
+    },
+    {
+      id: 'cheese-trips',
+      title: 'Control de Giras San Juan',
+      desc: 'Salidas de queso y retorno de mercancía Daisy/Víveres.',
+      icon: Truck,
+      color: 'amber'
     }
   ];
 
   if (activeModule === 'invoice-upload' || activeModule === 'budget-control') {
     return (
       <div className="relative h-full">
-        <InvoiceUploadView onBack={() => setActiveModule(null)} />
+        <InvoiceUploadView 
+          onBack={() => handleNavigateToModule(null)} 
+          settlingTripId={modulePayload?.tripId}
+          cheeseTrips={cheeseTrips}
+          onSettleTrip={onSettleTrip}
+          vaultBalance={vaultBalance}
+          onAddTransaction={onAddTransaction}
+        />
+        <AIAssistantWidget />
+      </div>
+    );
+  }
+
+  if (activeModule === 'central-vault') {
+    return (
+      <div className="relative h-full">
+        <CentralVaultView 
+          onBack={() => setActiveModule(null)} 
+          vaultBalance={vaultBalance} 
+          onAddTransaction={onAddTransaction} 
+          exchangeRate={exchangeRate}
+          transactions={transactions}
+          cheeseProducts={cheeseProducts}
+          cheeseTrips={cheeseTrips}
+        />
         <AIAssistantWidget />
       </div>
     );
@@ -77,6 +139,33 @@ export default function ContadorIAView({ isAdmin }: ContadorIAViewProps) {
     return (
       <div className="relative h-full">
         <PhotoAlbumView onBack={() => setActiveModule(null)} />
+        <AIAssistantWidget />
+      </div>
+    );
+  }
+
+  if (activeModule === 'cheese-trips') {
+    return (
+      <div className="relative h-full p-6">
+        <div className="mb-4">
+          <button onClick={() => setActiveModule(null)} className="flex items-center text-xs font-bold uppercase tracking-widest text-editorial-text-muted hover:text-white transition-colors cursor-pointer">
+            &larr; Volver al Portal
+          </button>
+        </div>
+        {cheeseTrips && cheeseProducts && clients && onCreateTrip && onUpdateTrip && onSettleTrip && onAddNotification && (
+          <CheeseTripsView
+            cheeseTrips={cheeseTrips}
+            cheeseProducts={cheeseProducts}
+            clients={clients}
+            exchangeRate={exchangeRate}
+            onCreateTrip={onCreateTrip}
+            onUpdateTrip={onUpdateTrip}
+            onSettleTrip={onSettleTrip}
+            onAddNotification={onAddNotification}
+            onNavigateToModule={handleNavigateToModule}
+            onAddTransaction={onAddTransaction}
+          />
+        )}
         <AIAssistantWidget />
       </div>
     );

@@ -14,7 +14,10 @@ import {
   BusinessSettings,
   ViewType,
   MobileOrder,
-  KardexMovement
+  RevenuePoint,
+  KardexMovement,
+  CheeseTrip,
+  CentralVaultBalance
 } from './types';
 
 import {
@@ -41,6 +44,7 @@ import DashboardView from './components/DashboardView';
 import CheesePOSView from './components/CheesePOSView';
 import CheeseInventoryView from './components/CheeseInventoryView';
 import KardexView from './components/KardexView';
+import CheeseTripsView from './components/CheeseTripsView';
 import ClientsCreditView from './components/ClientsCreditView';
 import SuppliersDebtsView from './components/SuppliersDebtsView';
 import FinancesAnalysisView from './components/FinancesAnalysisView';
@@ -100,7 +104,10 @@ export default function App() {
   const [complaints, setComplaints] = useState<CustomerComplaint[]>(INITIAL_COMPLAINTS);
   const [settings, setSettings] = useState<BusinessSettings>(DEFAULT_SETTINGS);
   const [mobileOrders, setMobileOrders] = useState<MobileOrder[]>([]);
-
+  const [cheeseTrips, setCheeseTrips] = useState<CheeseTrip[]>(() => {
+    const saved = localStorage.getItem('kalu_cheese_trips');
+    return saved ? JSON.parse(saved) : [];
+  });
   // Global Ledger States
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
     const saved = localStorage.getItem('kalu_sales_history');
@@ -116,7 +123,9 @@ export default function App() {
   // Toast stack
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
 
-  // Financial Metrics (Calculated dynamically or kept as state modifiers)
+  // Finanzas consolidadas: centralVaultBalance ahora reside en settings.centralVaultBalance
+
+
   const [balance, setBalance] = useState<number>(() => {
     const saved = localStorage.getItem('kalu_balance');
     return saved ? parseFloat(saved) : 0;
@@ -158,12 +167,31 @@ export default function App() {
       if (!snapshot.empty) setClients(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ClientProfile)));
     });
 
+    const unsubCheeseTrips = onSnapshot(query(collection(db, 'cheeseTrips'), orderBy('createdAt', 'desc'), limit(100)), (snapshot) => {
+      if (!snapshot.empty) setCheeseTrips(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CheeseTrip)));
+    });
+
     const unsubSuppliers = onSnapshot(query(collection(db, 'suppliers'), limit(1000)), (snapshot) => {
       if (!snapshot.empty) setSuppliers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SupplierProfile)));
     });
 
     const unsubSettings = onSnapshot(doc(db, 'settings', 'general'), (docSnap) => {
-      if (docSnap.exists()) setSettings({ ...DEFAULT_SETTINGS, ...docSnap.data() } as BusinessSettings);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        let newSettings = { ...DEFAULT_SETTINGS, ...data } as BusinessSettings;
+        
+        // MIGRATION LOGIC: If centralVaultBalance is empty but we have sabanotaInitials
+        if (!data.centralVaultBalance && data.sabanotaInitials) {
+          const exchangeRate = data.exchangeRate || 45;
+          newSettings.centralVaultBalance = {
+            usd: Number(data.sabanotaInitials.drawerUsd) || 0,
+            bs: Number(data.sabanotaInitials.drawerBs) || 0,
+            bankBs: Number(data.sabanotaInitials.bankBalanceBs) || 0,
+            bankUsd: Number(data.sabanotaInitials.bankBalanceUsd) || (Number(data.sabanotaInitials.bankBalanceBs || 0) / exchangeRate)
+          };
+        }
+        setSettings(newSettings);
+      }
     });
 
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
@@ -179,6 +207,7 @@ export default function App() {
       unsubSuppliers();
       unsubSettings();
       unsubUsers();
+      unsubCheeseTrips();
     };
   }, []);
 
@@ -226,6 +255,10 @@ export default function App() {
     localStorage.setItem('kalu_expenses', JSON.stringify(expenses));
   }, [expenses]);
 
+  useEffect(() => {
+    localStorage.setItem('kalu_cheese_trips', JSON.stringify(cheeseTrips));
+  }, [cheeseTrips]);
+
   // Help alert helper
   const addNotification = (message: string, type: 'success' | 'info' | 'warning' = 'info') => {
     const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
@@ -272,14 +305,16 @@ export default function App() {
     paymentMethodType?: string,
     supplierId?: string,
     paidAmount?: number,
-    totalAmount?: number,
+    saleTotalAmount?: number,
     addedPayments?: any[],
     changeAmount?: number,
-    changeCurrency?: 'USD' | 'BS' | 'PAGO_MOVIL' | 'MIXED',
+    changeCurrency?: string,
     changeReference?: string,
-    mixedChange?: any
+    mixedChange?: any,
+    changeBs?: number,
+    bcvRateAtSettlement?: number
   ) => {
-    const saleTotal = totalAmount !== undefined ? totalAmount : saleItems.reduce((sum, item) => sum + item.subtotal, 0);
+    const saleTotal = saleTotalAmount !== undefined ? saleTotalAmount : saleItems.reduce((sum, item) => sum + item.subtotal, 0);
     const amountPaid = paidAmount !== undefined ? paidAmount : saleTotal;
     const debtAmount = Math.max(0, saleTotal - amountPaid);
 
@@ -414,7 +449,9 @@ export default function App() {
       changeAmount: changeAmount || 0,
       changeCurrency: changeCurrency || 'USD',
       changeReference: changeReference || '',
-      mixedChange: mixedChange || undefined
+      mixedChange: mixedChange || undefined,
+      changeBs: changeBs || 0,
+      bcvRateAtSettlement: bcvRateAtSettlement || settings.exchangeRate || 42.50
     };
     
     // Save to Local State immediately (which triggers localStorage backup)
@@ -438,6 +475,52 @@ export default function App() {
       amount: saleTotal
     };
     setActivities((prev) => [newAct, ...prev]);
+  };
+
+  const handleVoidSale = async (transactionId: string, items: any[]) => {
+    // 1. Mark as voided in State
+    setTransactions(prev => prev.map(t => t.id === transactionId ? { ...t, isVoided: true } : t));
+
+    // 2. Mark as voided in Firebase
+    try {
+      await updateDoc(doc(db, 'transactions', transactionId), { isVoided: true });
+    } catch (e) {
+      console.error('Failed to void transaction', e);
+    }
+
+    // 3. Return stock to inventory
+    items.forEach(async (item) => {
+      const p = cheeseProducts.find(p => p.id === item.id);
+      if (p) {
+        setCheeseProducts(prev => prev.map(prod => prod.id === item.id ? { ...prod, stockKg: prod.stockKg + item.quantity } : prod));
+        try {
+          // Import increment if not present, but it's already used below
+          const { increment } = await import('firebase/firestore');
+          await updateDoc(doc(db, 'products', item.id), { stockKg: increment(item.quantity) });
+        } catch (e) {
+          console.error('Failed to return stock', e);
+        }
+      }
+    });
+
+    // 4. Update financials
+    const tx = transactions.find(t => t.id === transactionId);
+    if (tx) {
+      setBalance(prev => prev - (tx.amount || 0));
+      setTotalSalesRevenue(prev => prev - (tx.amount || 0));
+      setTotalSalesCount(prev => prev - 1);
+      
+      const newAct: ActivityStream = {
+        id: `act-void-${Date.now()}`,
+        title: 'Venta Anulada',
+        detail: `Se anuló la transacción ${transactionId} por $${(tx.amount || 0).toFixed(2)}`,
+        time: 'Ahora mismo',
+        location: 'Matriz Principal',
+        type: 'sale',
+        amount: -(tx.amount || 0)
+      };
+      setActivities((prev) => [newAct, ...prev]);
+    }
   };
 
   const handleRecordStockAdjustment = async (productId: string, newStockOrDelta: number, type: 'MERMA_DANO' | 'AJUSTE_MANUAL', reason: string) => {
@@ -480,6 +563,92 @@ export default function App() {
     } catch (err) {
       console.error('Error saving adjustment:', err);
       addNotification('Error al guardar el ajuste de inventario', 'warning');
+    }
+  };
+
+  // --- Viajes San Juan Handlers ---
+  const handleCreateTrip = async (trip: Omit<CheeseTrip, 'id'>) => {
+    try {
+      const tripRef = doc(collection(db, 'cheeseTrips'));
+      const newTrip: CheeseTrip = { ...trip, id: tripRef.id };
+      await setDoc(tripRef, newTrip);
+
+      // Descontar inventario
+      const prod = cheeseProducts.find(p => p.id === trip.cheeseProductId);
+      if (prod) {
+        await updateDoc(doc(db, 'products', prod.id), {
+          stockKg: increment(-trip.dispatchedKg)
+        });
+
+        // Registrar en Kardex
+        const kardexRef = doc(collection(db, 'kardex'));
+        const kardexMovement: KardexMovement = {
+          id: kardexRef.id,
+          date: new Date().toISOString(),
+          productId: prod.id,
+          productName: prod.name,
+          unit: prod.unit || 'Kg',
+          type: 'SALIDA_VIAJE',
+          quantity: trip.dispatchedKg,
+          previousStock: prod.stockKg,
+          newStock: prod.stockKg - trip.dispatchedKg,
+          unitCost: prod.purchasePrice || 0,
+          totalCost: (prod.purchasePrice || 0) * trip.dispatchedKg,
+          notes: `Viaje San Juan #${trip.tripNumber} a ${trip.destination}`,
+          userOrCashier: 'Admin'
+        };
+        await setDoc(kardexRef, kardexMovement);
+      }
+      
+      // Assign debt to client if selected
+      if (trip.clientId) {
+        const client = clients.find(c => c.id === trip.clientId);
+        if (client) {
+          await updateDoc(doc(db, 'clients', client.id), {
+            outstandingDebt: increment(trip.dispatchedCostValue)
+          });
+        }
+      }
+
+      addNotification('Viaje San Juan registrado con éxito', 'success');
+    } catch (err) {
+      console.error('Error creating trip:', err);
+      addNotification('Error al registrar el viaje', 'warning');
+    }
+  };
+
+  const handleUpdateTrip = async (tripId: string, updates: Partial<CheeseTrip>) => {
+    try {
+      await updateDoc(doc(db, 'cheeseTrips', tripId), updates);
+      addNotification('Viaje actualizado', 'success');
+    } catch (err) {
+      console.error('Error updating trip:', err);
+      addNotification('Error al actualizar el viaje', 'warning');
+    }
+  };
+
+  const handleSettleTrip = async (tripId: string, settlementData: Partial<CheeseTrip>) => {
+    try {
+      await updateDoc(doc(db, 'cheeseTrips', tripId), {
+        ...settlementData,
+        status: 'liquidado',
+        settledAt: new Date().toISOString()
+      });
+
+
+      // If there was a client assigned to the trip, we reduce their debt by the total settlement value (total returned goods + money)
+      // Actually, let's just reduce the client debt by the total settled amount (Total Liquidado = Mercancía + Dinero)
+      const trip = cheeseTrips.find(t => t.id === tripId);
+      if (trip && trip.clientId && settlementData.totalSettlementValueUsd) {
+        await updateDoc(doc(db, 'clients', trip.clientId), {
+          outstandingDebt: increment(-settlementData.totalSettlementValueUsd)
+        });
+      }
+
+      addNotification('Viaje liquidado y bóveda actualizada', 'success');
+    } catch (err) {
+      console.error('Error settling trip:', err);
+      addNotification('Error al liquidar el viaje', 'warning');
     }
   };
 
@@ -584,6 +753,16 @@ export default function App() {
         return s;
       })
     );
+    
+    // Save to Firestore
+    try {
+      updateDoc(doc(db, 'suppliers', supplierId), {
+        balanceOwed: newBalanceOwed,
+        storeDebt: newStoreDebt
+      });
+    } catch (err) {
+      console.error("Error updating supplier net balances in Firebase:", err);
+    }
 
     // Adjust bills
     setBills((prevBills) => {
@@ -628,7 +807,18 @@ export default function App() {
     }
 
     if (paymentSource !== 'Dejar como Saldo Pendiente') {
-      setBalance(prev => prev - amount);
+      // Deduzca de bóveda central en Firestore
+      const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+      const updatedVault = { ...currentVault };
+      
+      if (paymentSource === 'Efectivo / Caja Chica') {
+         updatedVault.usd -= amount;
+      } else {
+         updatedVault.bankUsd -= amount;
+      }
+      
+      handleUpdateSettings({ centralVaultBalance: updatedVault });
+
       const newTx: Transaction = {
         id: `TX-${Date.now().toString().slice(-4)}`,
         entity: sup.name,
@@ -1373,7 +1563,7 @@ export default function App() {
               onAddNotification={(msg) => addNotification(msg, 'info')}
               settings={settings}
               expenses={expenses}
-              sales={transactions.filter(t => t.category === "ventas")}
+              sales={transactions.filter(t => t.category === 'ventas')}
             />
           )}
 
@@ -1385,6 +1575,7 @@ export default function App() {
             <CheesePOSView
               exchangeRate={settings.exchangeRate || 45.00}
               settings={settings}
+              onUpdateSettings={handleUpdateSettings}
               products={cheeseProducts}
               clients={clients}
               suppliers={suppliers}
@@ -1402,9 +1593,12 @@ export default function App() {
                   sale.changeAmount,
                   sale.changeCurrency,
                   sale.changeReference,
-                  sale.mixedChange
+                  sale.mixedChange,
+                  sale.changeBs,
+                  sale.bcvRateAtSettlement
                 )
               }
+              onVoidSale={handleVoidSale}
               salesHistory={transactions.filter(t => t.category === 'ventas')}
               dailySalesCount={totalSalesCount}
               dailyRevenue={totalSalesRevenue}
@@ -1503,7 +1697,51 @@ export default function App() {
           )}
 
           {currentView === 'contador-ia' && (
-            <ContadorIAView isAdmin={currentUser?.role === 'admin'} />
+            <ContadorIAView 
+              isAdmin={currentUser?.role === 'admin'} 
+              vaultBalance={settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 }}
+              exchangeRate={settings.exchangeRate || 45.00}
+              cheeseTrips={cheeseTrips}
+              cheeseProducts={cheeseProducts}
+              clients={clients}
+              transactions={transactions}
+              onCreateTrip={handleCreateTrip}
+              onUpdateTrip={handleUpdateTrip}
+              onSettleTrip={handleSettleTrip}
+              onAddNotification={addNotification}
+              onAddTransaction={(tx) => {
+                 const newTx: Transaction = {
+                   id: `TX-${Date.now().toString().slice(-4)}`,
+                   entity: 'Bóveda Banco Central',
+                   date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+                   invoiceNumber: `BOV-${Math.floor(Math.random() * 9000 + 1000)}`,
+                   status: 'Completado',
+                   ...tx
+                 } as Transaction;
+                 
+                 setTransactions(prev => [newTx, ...prev]);
+                 try {
+                   setDoc(doc(db, 'transactions', newTx.id), newTx);
+                 } catch (e) {
+                   console.error(e);
+                 }
+
+                 const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+                 const updatedVault = { ...currentVault };
+                 
+                 if (tx.isIncome) {
+                    if (tx.paymentMethod === 'Efectivo' || tx.paymentMethod === 'Efectivo USD') updatedVault.usd += (tx.amount || 0);
+                    else if (tx.paymentMethod === 'Efectivo BS') updatedVault.bs += (tx.amount || 0);
+                    else updatedVault.bankUsd += (tx.amount || 0);
+                 } else {
+                    if (tx.paymentMethod === 'Efectivo' || tx.paymentMethod === 'Efectivo USD') updatedVault.usd -= (tx.amount || 0);
+                    else if (tx.paymentMethod === 'Efectivo BS') updatedVault.bs -= (tx.amount || 0);
+                    else updatedVault.bankUsd -= (tx.amount || 0);
+                 }
+                 
+                 handleUpdateSettings({ centralVaultBalance: updatedVault });
+              }}
+            />
           )}
         </main>
       </div>

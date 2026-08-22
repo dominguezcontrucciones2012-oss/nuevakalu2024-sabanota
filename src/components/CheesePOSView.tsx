@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOrder, Transaction } from '../types';
-import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send } from 'lucide-react';
+import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X } from 'lucide-react';
 import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '../utils';
 import { collection, addDoc, getDocs, query, orderBy, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
@@ -25,11 +25,15 @@ interface CheesePOSViewProps {
     changeCurrency?: 'USD' | 'BS' | 'PAGO_MOVIL' | 'MIXED';
     changeReference?: string;
     mixedChange?: any;
+    changeBs?: number;
+    bcvRateAtSettlement?: number;
   }) => void;
   salesHistory: any[];
   dailySalesCount: number;
   dailyRevenue: number;
   onAddNotification: (msg: string, type: 'success' | 'info' | 'warning') => void;
+  onVoidSale: (transactionId: string, items: any[]) => void;
+  onUpdateSettings?: (newSettings: Partial<any>) => void;
 }
 
 export default function CheesePOSView({
@@ -44,7 +48,9 @@ export default function CheesePOSView({
   salesHistory,
   dailySalesCount,
   dailyRevenue,
-  onAddNotification
+  onAddNotification,
+  onVoidSale,
+  onUpdateSettings
 }: CheesePOSViewProps) {
   // Helper para procesar números y precios de manera segura (Regla estricta 2)
   const parseNum = (val: any) => parseSafeDecimal(val);
@@ -61,6 +67,7 @@ export default function CheesePOSView({
   const [mixedChangeBs, setMixedChangeBs] = useState('');
   const [mixedChangeMobile, setMixedChangeMobile] = useState('');
   const [mixedChangeMobileRef, setMixedChangeMobileRef] = useState('');
+  const [transactionToVoid, setTransactionToVoid] = useState<any>(null);
   const f4LastTimeRef = useRef<number>(0);
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -369,6 +376,8 @@ export default function CheesePOSView({
       changeAmount,
       changeCurrency,
       changeReference,
+      changeBs: changeAmount > 0 ? parseNum((changeAmount * exchangeRate).toFixed(2)) : 0,
+      bcvRateAtSettlement: exchangeRate,
       mixedChange: changeCurrency === 'MIXED' ? {
         usd: parseNum(mixedChangeUsd),
         bs: parseNum(mixedChangeBs),
@@ -410,9 +419,12 @@ export default function CheesePOSView({
   };
 
   // Calculate closing calculations
-  // Helper to extract amount from sales (handling multipago)
+  // Helper to extract amount from sales  // FILTER VOIDED SALES
+  const validSalesHistory = (salesHistory || []).filter(s => !s.isVoided);
+
+  // ARQUEO CALCULATIONS
   const getSalesTotalByMethod = (method: string) => {
-    return (salesHistory || []).reduce((sum: number, s: any) => {
+    return validSalesHistory.reduce((sum: number, s: any) => {
       // 1. Si la venta tiene desglose de pagos parciales (Multipago)
       if (s.addedPayments && Array.isArray(s.addedPayments) && s.addedPayments.length > 0) {
         const amountInMethod = s.addedPayments
@@ -427,7 +439,11 @@ export default function CheesePOSView({
             return m === method.toLowerCase().trim();
           })
           .reduce((acc: number, p: any) => {
-            // Si el método es en Bs y el abono guardó originalAmount o amount en USD:
+            // Si el método es en Bs, usamos originalAmount (que está en Bs). Si no existe (legacy), lo calculamos con la tasa
+            if (method === 'Efectivo Bs' || method === 'Pago Móvil' || method === 'BioPago') {
+               const val = Number(p.originalAmount) || (Number(p.amount) * (s.bcvRateAtSettlement || exchangeRate || 1));
+               return acc + val;
+            }
             const val = Number(p.amount) || Number(p.usdAmount) || 0;
             return acc + val;
           }, 0);
@@ -453,25 +469,35 @@ export default function CheesePOSView({
         isMatch = pm === method.toLowerCase().trim();
       }
 
-      const saleAmount = Number(s.amount) || Number(s.total) || Number(s.paidAmount) || 0;
+      let saleAmount = Number(s.amount) || Number(s.total) || Number(s.paidAmount) || 0;
+      
+      // Si es un método en Bs y no es multipago (legacy), multiplicamos aquí mismo para devolver el monto en Bs nominal
+      if (isMatch && (method === 'Efectivo Bs' || method === 'Pago Móvil' || method === 'Transferencia' || method === 'BioPago' || method === 'Tarjeta / Punto' || method === 'Tarjeta')) {
+         saleAmount = saleAmount * (s.bcvRateAtSettlement || exchangeRate || 1);
+      }
+      
       return sum + (isMatch ? saleAmount : 0);
     }, 0);
   };
 
   const getTransactionsTotalByMethod = (method: string, category: string, isIncome: boolean) => {
     return allTransactions
-      .filter(t => t.category === category && t.isIncome === isIncome && (t.paymentMethod === method || (method === 'Efectivo $' && t.paymentMethod === 'Efectivo')))
+      .filter(t => t.category === category && t.isIncome === isIncome && !t.isVoided && (t.paymentMethod === method || (method === 'Efectivo $' && t.paymentMethod === 'Efectivo')))
       .reduce((sum, t) => sum + t.amount, 0);
   };
 
   const getTotalChange = (currency: 'USD' | 'BS' | 'PAGO_MOVIL') => {
-    return (salesHistory || []).reduce((sum, s) => {
+    return validSalesHistory.reduce((sum, s) => {
       if (s.changeCurrency === currency) {
+        if (currency === 'BS' || currency === 'PAGO_MOVIL') {
+           // Si devolvimos el vuelto nominal en Bs en changeBs, úsalo, sino usa la conversión
+           return sum + (Number(s.changeBs) || (Number(s.changeAmount) * (s.bcvRateAtSettlement || exchangeRate || 1)));
+        }
         return sum + (Number(s.changeAmount) || 0);
       } else if (s.changeCurrency === 'MIXED' && s.mixedChange) {
         if (currency === 'USD') return sum + (Number(s.mixedChange.usd) || 0);
-        if (currency === 'BS') return sum + ((Number(s.mixedChange.bs) || 0) / (exchangeRate || 1));
-        if (currency === 'PAGO_MOVIL') return sum + ((Number(s.mixedChange.mobile) || 0) / (exchangeRate || 1));
+        if (currency === 'BS') return sum + (Number(s.mixedChange.bs) || 0);
+        if (currency === 'PAGO_MOVIL') return sum + (Number(s.mixedChange.mobile) || 0);
       }
       return sum;
     }, 0);
@@ -483,27 +509,28 @@ export default function CheesePOSView({
   const totalCashUsd = salesCashUsd + incomeCashUsd;
 
   // 2. Efectivo Bs
-  const salesCashBs = getSalesTotalByMethod('Efectivo Bs') * (exchangeRate || 1) - (getTotalChange('BS') * (exchangeRate || 1));
+  // Ya getSalesTotalByMethod devuelve en Bs y getTotalChange devuelve en Bs nominal
+  const salesCashBs = getSalesTotalByMethod('Efectivo Bs') - getTotalChange('BS');
   const incomeCashBs = getTransactionsTotalByMethod('Efectivo Bs', 'credito', true) * (exchangeRate || 1);
   const totalCashBs = salesCashBs + incomeCashBs;
 
   // 3. Punto de Venta / Tarjetas
   const salesCard = getSalesTotalByMethod('Tarjeta / Punto') + getSalesTotalByMethod('Tarjeta');
-  const incomeCard = getTransactionsTotalByMethod('Tarjeta / Punto', 'credito', true) + getTransactionsTotalByMethod('Tarjeta', 'credito', true);
+  const incomeCard = (getTransactionsTotalByMethod('Tarjeta / Punto', 'credito', true) + getTransactionsTotalByMethod('Tarjeta', 'credito', true)) * (exchangeRate || 1);
   const totalCard = salesCard + incomeCard;
 
   // 4. Pago Móvil
-  const salesMobile = getSalesTotalByMethod('Pago Móvil') + getSalesTotalByMethod('Transferencia') - (getTotalChange('PAGO_MOVIL') * (exchangeRate || 1));
-  const incomeMobile = getTransactionsTotalByMethod('Pago Móvil', 'credito', true) + getTransactionsTotalByMethod('Transferencia', 'credito', true);
+  const salesMobile = getSalesTotalByMethod('Pago Móvil') + getSalesTotalByMethod('Transferencia') - getTotalChange('PAGO_MOVIL');
+  const incomeMobile = (getTransactionsTotalByMethod('Pago Móvil', 'credito', true) + getTransactionsTotalByMethod('Transferencia', 'credito', true)) * (exchangeRate || 1);
   const totalMobile = salesMobile + incomeMobile;
 
   // 5. Biopago
   const salesBiopago = getSalesTotalByMethod('BioPago');
-  const incomeBiopago = getTransactionsTotalByMethod('BioPago', 'credito', true);
+  const incomeBiopago = getTransactionsTotalByMethod('BioPago', 'credito', true) * (exchangeRate || 1);
   const totalBiopago = salesBiopago + incomeBiopago;
 
-  // 6. Ventas a Crédito (Fiado)
-  const totalCreditSales = salesHistory.reduce((sum, s) => sum + (s.paymentMethod === 'Crédito' || s.debtAmount > 0 ? (s.debtAmount || s.total) : 0), 0);
+  // 6. Ventas a Crédito (Fiado) - Calculado desde saldos vivos reales (Clientes + Proveedores)
+  const totalCreditSales = clients.reduce((sum, c) => sum + (c.outstandingDebt || 0), 0) + suppliers.reduce((sum, s) => sum + (s.storeDebt || 0), 0);
 
   // 7. Gastos en Efectivo USD y Bs
   const expensesCashUsd = getTransactionsTotalByMethod('Efectivo $', 'gastos', false) + getTransactionsTotalByMethod('Efectivo', 'gastos', false);
@@ -558,29 +585,21 @@ export default function CheesePOSView({
       
       await addDoc(collection(db, 'cashClosings'), report);
 
-      // Actualizar tesorería (sabanotaInitials) en Firebase
-      const currentInitials = settings?.sabanotaInitials || {
-        drawerUsd: 0, drawerBs: 0, bankBalanceBs: 0, bankBalanceUsd: 0, totalCapital: 0
+      // Actualizar Bóveda Central (única fuente de verdad) en Firebase
+      const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+      const updatedVault = {
+        usd: currentVault.usd + expectedUsd,
+        bs: currentVault.bs + expectedBs,
+        bankBs: currentVault.bankBs + totalMobile + totalBiopago + totalCard,
+        bankUsd: currentVault.bankUsd
       };
 
-      // Sumar ingresos a bancos según los métodos (asumiendo totalCard y totalMobile van a bankBalanceBs/bankBalanceUsd según la moneda, aquí simplificamos todo Bs a bankBalanceBs)
-      // Ajuste real según requerimientos:
-      const updatedSabanota = {
-        ...currentInitials,
-        drawerUsd: currentInitials.drawerUsd + expectedUsd,
-        drawerBs: currentInitials.drawerBs + expectedBs,
-        bankBalanceBs: currentInitials.bankBalanceBs + totalMobile + totalBiopago + totalCard,
-      };
-      
-      // El totalCapital aumenta según las ganancias, lo sumamos crudo aquí para el patrimonio
-      updatedSabanota.totalCapital = updatedSabanota.drawerUsd + (updatedSabanota.drawerBs / exchangeRate) + (updatedSabanota.bankBalanceBs / exchangeRate) + updatedSabanota.bankBalanceUsd;
-
-      try {
+      if (onUpdateSettings) {
+        onUpdateSettings({ centralVaultBalance: updatedVault });
+      } else {
         await updateDoc(doc(db, 'settings', 'general'), {
-          sabanotaInitials: updatedSabanota
+          centralVaultBalance: updatedVault
         });
-      } catch (err) {
-        console.error("Error updating tesorería", err);
       }
 
       setIsClosed(true);
@@ -1321,13 +1340,30 @@ export default function CheesePOSView({
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono font-bold text-amber-500">${(s.total || s.amount || 0).toFixed(2)}</td>
                       <td className="py-3.5 px-4 text-center">
-                        <button
-                          onClick={() => setLastReceipt(s)}
-                          className="px-2.5 py-1 text-[9px] font-mono border border-editorial-border hover:border-amber-500 hover:text-amber-500 rounded bg-editorial-card transition-all cursor-pointer inline-flex items-center gap-1"
-                        >
-                          <FileText className="w-3 h-3" />
-                          Ver Ticket
-                        </button>
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            onClick={() => setLastReceipt(s)}
+                            className="px-2.5 py-1 text-[9px] font-mono border border-editorial-border hover:border-amber-500 hover:text-amber-500 rounded bg-editorial-card transition-all cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <FileText className="w-3 h-3" />
+                            Ver Ticket
+                          </button>
+                          {!s.isVoided && onVoidSale && (
+                            <button
+                              onClick={() => setTransactionToVoid(s)}
+                              className="px-2.5 py-1 text-[9px] font-mono border border-rose-500/30 text-rose-400 hover:bg-rose-500 hover:text-white rounded transition-all cursor-pointer inline-flex items-center gap-1"
+                              title="Anular Venta"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              Anular
+                            </button>
+                          )}
+                          {s.isVoided && (
+                            <span className="px-2.5 py-1 text-[9px] font-mono font-bold text-rose-500 uppercase tracking-widest">
+                              Anulada
+                            </span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -1532,18 +1568,18 @@ export default function CheesePOSView({
               <div className="font-mono text-xs grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="flex flex-col p-3 bg-editorial-bg rounded border border-editorial-border">
                   <span className="text-[10px] uppercase text-editorial-text-muted">💳 Punto de Venta</span>
-                  <span className="font-bold text-editorial-text-primary text-lg">Bs. {(totalCard * exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 })}</span>
-                  <span className="text-[9px] text-editorial-text-muted">Eq. ${totalCard.toFixed(2)} USD</span>
+                  <span className="font-bold text-editorial-text-primary text-lg">Bs. {totalCard.toLocaleString('es-VE', { minimumFractionDigits: 2 })}</span>
+                  <span className="text-[9px] text-editorial-text-muted">Eq. ${(totalCard / (exchangeRate || 1)).toFixed(2)} USD</span>
                 </div>
                 <div className="flex flex-col p-3 bg-editorial-bg rounded border border-editorial-border">
                   <span className="text-[10px] uppercase text-editorial-text-muted">📲 Pago Móvil</span>
-                  <span className="font-bold text-editorial-text-primary text-lg">Bs. {(totalMobile * exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 })}</span>
-                  <span className="text-[9px] text-editorial-text-muted">Eq. ${totalMobile.toFixed(2)} USD</span>
+                  <span className="font-bold text-editorial-text-primary text-lg">Bs. {totalMobile.toLocaleString('es-VE', { minimumFractionDigits: 2 })}</span>
+                  <span className="text-[9px] text-editorial-text-muted">Eq. ${(totalMobile / (exchangeRate || 1)).toFixed(2)} USD</span>
                 </div>
                 <div className="flex flex-col p-3 bg-editorial-bg rounded border border-editorial-border">
                   <span className="text-[10px] uppercase text-editorial-text-muted">🧬 Biopago</span>
-                  <span className="font-bold text-editorial-text-primary text-lg">Bs. {(totalBiopago * exchangeRate).toLocaleString('es-VE', { minimumFractionDigits: 2 })}</span>
-                  <span className="text-[9px] text-editorial-text-muted">Eq. ${totalBiopago.toFixed(2)} USD</span>
+                  <span className="font-bold text-editorial-text-primary text-lg">Bs. {totalBiopago.toLocaleString('es-VE', { minimumFractionDigits: 2 })}</span>
+                  <span className="text-[9px] text-editorial-text-muted">Eq. ${(totalBiopago / (exchangeRate || 1)).toFixed(2)} USD</span>
                 </div>
                 <div className="flex flex-col p-3 bg-editorial-bg rounded border border-editorial-border">
                   <span className="text-[10px] uppercase text-editorial-text-muted">💵 Efectivo Bs</span>
@@ -1705,9 +1741,9 @@ export default function CheesePOSView({
               <h3 className="font-serif font-bold text-editorial-text-primary text-lg">Ticket de Venta</h3>
               <button 
                 onClick={() => setLastReceipt(null)}
-                className="text-editorial-text-muted hover:text-rose-400 transition-colors p-1"
+                className="text-editorial-text-muted hover:text-white transition-colors p-1"
               >
-                <Trash2 className="w-5 h-5" />
+                <X className="w-5 h-5" />
               </button>
             </div>
 
@@ -1886,49 +1922,82 @@ export default function CheesePOSView({
                   </div>
                 )}
 
-                {changeCurrency === 'MIXED' && (
-                  <div className="pt-2 grid gap-3 animate-in fade-in slide-in-from-top-2">
-                    <div className="grid grid-cols-3 gap-2">
-                      <div>
-                        <label className="text-[10px] text-emerald-400 font-mono uppercase">USD ($)</label>
-                        <input
-                          type="text"
-                          value={mixedChangeUsd}
-                          onChange={(e) => setMixedChangeUsd(e.target.value)}
-                          placeholder="0.00"
-                          className="w-full bg-editorial-bg border border-emerald-500/50 rounded px-2 py-1 text-sm text-emerald-400 focus:outline-none focus:border-emerald-500 font-mono"
-                        />
+                {changeCurrency === 'MIXED' && (() => {
+                  const reqUsd = parseNum((totalAbonado - total).toFixed(2));
+                  const u = parseNum(mixedChangeUsd);
+                  const b = parseNum(mixedChangeBs) / (exchangeRate || 1);
+                  const m = parseNum(mixedChangeMobile) / (exchangeRate || 1);
+                  const sumUsd = parseNum((u + b + m).toFixed(2));
+                  const pendingUsd = Math.max(0, reqUsd - sumUsd);
+                  const pendingBs = pendingUsd * (exchangeRate || 1);
+
+                  return (
+                    <div className="pt-2 grid gap-3 animate-in fade-in slide-in-from-top-2">
+                      <div className="bg-editorial-bg border border-amber-500/30 rounded p-2 text-center flex justify-between px-4 items-center">
+                        <span className="text-xs text-editorial-text-muted font-mono uppercase">Pendiente:</span>
+                        <div className="text-right font-mono">
+                          <span className={`text-sm font-bold ${pendingUsd === 0 ? 'text-emerald-400' : 'text-amber-500'} mr-2`}>${pendingUsd.toFixed(2)}</span>
+                          <span className={`text-xs ${pendingUsd === 0 ? 'text-emerald-400/70' : 'text-amber-500/70'}`}>Bs. {pendingBs.toFixed(2)}</span>
+                        </div>
                       </div>
-                      <div>
-                        <label className="text-[10px] text-lime-400 font-mono uppercase">Bs Efectivo</label>
-                        <input
-                          type="text"
-                          value={mixedChangeBs}
-                          onChange={(e) => setMixedChangeBs(e.target.value)}
-                          placeholder="0.00"
-                          className="w-full bg-editorial-bg border border-lime-500/50 rounded px-2 py-1 text-sm text-lime-400 focus:outline-none focus:border-lime-500 font-mono"
-                        />
+                      
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="text-[10px] text-emerald-400 font-mono uppercase">USD ($)</label>
+                            {pendingUsd > 0 && (
+                              <button type="button" onClick={() => setMixedChangeUsd(parseNum((u + pendingUsd).toFixed(2)).toString())} className="text-[9px] bg-emerald-500/20 text-emerald-400 px-1 rounded hover:bg-emerald-500/40">Completar</button>
+                            )}
+                          </div>
+                          <input
+                            type="text"
+                            value={mixedChangeUsd}
+                            onChange={(e) => setMixedChangeUsd(e.target.value)}
+                            placeholder="0.00"
+                            className="w-full bg-editorial-bg border border-emerald-500/50 rounded px-2 py-1 text-sm text-emerald-400 focus:outline-none focus:border-emerald-500 font-mono"
+                          />
+                        </div>
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="text-[10px] text-lime-400 font-mono uppercase">Bs Efectivo</label>
+                            {pendingUsd > 0 && (
+                              <button type="button" onClick={() => setMixedChangeBs(parseNum((parseNum(mixedChangeBs) + pendingBs).toFixed(2)).toString())} className="text-[9px] bg-lime-500/20 text-lime-400 px-1 rounded hover:bg-lime-500/40">Completar</button>
+                            )}
+                          </div>
+                          <input
+                            type="text"
+                            value={mixedChangeBs}
+                            onChange={(e) => setMixedChangeBs(e.target.value)}
+                            placeholder="0.00"
+                            className="w-full bg-editorial-bg border border-lime-500/50 rounded px-2 py-1 text-sm text-lime-400 focus:outline-none focus:border-lime-500 font-mono"
+                          />
+                        </div>
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="text-[10px] text-violet-400 font-mono uppercase">Pago Móvil</label>
+                            {pendingUsd > 0 && (
+                              <button type="button" onClick={() => setMixedChangeMobile(parseNum((parseNum(mixedChangeMobile) + pendingBs).toFixed(2)).toString())} className="text-[9px] bg-violet-500/20 text-violet-400 px-1 rounded hover:bg-violet-500/40">Completar</button>
+                            )}
+                          </div>
+                          <input
+                            type="text"
+                            value={mixedChangeMobile}
+                            onChange={(e) => setMixedChangeMobile(e.target.value)}
+                            placeholder="0.00"
+                            className="w-full bg-editorial-bg border border-violet-500/50 rounded px-2 py-1 text-sm text-violet-400 focus:outline-none focus:border-violet-500 font-mono"
+                          />
+                        </div>
                       </div>
-                      <div>
-                        <label className="text-[10px] text-violet-400 font-mono uppercase">Pago Móvil (Bs)</label>
-                        <input
-                          type="text"
-                          value={mixedChangeMobile}
-                          onChange={(e) => setMixedChangeMobile(e.target.value)}
-                          placeholder="0.00"
-                          className="w-full bg-editorial-bg border border-violet-500/50 rounded px-2 py-1 text-sm text-violet-400 focus:outline-none focus:border-violet-500 font-mono"
-                        />
-                      </div>
+                      <input
+                        type="text"
+                        placeholder="Referencia Pago Móvil"
+                        value={mixedChangeMobileRef}
+                        onChange={(e) => setMixedChangeMobileRef(e.target.value)}
+                        className="w-full bg-editorial-bg border border-violet-500/30 rounded px-3 py-1.5 text-xs text-violet-400 placeholder:text-violet-400/30 focus:outline-none focus:border-violet-500 font-mono"
+                      />
                     </div>
-                    <input
-                      type="text"
-                      placeholder="Referencia Pago Móvil"
-                      value={mixedChangeMobileRef}
-                      onChange={(e) => setMixedChangeMobileRef(e.target.value)}
-                      className="w-full bg-editorial-bg border border-violet-500/30 rounded px-3 py-1.5 text-xs text-violet-400 placeholder:text-violet-400/30 focus:outline-none focus:border-violet-500 font-mono"
-                    />
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             </div>
             <div className="p-4 bg-editorial-bg border-t border-editorial-border flex gap-3">
@@ -1957,6 +2026,49 @@ export default function CheesePOSView({
                 className="flex-[2] py-3 bg-amber-500 text-black font-serif font-bold text-xs uppercase tracking-wider rounded hover:brightness-110 transition-colors"
               >
                 ✅ Confirmar Vuelto y Emitir Ticket (F4/Enter)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Void Confirmation Modal */}
+      {transactionToVoid && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 backdrop-blur-sm p-4">
+          <div className="bg-editorial-card border border-rose-500/50 rounded w-full max-w-md flex flex-col shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between p-4 bg-editorial-bg border-b border-editorial-border">
+              <h3 className="font-serif font-bold text-rose-500 text-lg flex items-center gap-2">
+                <AlertCircle className="w-5 h-5" />
+                Anular Venta
+              </h3>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-editorial-text-primary text-center">
+                ¿Deseas anular la venta <span className="font-mono font-bold">{transactionToVoid.invoiceNumber || transactionToVoid.id}</span> por un total de <span className="font-mono font-bold text-amber-500">${(transactionToVoid.total || transactionToVoid.amount || 0).toFixed(2)}</span>?
+              </p>
+              <div className="bg-rose-500/10 border border-rose-500/30 rounded p-4 text-xs text-rose-400 text-center font-mono">
+                Esta acción devolverá los productos al stock del inventario y restará el dinero del Arqueo de Caja de forma inmediata.
+              </div>
+            </div>
+            <div className="p-4 bg-editorial-bg border-t border-editorial-border flex gap-3">
+              <button
+                onClick={() => setTransactionToVoid(null)}
+                className="flex-1 py-3 border border-editorial-border text-editorial-text-muted font-serif font-bold text-xs uppercase tracking-wider rounded hover:bg-editorial-card transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => {
+                  if (onVoidSale) {
+                    onVoidSale(transactionToVoid.id, transactionToVoid.items || []);
+                    onAddNotification(`Venta ${transactionToVoid.invoiceNumber || transactionToVoid.id} anulada exitosamente.`, 'success');
+                  }
+                  setTransactionToVoid(null);
+                }}
+                className="flex-1 py-3 bg-rose-500 text-white font-serif font-bold text-xs uppercase tracking-wider rounded hover:brightness-110 transition-colors flex items-center justify-center gap-2"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Confirmar Anulación
               </button>
             </div>
           </div>

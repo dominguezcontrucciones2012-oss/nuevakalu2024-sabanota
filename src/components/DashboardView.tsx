@@ -48,34 +48,15 @@ export default function DashboardView({
   const totalOutstandingReceivable = clients.reduce((sum, c) => sum + c.outstandingDebt, 0);
   const totalOutstandingPayable = suppliers.reduce((sum, s) => sum + s.balanceOwed, 0);
 
-  // Treasury Calculations
-  const sabanotaInitials = settings.sabanotaInitials || { drawerUsd: 0, drawerBs: 0, bankBalanceBs: 0, bankBalanceUsd: 0, totalCapital: 0 };
-  const today = new Date();
-  const defaultDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  
-  const todaySales = sales.filter(s => {
-    if (s.createdAt) {
-      const saleDateObj = new Date(s.createdAt);
-      return `${saleDateObj.getFullYear()}-${String(saleDateObj.getMonth() + 1).padStart(2, '0')}-${String(saleDateObj.getDate()).padStart(2, '0')}` === defaultDate;
-    }
-    return false;
-  });
+  const centralVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+  const exchangeRate = settings.exchangeRate || 45;
 
-  const incomeCashUsd = todaySales.reduce((sum, s) => sum + (s.paymentBreakdown?.cashUsd || 0) - (s.paymentBreakdown?.changeUsd || 0), 0);
-  const incomeCashBs = todaySales.reduce((sum, s) => sum + (s.paymentBreakdown?.cashBs || 0) - (s.paymentBreakdown?.changeBs || 0), 0);
-  const incomeBankBs = todaySales.reduce((sum, s) => sum + (s.paymentBreakdown?.pagoMovilBs || 0) + (s.paymentBreakdown?.puntoBs || 0) + (s.paymentBreakdown?.biopagoBs || 0), 0);
+  const currentDrawerUsd = centralVault.usd;
+  const currentDrawerBs = centralVault.bs;
+  const currentBankBs = centralVault.bankBs;
+  const currentBankUsd = centralVault.bankUsd;
   
-  // Expenses (assuming amount is USD)
-  const esDate = today.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' });
-  const todayExpenses = expenses.filter(e => e.date === esDate || e.date === defaultDate);
-  const expenseCashUsd = todayExpenses.filter(e => e.paymentMethod === 'Efectivo').reduce((sum, e) => sum + e.amount, 0);
-  const expenseBankUsd = todayExpenses.filter(e => e.paymentMethod !== 'Efectivo').reduce((sum, e) => sum + e.amount, 0);
-
-  const currentDrawerUsd = sabanotaInitials.drawerUsd + incomeCashUsd - expenseCashUsd;
-  const currentDrawerBs = sabanotaInitials.drawerBs + incomeCashBs;
-  const currentBankUsd = sabanotaInitials.bankBalanceUsd - expenseBankUsd;
-  const currentBankBs = sabanotaInitials.bankBalanceBs + incomeBankBs;
-  const totalPatrimony = sabanotaInitials.totalCapital + incomeCashUsd + (incomeCashBs / (settings.exchangeRate || 45)) + (incomeBankBs / (settings.exchangeRate || 45)) - expenseCashUsd - expenseBankUsd;
+  const totalPatrimony = currentDrawerUsd + (currentDrawerBs / exchangeRate) + (currentBankBs / exchangeRate) + currentBankUsd;
 
   return (
     <div className="space-y-8 animate-fade-in">
@@ -120,42 +101,28 @@ export default function DashboardView({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <div className="space-y-1 border-l-2 border-emerald-500 pl-4">
             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Efectivo Físico ($ USD)</span>
-            <div className="font-serif text-2xl font-bold text-emerald-400">${(currentDrawerUsd || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
-            <p className="text-[9px] text-editorial-text-muted">Fondo Inicial: ${sabanotaInitials.drawerUsd.toFixed(2)}</p>
+            <div className="font-serif text-2xl font-bold text-emerald-400">$ {(currentDrawerUsd || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
           </div>
           <div className="space-y-1 border-l-2 border-emerald-500 pl-4">
             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Efectivo Físico (Bs)</span>
-            <div className="font-serif text-2xl font-bold text-emerald-400">Bs {(currentDrawerBs || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
-            <p className="text-[9px] text-editorial-text-muted">Fondo Inicial: Bs {sabanotaInitials.drawerBs.toFixed(2)}</p>
+            <div className="font-serif text-2xl font-bold text-emerald-400">Bs. {(currentDrawerBs || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+            <p className="text-[9px] text-editorial-text-muted">$ {(currentDrawerBs / exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</p>
           </div>
           <div className="space-y-1 border-l-2 border-indigo-500 pl-4">
             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Saldo en Bancos (Bs / USD)</span>
-            <div className="font-serif text-2xl font-bold text-indigo-400">Bs {(currentBankBs || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
-            <div className="font-serif text-sm font-bold text-indigo-400/80">${(currentBankUsd || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
+            <div className="font-serif text-2xl font-bold text-indigo-400">Bs. {(currentBankBs || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+            <div className="font-serif text-sm font-bold text-indigo-400/80">$ {(currentBankUsd + (currentBankBs / exchangeRate)).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</div>
           </div>
           <div className="space-y-1 border-l-2 border-amber-500 pl-4">
             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Capital / Patrimonio Actual</span>
-            <div className="font-serif text-2xl font-bold text-amber-500">${(totalPatrimony || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</div>
-            <p className="text-[9px] text-editorial-text-muted">Arranque: ${sabanotaInitials.totalCapital.toFixed(2)}</p>
+            <div className="font-serif text-2xl font-bold text-amber-500">$ {(totalPatrimony || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
           </div>
         </div>
       </div>
 
       {/* Grid of ERP metrics */}
       <div className={`grid grid-cols-1 md:grid-cols-2 ${isSidebarOpen ? 'lg:grid-cols-3' : 'lg:grid-cols-4'} gap-6`}>
-        {/* Balance */}
-        <div className="bg-editorial-card border border-editorial-border rounded p-6 flex flex-col justify-between">
-          <div className="space-y-1">
-            <span className="text-[9px] font-mono tracking-widest text-editorial-text-muted uppercase">Bancos &amp; Reserva Liquida</span>
-            <div className="font-serif text-3xl font-extrabold text-editorial-text-primary">
-              ${balance.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
-            </div>
-          </div>
-          <span className="text-[9px] font-mono text-emerald-400 mt-4 flex items-center gap-1">
-            <CircleDollarSign className="w-3.5 h-3.5" />
-            Fondos Activos Disponibles
-          </span>
-        </div>
+
 
         {/* Cuentas por Cobrar */}
         <div className="bg-editorial-card border border-editorial-border rounded p-6 flex flex-col justify-between">
@@ -265,21 +232,9 @@ export default function DashboardView({
               <p className="text-[10px] text-editorial-text-muted mt-1 leading-normal">Facture Oaxaca, Cotija y quesos de rancho al instante.</p>
             </button>
 
-            <button
-              onClick={() => onNavigate('inventory')}
-              className="w-full p-4 border border-editorial-border hover:border-amber-500/40 rounded text-left group transition-all duration-300 bg-editorial-bg cursor-pointer"
-            >
-              <h4 className="font-serif text-sm font-bold text-editorial-text-primary group-hover:text-amber-500">Mermas &amp; Libro de Lotes</h4>
-              <p className="text-[10px] text-editorial-text-muted mt-1 leading-normal">Ajuste por deshidratación y monitoree la madurez del Cotija.</p>
-            </button>
 
-            <button
-              onClick={() => onNavigate('support')}
-              className="w-full p-4 border border-editorial-border hover:border-amber-500/40 rounded text-left group transition-all duration-300 bg-editorial-bg cursor-pointer"
-            >
-              <h4 className="font-serif text-sm font-bold text-editorial-text-primary group-hover:text-amber-500">Buzón de Quejas</h4>
-              <p className="text-[10px] text-editorial-text-muted mt-1 leading-normal">Consulte reclamaciones sobre calidad y refrigeradores.</p>
-            </button>
+
+
           </div>
         </div>
       </div>

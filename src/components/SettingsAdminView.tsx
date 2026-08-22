@@ -137,6 +137,12 @@ export default function SettingsAdminView({
     e.preventDefault();
     onUpdateSettings({
       defaultStartingCash: defaultStartingCash || 0,
+      centralVaultBalance: {
+        usd: drawerUsd + bankBalanceUsd,
+        bs: drawerBs + bankBalanceBs,
+        bankBs: bankBalanceBs,
+        bankUsd: bankBalanceUsd
+      },
       sabanotaInitials: {
         drawerUsd,
         drawerBs,
@@ -145,7 +151,7 @@ export default function SettingsAdminView({
         totalCapital
       }
     });
-    onAddNotification('Saldos iniciales de apertura fijados.', 'success');
+    onAddNotification('Saldos iniciales fijados y Bóveda actualizada.', 'success');
   };
 
 

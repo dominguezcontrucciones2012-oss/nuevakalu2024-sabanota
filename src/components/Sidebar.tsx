@@ -60,9 +60,9 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
     {
       id: 'kardex' as ViewType,
       num: '03B',
-      label: 'Kardex & Movimientos',
+      label: 'Kardex General',
       icon: BookOpen,
-      description: 'Libro mayor de entradas y salidas'
+      description: 'Auditoría de todos los movimientos'
     },
     {
       id: 'clients' as ViewType,
@@ -85,13 +85,7 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
       icon: TrendingUp,
       description: 'Flujo de caja, gastos y rentabilidad'
     },
-    {
-      id: 'support' as ViewType,
-      num: '07',
-      label: 'Buzón de Quejas',
-      icon: MessageSquare,
-      description: 'Sugerencias, quejas y calidad'
-    },
+
     {
       id: 'mobile-portals' as ViewType,
       num: '08',

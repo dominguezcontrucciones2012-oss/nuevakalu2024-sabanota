@@ -1,13 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { collection, addDoc, doc, updateDoc, getDocs, query, where, onSnapshot, increment, limit } from 'firebase/firestore';
+import { collection, addDoc, doc, updateDoc, getDocs, query, where, onSnapshot, increment, limit, getDoc } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { askGeminiWithImage, askGemini } from '../../services/gemini';
 import { INITIAL_CHEESE_PRODUCTS } from '../../data';
-import { Save, ArrowLeft, Search, Package, Trash2, Camera, Mic, Loader2, Snowflake, CheckSquare, Square, FileText } from 'lucide-react';
-import { CheeseProduct } from '../../types';
+import { Save, ArrowLeft, Search, Package, Trash2, Camera, Mic, Loader2, Snowflake, CheckSquare, Square, FileText, Receipt } from 'lucide-react';
+import { CheeseProduct, CheeseTrip, CentralVaultBalance, Transaction } from '../../types';
 
 interface InvoiceUploadViewProps {
   onBack: () => void;
+  settlingTripId?: string;
+  cheeseTrips?: CheeseTrip[];
+  onSettleTrip?: (id: string, settlementData: Partial<CheeseTrip>) => Promise<void>;
+  vaultBalance?: CentralVaultBalance;
+  onAddTransaction?: (tx: Partial<Transaction>) => void;
 }
 
 interface InvoiceItem {
@@ -23,7 +28,14 @@ interface InvoiceItem {
   subtotal: number;
 }
 
-export default function InvoiceUploadView({ onBack }: InvoiceUploadViewProps) {
+export default function InvoiceUploadView({ 
+  onBack,
+  settlingTripId,
+  cheeseTrips,
+  onSettleTrip,
+  vaultBalance,
+  onAddTransaction
+}: InvoiceUploadViewProps) {
   // Estado Principal de la Factura
   const [items, setItems] = useState<InvoiceItem[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
@@ -42,6 +54,16 @@ export default function InvoiceUploadView({ onBack }: InvoiceUploadViewProps) {
   const [isScanning, setIsScanning] = useState(false);
   const [isDictating, setIsDictating] = useState(false);
   const [dictationText, setDictationText] = useState('');
+
+  // Trip Settlement States
+  const settlingTrip = cheeseTrips?.find(t => t.id === settlingTripId);
+  const [showVaultPopup, setShowVaultPopup] = useState(false);
+  const [showForceClosePopup, setShowForceClosePopup] = useState(false);
+  const [vaultUsd, setVaultUsd] = useState(0);
+  const [vaultBs, setVaultBs] = useState(0);
+  const [vaultBankBs, setVaultBankBs] = useState(0);
+  const [vaultBankUsd, setVaultBankUsd] = useState(0);
+  const [bcvRate] = useState(45.00); // Or pass exchangeRate as prop
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
@@ -277,19 +299,25 @@ export default function InvoiceUploadView({ onBack }: InvoiceUploadViewProps) {
 
       // 2. Actualizar Inventario Atómicamente (por cada item)
       for (const item of items) {
+        let prevStock = 0;
+
         if (item.productId && item.productId !== 'NEW') {
           try {
-            const productRef = doc(db, 'inventory', item.productId);
-            // Requeriría un get para sumar el stock exacto real, pero asumimos que el backend puede procesarlo o aquí hacemos un update increment (Firebase v9)
-            // Haremos un getDoc rápido para sumar (simplificado) o simplemente addDoc si falla
+            const productRef = doc(db, 'products', item.productId);
+            // Fetch previous stock before updating
+            const productSnap = await getDoc(productRef);
+            if (productSnap.exists()) {
+              prevStock = productSnap.data().stockKg || 0;
+            }
+
             await updateDoc(productRef, {
                purchasePrice: item.costPrice,
-               sellingPrice: item.salePrice
-               // Nota: Debería sumarse al stock. Se asume integración superior.
+               sellingPrice: item.salePrice,
+               stockKg: increment(item.quantity)
             });
           } catch (e) {
             console.warn("Item no hallado, se creará.");
-            await addDoc(collection(db, 'inventory'), {
+            await addDoc(collection(db, 'products'), {
               name: item.name,
               stockKg: item.quantity,
               purchasePrice: item.costPrice,
@@ -299,13 +327,34 @@ export default function InvoiceUploadView({ onBack }: InvoiceUploadViewProps) {
           }
         } else {
           // Crear nuevo producto en inventario
-          await addDoc(collection(db, 'inventory'), {
+          await addDoc(collection(db, 'products'), {
             name: item.name,
             stockKg: item.quantity,
             purchasePrice: item.costPrice,
             sellingPrice: item.salePrice,
             category: 'General'
           });
+        }
+
+        // Add Kardex Movement
+        try {
+          await addDoc(collection(db, 'kardex'), {
+            productId: item.productId || 'NEW',
+            productName: item.name,
+            type: 'ENTRADA',
+            concept: settlingTrip ? 'Liquidación Gira San Juan / Compra Víveres' : 'Compra Víveres',
+            quantity: item.quantity,
+            previousStock: prevStock,
+            newStock: prevStock + item.quantity,
+            costPrice: item.costPrice,
+            totalCost: item.costPrice * item.quantity,
+            unit: item.unit || 'Kg/Und',
+            price: item.costPrice, // Mantener para compatibilidad
+            documentRef: settlingTrip ? `Viaje #${settlingTrip.tripNumber}` : (suppliers.find(s => s.id === supplierId)?.name || 'Compra'),
+            date: new Date().toISOString()
+          });
+        } catch (e) {
+          console.error("Error al registrar en kardex:", e);
         }
       }
 
@@ -321,6 +370,51 @@ export default function InvoiceUploadView({ onBack }: InvoiceUploadViewProps) {
         }
       }
 
+      // 4. Integración con Viaje San Juan (Si aplica)
+      if (settlingTrip && onSettleTrip) {
+        try {
+          const currentInvoicesUsd = settlingTrip.totalInvoicesValueUsd || 0;
+          const newInvoicesUsd = currentInvoicesUsd + totalInvoiceCost;
+          
+          const moneyUsd = (settlingTrip.cashReturnedUsd || 0) + (settlingTrip.bankReturnedUsd || 0);
+          const moneyBsToUsd = ((settlingTrip.cashReturnedBs || 0) + (settlingTrip.bankReturnedBs || 0)) / bcvRate;
+          const totalMoneyUsd = moneyUsd + moneyBsToUsd;
+
+          const totalSettlementValue = totalMoneyUsd + newInvoicesUsd;
+          const tripBagValue = settlingTrip.totalBagValueUsd || settlingTrip.dispatchedCostValue;
+          const netProfit = totalSettlementValue - tripBagValue;
+
+          // Construir facturas para el registro del viaje
+          const invoicesList = settlingTrip.invoices || [];
+          invoicesList.push({
+            id: `INV-${Date.now()}`,
+            supplierName: suppliers.find(s => s.id === supplierId)?.name || 'Compras Locales',
+            date: new Date().toISOString(),
+            totalUsd: totalInvoiceCost,
+            items: items.map(item => ({ description: item.name, quantity: item.quantity, unitCostUsd: item.costPrice, totalCostUsd: item.subtotal }))
+          });
+
+          const updateData: any = {
+            invoices: invoicesList,
+            totalInvoicesValueUsd: newInvoicesUsd,
+            totalSettlementValueUsd: totalSettlementValue,
+            netProfitUsd: netProfit
+          };
+
+          // Auto-Liquidación si cubre la deuda
+          if (totalSettlementValue >= tripBagValue) {
+            updateData.status = 'liquidado';
+            updateData.settledAt = new Date().toISOString();
+            await onSettleTrip(settlingTrip.id, updateData);
+          } else {
+            // Actualización parcial
+            await updateDoc(doc(db, 'cheeseTrips', settlingTrip.id), updateData);
+          }
+        } catch (e) {
+          console.error("Error al amortizar viaje:", e);
+        }
+      }
+
       alert("Factura ingresada e inventario actualizado.");
       setItems([]);
       setSearchTerm('');
@@ -332,29 +426,149 @@ export default function InvoiceUploadView({ onBack }: InvoiceUploadViewProps) {
     }
   };
 
+  const handleSaveVault = async () => {
+    if (!settlingTrip) return;
+    setIsSaving(true);
+    try {
+      // 1. Fondear la Bóveda Central (Si hay onAddTransaction prop)
+      if (onAddTransaction) {
+        if (vaultUsd > 0) onAddTransaction({ category: 'ventas', amount: vaultUsd, isIncome: true, notes: `Retorno Viaje #${settlingTrip.tripNumber} (Efectivo USD)`, paymentMethod: 'Efectivo' });
+        if (vaultBs > 0) onAddTransaction({ category: 'ventas', amount: vaultBs / bcvRate, isIncome: true, notes: `Retorno Viaje #${settlingTrip.tripNumber} (Efectivo Bs: ${vaultBs})`, paymentMethod: 'Efectivo' });
+        if (vaultBankBs > 0) onAddTransaction({ category: 'ventas', amount: vaultBankBs / bcvRate, isIncome: true, notes: `Retorno Viaje #${settlingTrip.tripNumber} (Banco Bs: ${vaultBankBs})`, paymentMethod: 'Transferencia' });
+        if (vaultBankUsd > 0) onAddTransaction({ category: 'ventas', amount: vaultBankUsd, isIncome: true, notes: `Retorno Viaje #${settlingTrip.tripNumber} (Banco USD)`, paymentMethod: 'Transferencia' });
+      }
+
+      // 2. Amortizar en el viaje
+      const newCashUsd = (settlingTrip.cashReturnedUsd || 0) + vaultUsd;
+      const newCashBs = (settlingTrip.cashReturnedBs || 0) + vaultBs;
+      const newBankBs = (settlingTrip.bankReturnedBs || 0) + vaultBankBs;
+      const newBankUsd = (settlingTrip.bankReturnedUsd || 0) + vaultBankUsd;
+
+      const currentInvoicesUsd = settlingTrip.totalInvoicesValueUsd || 0;
+      
+      const moneyUsd = newCashUsd + newBankUsd;
+      const moneyBsToUsd = (newCashBs + newBankBs) / bcvRate;
+      const totalMoneyUsd = moneyUsd + moneyBsToUsd;
+
+      const totalSettlementValue = totalMoneyUsd + currentInvoicesUsd;
+      const tripBagValue = settlingTrip.totalBagValueUsd || settlingTrip.dispatchedCostValue;
+      const netProfit = totalSettlementValue - tripBagValue;
+
+      const updateData: any = {
+        cashReturnedUsd: newCashUsd,
+        cashReturnedBs: newCashBs,
+        bankReturnedBs: newBankBs,
+        bankReturnedUsd: newBankUsd,
+        totalSettlementValueUsd: totalSettlementValue,
+        netProfitUsd: netProfit
+      };
+
+      if (totalSettlementValue >= tripBagValue) {
+        updateData.status = 'liquidado';
+        updateData.settledAt = new Date().toISOString();
+        if (onSettleTrip) {
+          await onSettleTrip(settlingTrip.id, updateData);
+        }
+      } else {
+        await updateDoc(doc(db, 'cheeseTrips', settlingTrip.id), updateData);
+      }
+
+      alert("Dinero ingresado a Bóveda y amortizado al viaje.");
+      setShowVaultPopup(false);
+      setVaultUsd(0); setVaultBs(0); setVaultBankBs(0); setVaultBankUsd(0);
+    } catch (e) {
+      console.error(e);
+      alert("Error al guardar dinero en bóveda.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleForceClose = async () => {
+    if (!settlingTrip || !onSettleTrip) return;
+    setIsSaving(true);
+    try {
+      await onSettleTrip(settlingTrip.id, {
+        status: 'liquidado',
+        settledAt: new Date().toISOString()
+      });
+      alert('Viaje cerrado con pérdida o saldo pendiente.');
+      setShowForceClosePopup(false);
+    } catch (e) {
+      console.error(e);
+      alert('Error al forzar el cierre del viaje.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const grandTotal = items.reduce((sum, i) => sum + i.subtotal, 0);
 
   return (
     <div className="flex flex-col h-full bg-zinc-950 animate-fade-in font-sans">
-      {/* Header Sticky */}
-      <div className="flex items-center justify-between p-4 bg-zinc-900 border-b border-zinc-800 shrink-0">
-        <div className="flex items-center gap-3">
-          <button onClick={onBack} className="p-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer">
+      {/* Header Actions */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 border-b border-zinc-800 gap-4 shrink-0">
+        <div className="flex items-center gap-4">
+          <button onClick={onBack} className="p-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-xl transition-colors">
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div>
-            <h2 className="text-lg font-serif font-bold text-zinc-100">Carga Profesional</h2>
-            <p className="text-[10px] text-zinc-400 font-mono uppercase">Módulo Multi-Artículo</p>
+            <h1 className="text-xl font-serif font-bold text-white flex items-center gap-2">
+              <Receipt className="w-5 h-5 text-rose-500" />
+              Carga Inteligente de Facturas
+            </h1>
+            <p className="text-xs font-mono text-zinc-500 mt-0.5 uppercase tracking-wider">Multi-Artículo • Inventario Automático</p>
           </div>
         </div>
+        
+        {/* Banner de Viaje Activo */}
+        {settlingTrip && (
+          <div className="bg-amber-500/10 border border-amber-500/30 px-4 py-2 rounded-lg flex items-center gap-4">
+            <div className="text-right">
+              <div className="text-[10px] font-mono uppercase text-amber-500/80">Liquidando Viaje San Juan</div>
+              <div className="text-sm font-bold text-amber-500">
+                Deuda: ${Math.max(0, (settlingTrip.totalBagValueUsd || settlingTrip.dispatchedCostValue) - (settlingTrip.totalSettlementValueUsd || 0)).toFixed(2)}
+              </div>
+            </div>
+            {((settlingTrip.netProfitUsd || 0) > 0) && (
+              <div className="text-right border-l border-amber-500/20 pl-4">
+                <div className="text-[10px] font-mono uppercase text-emerald-500/80">Saldo a Favor Daisy</div>
+                <div className="text-sm font-bold text-emerald-500">
+                  +${(settlingTrip.netProfitUsd || 0).toFixed(2)}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          {settlingTrip && (
+            <>
+              <button 
+                onClick={() => setShowVaultPopup(true)}
+                disabled={isSaving}
+                className="bg-zinc-900 border border-zinc-700 hover:border-amber-500 hover:text-amber-400 text-zinc-300 px-4 py-2 rounded-lg text-xs font-bold uppercase transition-colors disabled:opacity-50"
+              >
+                Ingresar Dinero a Bóveda
+              </button>
+              {Math.max(0, (settlingTrip.totalBagValueUsd || settlingTrip.dispatchedCostValue) - (settlingTrip.totalSettlementValueUsd || 0)) > 0 && (
+                <button 
+                  onClick={() => setShowForceClosePopup(true)}
+                  disabled={isSaving}
+                  className="bg-rose-900/50 border border-rose-800 hover:bg-rose-800 text-rose-300 px-4 py-2 rounded-lg text-xs font-bold uppercase transition-colors disabled:opacity-50"
+                >
+                  Forzar Cierre
+                </button>
+              )}
+            </>
+          )}
           <button 
             onClick={handleFreezeDraft}
-            disabled={items.length === 0 || isSaving}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+            disabled={isSaving}
+            className="bg-zinc-900 border border-zinc-700 hover:border-zinc-600 text-zinc-300 px-4 py-2 rounded-lg text-xs font-bold uppercase flex items-center gap-2 transition-colors disabled:opacity-50"
           >
-            <Snowflake className="w-3.5 h-3.5" /> Congelar
+            <Snowflake className="w-4 h-4 text-cyan-400" />
+            Congelar Borrador
           </button>
           
           <input type="file" accept="image/*" capture="environment" className="hidden" ref={fileInputRef} onChange={handleImageScan} />
@@ -601,6 +815,74 @@ export default function InvoiceUploadView({ onBack }: InvoiceUploadViewProps) {
         </div>
 
       </div>
+
+      {showVaultPopup && settlingTrip && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="bg-zinc-950 border border-zinc-800 p-6 rounded-2xl shadow-2xl w-full max-w-sm">
+            <h2 className="text-lg font-serif font-bold text-white mb-1">Ingresar Dinero a Bóveda</h2>
+            <p className="text-xs text-zinc-500 mb-6 font-mono">Amortizar viaje #{settlingTrip.tripNumber}</p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-mono uppercase text-zinc-500 mb-1">Efectivo ($ USD)</label>
+                <input type="number" step="0.01" value={vaultUsd || ''} onChange={e => setVaultUsd(Number(e.target.value))} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2.5 text-sm text-zinc-100 focus:outline-none focus:border-amber-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-mono uppercase text-zinc-500 mb-1">Efectivo (Bs.)</label>
+                <input type="number" step="0.01" value={vaultBs || ''} onChange={e => setVaultBs(Number(e.target.value))} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2.5 text-sm text-zinc-100 focus:outline-none focus:border-amber-500" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-mono uppercase text-zinc-500 mb-1">Banco PM (Bs.)</label>
+                  <input type="number" step="0.01" value={vaultBankBs || ''} onChange={e => setVaultBankBs(Number(e.target.value))} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2.5 text-sm text-zinc-100 focus:outline-none focus:border-amber-500" />
+                </div>
+                <div>
+                  <label className="block text-xs font-mono uppercase text-zinc-500 mb-1">Banco ($ USD)</label>
+                  <input type="number" step="0.01" value={vaultBankUsd || ''} onChange={e => setVaultBankUsd(Number(e.target.value))} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-2.5 text-sm text-zinc-100 focus:outline-none focus:border-amber-500" />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-8">
+              <button onClick={() => setShowVaultPopup(false)} disabled={isSaving} className="flex-1 py-3 text-xs font-bold uppercase text-zinc-500 hover:text-white transition-colors disabled:opacity-50">Cancelar</button>
+              <button onClick={handleSaveVault} disabled={isSaving} className="flex-1 py-3 bg-amber-500 hover:bg-amber-400 text-zinc-950 rounded-lg text-xs font-bold uppercase transition-colors shadow-lg shadow-amber-500/20 disabled:opacity-50">
+                {isSaving ? 'Guardando...' : 'Fondeo y Amortizar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showForceClosePopup && settlingTrip && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="bg-zinc-950 border border-rose-900 p-6 rounded-2xl shadow-2xl shadow-rose-900/20 w-full max-w-md">
+            <h2 className="text-xl font-serif font-black text-rose-500 mb-2">Advertencia Crítica</h2>
+            <p className="text-sm text-zinc-300 mb-6 font-mono leading-relaxed">
+              El viaje aún presenta una <span className="font-bold text-rose-400">deuda pendiente de ${Math.max(0, settlingTrip.dispatchedCostValue - (settlingTrip.totalSettlementValueUsd || 0)).toFixed(2)}</span>. 
+              <br/><br/>
+              ¿Desea registrarlo con pérdida/saldo pendiente y liquidarlo a la fuerza, o prefiere continuar amortizando?
+            </p>
+
+            <div className="flex flex-col gap-3">
+              <button 
+                onClick={() => setShowForceClosePopup(false)} 
+                disabled={isSaving}
+                className="w-full py-3 bg-zinc-900 hover:bg-zinc-800 text-white rounded-lg text-xs font-bold uppercase transition-colors disabled:opacity-50"
+              >
+                Continuar Amortizando
+              </button>
+              <button 
+                onClick={handleForceClose} 
+                disabled={isSaving} 
+                className="w-full py-3 bg-rose-900 hover:bg-rose-800 text-rose-200 rounded-lg text-xs font-bold uppercase transition-colors disabled:opacity-50 flex justify-center items-center gap-2"
+              >
+                {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                {isSaving ? 'Procesando...' : 'Cerrar con Pérdida (Forzar)'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
