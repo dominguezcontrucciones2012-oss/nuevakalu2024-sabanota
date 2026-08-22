@@ -273,7 +273,11 @@ export default function App() {
     supplierId?: string,
     paidAmount?: number,
     totalAmount?: number,
-    addedPayments?: any[]
+    addedPayments?: any[],
+    changeAmount?: number,
+    changeCurrency?: 'USD' | 'BS' | 'PAGO_MOVIL' | 'MIXED',
+    changeReference?: string,
+    mixedChange?: any
   ) => {
     const saleTotal = totalAmount !== undefined ? totalAmount : saleItems.reduce((sum, item) => sum + item.subtotal, 0);
     const amountPaid = paidAmount !== undefined ? paidAmount : saleTotal;
@@ -406,7 +410,11 @@ export default function App() {
       status: 'Completado',
       paymentMethod: finalPaymentMethod,
       items: saleItems, // Saving items to show in the ticket later
-      addedPayments: addedPayments || []
+      addedPayments: addedPayments || [],
+      changeAmount: changeAmount || 0,
+      changeCurrency: changeCurrency || 'USD',
+      changeReference: changeReference || '',
+      mixedChange: mixedChange || undefined
     };
     
     // Save to Local State immediately (which triggers localStorage backup)
@@ -1390,7 +1398,11 @@ export default function App() {
                   sale.supplier?.id || undefined,
                   sale.paidAmount,
                   sale.total,
-                  sale.addedPayments
+                  sale.addedPayments,
+                  sale.changeAmount,
+                  sale.changeCurrency,
+                  sale.changeReference,
+                  sale.mixedChange
                 )
               }
               salesHistory={transactions.filter(t => t.category === 'ventas')}

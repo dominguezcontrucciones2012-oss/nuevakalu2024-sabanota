@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOrder, Transaction } from '../types';
-import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye } from 'lucide-react';
+import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send } from 'lucide-react';
 import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '../utils';
 import { collection, addDoc, getDocs, query, orderBy, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
@@ -21,6 +21,10 @@ interface CheesePOSViewProps {
     total: number;
     paidAmount?: number;
     addedPayments?: any[];
+    changeAmount?: number;
+    changeCurrency?: 'USD' | 'BS' | 'PAGO_MOVIL' | 'MIXED';
+    changeReference?: string;
+    mixedChange?: any;
   }) => void;
   salesHistory: any[];
   dailySalesCount: number;
@@ -49,6 +53,14 @@ export default function CheesePOSView({
   const [searchQuery, setSearchQuery] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [isChangeModalOpen, setIsChangeModalOpen] = useState(false);
+  const [changeCurrency, setChangeCurrency] = useState<'USD' | 'BS' | 'PAGO_MOVIL' | 'MIXED'>('USD');
+  const [changeReference, setChangeReference] = useState('');
+  
+  const [mixedChangeUsd, setMixedChangeUsd] = useState('');
+  const [mixedChangeBs, setMixedChangeBs] = useState('');
+  const [mixedChangeMobile, setMixedChangeMobile] = useState('');
+  const [mixedChangeMobileRef, setMixedChangeMobileRef] = useState('');
   const f4LastTimeRef = useRef<number>(0);
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -70,7 +82,10 @@ export default function CheesePOSView({
         }
         f4LastTimeRef.current = now;
 
-        if (!isPaymentModalOpen) {
+        if (isChangeModalOpen) {
+          setIsChangeModalOpen(false);
+          handleProcessSaleSubmit(undefined, true);
+        } else if (!isPaymentModalOpen) {
           setIsPaymentModalOpen(true);
         } else if (formRef.current) {
           formRef.current.requestSubmit();
@@ -289,8 +304,8 @@ export default function CheesePOSView({
     setAddedPayments(addedPayments.filter(p => p.id !== id));
   };
 
-  const handleProcessSaleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleProcessSaleSubmit = (e?: React.FormEvent, bypassChangeModal = false) => {
+    if (e) e.preventDefault();
     if (isProcessing) return;
     setIsProcessing(true);
     
@@ -333,6 +348,15 @@ export default function CheesePOSView({
       mainPaymentMethod = isCreditSale ? 'Crédito' : 'Efectivo ($)';
     }
 
+    // Calculate change logic
+    const changeAmount = totalAbonado > total ? parseNum((totalAbonado - total).toFixed(2)) : 0;
+
+    if (changeAmount > 0 && !bypassChangeModal) {
+      setIsProcessing(false);
+      setIsChangeModalOpen(true);
+      return;
+    }
+
     // Process sale through parent state
     onProcessSale({
       client,
@@ -341,7 +365,16 @@ export default function CheesePOSView({
       paymentMethod: mainPaymentMethod,
       total,
       paidAmount,
-      addedPayments: [...addedPayments]
+      addedPayments: [...addedPayments],
+      changeAmount,
+      changeCurrency,
+      changeReference,
+      mixedChange: changeCurrency === 'MIXED' ? {
+        usd: parseNum(mixedChangeUsd),
+        bs: parseNum(mixedChangeBs),
+        mobile: parseNum(mixedChangeMobile),
+        mobileRef: mixedChangeMobileRef
+      } : undefined
     });
 
     const customerName = client ? client.name : supplier ? `${supplier.name} (Productor)` : 'Cliente General';
@@ -431,13 +464,26 @@ export default function CheesePOSView({
       .reduce((sum, t) => sum + t.amount, 0);
   };
 
+  const getTotalChange = (currency: 'USD' | 'BS' | 'PAGO_MOVIL') => {
+    return (salesHistory || []).reduce((sum, s) => {
+      if (s.changeCurrency === currency) {
+        return sum + (Number(s.changeAmount) || 0);
+      } else if (s.changeCurrency === 'MIXED' && s.mixedChange) {
+        if (currency === 'USD') return sum + (Number(s.mixedChange.usd) || 0);
+        if (currency === 'BS') return sum + ((Number(s.mixedChange.bs) || 0) / (exchangeRate || 1));
+        if (currency === 'PAGO_MOVIL') return sum + ((Number(s.mixedChange.mobile) || 0) / (exchangeRate || 1));
+      }
+      return sum;
+    }, 0);
+  };
+
   // 1. Efectivo USD ($)
-  const salesCashUsd = getSalesTotalByMethod('Efectivo $');
+  const salesCashUsd = getSalesTotalByMethod('Efectivo $') - getTotalChange('USD');
   const incomeCashUsd = getTransactionsTotalByMethod('Efectivo $', 'credito', true);
   const totalCashUsd = salesCashUsd + incomeCashUsd;
 
   // 2. Efectivo Bs
-  const salesCashBs = getSalesTotalByMethod('Efectivo Bs') * (exchangeRate || 1);
+  const salesCashBs = getSalesTotalByMethod('Efectivo Bs') * (exchangeRate || 1) - (getTotalChange('BS') * (exchangeRate || 1));
   const incomeCashBs = getTransactionsTotalByMethod('Efectivo Bs', 'credito', true) * (exchangeRate || 1);
   const totalCashBs = salesCashBs + incomeCashBs;
 
@@ -447,7 +493,7 @@ export default function CheesePOSView({
   const totalCard = salesCard + incomeCard;
 
   // 4. Pago Móvil
-  const salesMobile = getSalesTotalByMethod('Pago Móvil') + getSalesTotalByMethod('Transferencia');
+  const salesMobile = getSalesTotalByMethod('Pago Móvil') + getSalesTotalByMethod('Transferencia') - (getTotalChange('PAGO_MOVIL') * (exchangeRate || 1));
   const incomeMobile = getTransactionsTotalByMethod('Pago Móvil', 'credito', true) + getTransactionsTotalByMethod('Transferencia', 'credito', true);
   const totalMobile = salesMobile + incomeMobile;
 
@@ -996,7 +1042,7 @@ export default function CheesePOSView({
             {/* Payment Modal Overlay */}
             {isPaymentModalOpen && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-                <div className="bg-editorial-card border border-editorial-border rounded p-6 w-full max-w-4xl shadow-2xl relative animate-in fade-in zoom-in-95 duration-200">
+                <div className="bg-editorial-card border border-editorial-border rounded p-6 w-full max-w-5xl shadow-2xl relative animate-in fade-in zoom-in-95 duration-200">
                   <button type="button" onClick={() => setIsPaymentModalOpen(false)} className="absolute top-4 right-4 text-editorial-text-muted hover:text-amber-500 transition-colors cursor-pointer">
                     <span className="text-3xl leading-none">&times;</span>
                   </button>
@@ -1030,11 +1076,13 @@ export default function CheesePOSView({
                           <div className="h-px bg-editorial-border/60 my-2" />
                           
                           {totalAbonado >= total ? (
-                            <div className="flex justify-between items-center text-sm">
-                              <span className="font-mono uppercase tracking-widest text-amber-500">VUELTO / CAMBIO</span>
-                              <div className="text-right">
-                                <div className="font-mono text-2xl font-bold text-amber-500">${(totalAbonado - total).toFixed(2)}</div>
-                                <div className="font-mono text-[10px] text-amber-500/70">Bs {((totalAbonado - total) * exchangeRate).toFixed(2)}</div>
+                            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded animate-in fade-in duration-300">
+                              <div className="flex justify-between items-center text-sm mb-1">
+                                <span className="font-mono uppercase tracking-widest text-amber-500 font-bold">VUELTO / CAMBIO</span>
+                                <div className="text-right">
+                                  <div className="font-mono text-2xl font-bold text-amber-500">${(totalAbonado - total).toFixed(2)}</div>
+                                  <div className="font-mono text-[10px] text-amber-500/70">Bs {((totalAbonado - total) * exchangeRate).toFixed(2)}</div>
+                                </div>
                               </div>
                             </div>
                           ) : (
@@ -1082,23 +1130,32 @@ export default function CheesePOSView({
                      <div className="md:col-span-7 flex flex-col gap-4">
                        <div className="bg-editorial-bg border border-editorial-border rounded p-4">
                           <label className="font-mono text-[10px] uppercase tracking-widest text-editorial-text-muted block mb-3">Agregar Nuevo Abono</label>
-                          <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-4">
-                            {['Efectivo $', 'Efectivo Bs', 'Tarjeta / Punto', 'Pago Móvil', 'BioPago'].map(m => (
+                          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+                            {[
+                              { id: 'Efectivo $', label: '$ USD', icon: Banknote, color: 'text-emerald-400', border: 'border-emerald-400/50', activeBg: 'bg-emerald-400/20', hover: 'hover:border-emerald-400' },
+                              { id: 'Efectivo Bs', label: 'Bs Efectivo', icon: Coins, color: 'text-lime-400', border: 'border-lime-400/50', activeBg: 'bg-lime-400/20', hover: 'hover:border-lime-400' },
+                              { id: 'Pago Móvil', label: 'Pago Móvil', icon: Smartphone, color: 'text-violet-400', border: 'border-violet-400/50', activeBg: 'bg-violet-400/20', hover: 'hover:border-violet-400' },
+                              { id: 'Tarjeta / Punto', label: 'Tarjeta', icon: CreditCard, color: 'text-cyan-400', border: 'border-cyan-400/50', activeBg: 'bg-cyan-400/20', hover: 'hover:border-cyan-400' },
+                              { id: 'BioPago', label: 'Biopago', icon: Fingerprint, color: 'text-fuchsia-400', border: 'border-fuchsia-400/50', activeBg: 'bg-fuchsia-400/20', hover: 'hover:border-fuchsia-400' }
+                            ].map(m => (
                               <button
-                                key={m}
+                                key={m.id}
                                 type="button"
                                 onClick={() => {
-                                  setPaymentMethod(m);
+                                  setPaymentMethod(m.id);
                                   setPaymentReference('');
                                   setPaidAmountInput('');
                                 }}
-                                className={`py-2 px-1 text-[9px] font-mono font-bold uppercase rounded border transition-all cursor-pointer text-center ${
-                                  paymentMethod === m
-                                    ? 'bg-amber-500 border-amber-500 text-black shadow-[0_0_10px_rgba(245,158,11,0.2)]'
-                                    : 'bg-editorial-card border-editorial-border text-editorial-text-muted hover:text-editorial-text-primary'
+                                className={`p-3 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-2 ${
+                                  paymentMethod === m.id
+                                    ? `${m.border} ${m.activeBg} shadow-lg scale-105`
+                                    : `border-editorial-border bg-editorial-card ${m.hover} opacity-70 hover:opacity-100`
                                 }`}
                               >
-                                {m}
+                                <m.icon className={`w-6 h-6 ${m.color}`} />
+                                <span className={`text-[10px] font-mono font-bold uppercase tracking-wider ${paymentMethod === m.id ? m.color : 'text-editorial-text-primary'}`}>
+                                  {m.label}
+                                </span>
                               </button>
                             ))}
                           </div>
@@ -1106,7 +1163,7 @@ export default function CheesePOSView({
                           <div className="grid grid-cols-2 gap-4 mb-4">
                             <div className="space-y-2">
                               <label className="font-mono text-[10px] uppercase tracking-widest text-editorial-text-muted block">
-                                MONTO A ABONAR ({paymentMethod === 'Efectivo $' ? '$' : 'Bs'})
+                                BILLETE / MONTO RECIBIDO FÍSICAMENTE ({paymentMethod === 'Efectivo $' ? '$' : 'Bs'})
                               </label>
                               <input
                                 type="text"
@@ -1742,7 +1799,171 @@ export default function CheesePOSView({
         </div>
       )}
 
-      {/* Audit Modal */}
+      {/* Change Modal */}
+      {isChangeModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 backdrop-blur-sm p-4">
+          <div className="bg-editorial-card border border-editorial-border rounded w-full max-w-lg flex flex-col shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between p-4 bg-editorial-bg border-b border-editorial-border">
+              <h3 className="font-serif font-bold text-amber-500 text-lg">💵 Entrega de Cambio / Vuelto</h3>
+            </div>
+            <div className="p-6 space-y-6">
+              <div className="bg-editorial-bg border border-editorial-border rounded p-4 text-center font-mono space-y-2">
+                <div className="flex justify-between text-sm text-editorial-text-muted">
+                  <span>Total Venta:</span>
+                  <span>${total.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-sm text-editorial-text-muted">
+                  <span>Total Recibido:</span>
+                  <span>${totalAbonado.toFixed(2)}</span>
+                </div>
+                <div className="h-px bg-editorial-border/60 my-2" />
+                <div className="flex justify-between text-lg font-bold text-amber-500">
+                  <span>Vuelto Obligatorio:</span>
+                  <div className="text-right">
+                    <div>${(totalAbonado - total).toFixed(2)}</div>
+                    <div className="text-xs text-amber-500/70">Bs. {((totalAbonado - total) * exchangeRate).toFixed(2)} a tasa actual</div>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <p className="font-mono text-xs text-editorial-text-muted uppercase tracking-widest text-center">Seleccione la moneda de entrega</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setChangeCurrency('USD')}
+                    className={`p-3 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-2 ${changeCurrency === 'USD' ? 'border-emerald-400/50 bg-emerald-400/20 shadow-lg scale-105' : 'border-editorial-border bg-editorial-card opacity-70 hover:opacity-100'}`}
+                  >
+                    <Banknote className={`w-6 h-6 ${changeCurrency === 'USD' ? 'text-emerald-400' : 'text-editorial-text-muted'}`} />
+                    <div className="flex flex-col items-center">
+                      <span className={`text-[10px] font-mono font-bold uppercase tracking-wider ${changeCurrency === 'USD' ? 'text-emerald-400' : 'text-editorial-text-primary'}`}>Efectivo USD</span>
+                      <span className={`text-xs font-bold ${changeCurrency === 'USD' ? 'text-emerald-400' : 'text-editorial-text-muted'}`}>${(totalAbonado - total).toFixed(2)}</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setChangeCurrency('BS')}
+                    className={`p-3 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-2 ${changeCurrency === 'BS' ? 'border-lime-400/50 bg-lime-400/20 shadow-lg scale-105' : 'border-editorial-border bg-editorial-card opacity-70 hover:opacity-100'}`}
+                  >
+                    <Coins className={`w-6 h-6 ${changeCurrency === 'BS' ? 'text-lime-400' : 'text-editorial-text-muted'}`} />
+                    <div className="flex flex-col items-center">
+                      <span className={`text-[10px] font-mono font-bold uppercase tracking-wider ${changeCurrency === 'BS' ? 'text-lime-400' : 'text-editorial-text-primary'}`}>Efectivo Bs</span>
+                      <span className={`text-xs font-bold ${changeCurrency === 'BS' ? 'text-lime-400' : 'text-editorial-text-muted'}`}>Bs. {((totalAbonado - total) * exchangeRate).toFixed(2)}</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setChangeCurrency('PAGO_MOVIL')}
+                    className={`p-3 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-2 ${changeCurrency === 'PAGO_MOVIL' ? 'border-violet-400/50 bg-violet-400/20 shadow-lg scale-105' : 'border-editorial-border bg-editorial-card opacity-70 hover:opacity-100'}`}
+                  >
+                    <Smartphone className={`w-6 h-6 ${changeCurrency === 'PAGO_MOVIL' ? 'text-violet-400' : 'text-editorial-text-muted'}`} />
+                    <div className="flex flex-col items-center">
+                      <span className={`text-[10px] font-mono font-bold uppercase tracking-wider ${changeCurrency === 'PAGO_MOVIL' ? 'text-violet-400' : 'text-editorial-text-primary'}`}>Pago Móvil</span>
+                      <span className={`text-xs font-bold ${changeCurrency === 'PAGO_MOVIL' ? 'text-violet-400' : 'text-editorial-text-muted'}`}>Bs. {((totalAbonado - total) * exchangeRate).toFixed(2)}</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setChangeCurrency('MIXED')}
+                    className={`p-3 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-2 ${changeCurrency === 'MIXED' ? 'border-amber-400/50 bg-amber-400/20 shadow-lg scale-105' : 'border-editorial-border bg-editorial-card opacity-70 hover:opacity-100'}`}
+                  >
+                    <Layers className={`w-6 h-6 ${changeCurrency === 'MIXED' ? 'text-amber-400' : 'text-editorial-text-muted'}`} />
+                    <div className="flex flex-col items-center">
+                      <span className={`text-[10px] font-mono font-bold uppercase tracking-wider ${changeCurrency === 'MIXED' ? 'text-amber-400' : 'text-editorial-text-primary'}`}>Mixto</span>
+                      <span className={`text-[9px] font-mono ${changeCurrency === 'MIXED' ? 'text-amber-400/70' : 'text-editorial-text-muted'}`}>Múltiples</span>
+                    </div>
+                  </button>
+                </div>
+                
+                {changeCurrency === 'PAGO_MOVIL' && (
+                  <div className="pt-2 animate-in fade-in slide-in-from-top-2">
+                    <input
+                      type="text"
+                      placeholder="Referencia de Pago Móvil (Opcional)"
+                      value={changeReference}
+                      onChange={(e) => setChangeReference(e.target.value)}
+                      className="w-full bg-editorial-bg border border-violet-500/50 rounded px-3 py-2 text-sm text-violet-400 placeholder:text-violet-400/30 focus:outline-none focus:border-violet-500 font-mono"
+                    />
+                  </div>
+                )}
+
+                {changeCurrency === 'MIXED' && (
+                  <div className="pt-2 grid gap-3 animate-in fade-in slide-in-from-top-2">
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="text-[10px] text-emerald-400 font-mono uppercase">USD ($)</label>
+                        <input
+                          type="text"
+                          value={mixedChangeUsd}
+                          onChange={(e) => setMixedChangeUsd(e.target.value)}
+                          placeholder="0.00"
+                          className="w-full bg-editorial-bg border border-emerald-500/50 rounded px-2 py-1 text-sm text-emerald-400 focus:outline-none focus:border-emerald-500 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-lime-400 font-mono uppercase">Bs Efectivo</label>
+                        <input
+                          type="text"
+                          value={mixedChangeBs}
+                          onChange={(e) => setMixedChangeBs(e.target.value)}
+                          placeholder="0.00"
+                          className="w-full bg-editorial-bg border border-lime-500/50 rounded px-2 py-1 text-sm text-lime-400 focus:outline-none focus:border-lime-500 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-violet-400 font-mono uppercase">Pago Móvil (Bs)</label>
+                        <input
+                          type="text"
+                          value={mixedChangeMobile}
+                          onChange={(e) => setMixedChangeMobile(e.target.value)}
+                          placeholder="0.00"
+                          className="w-full bg-editorial-bg border border-violet-500/50 rounded px-2 py-1 text-sm text-violet-400 focus:outline-none focus:border-violet-500 font-mono"
+                        />
+                      </div>
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Referencia Pago Móvil"
+                      value={mixedChangeMobileRef}
+                      onChange={(e) => setMixedChangeMobileRef(e.target.value)}
+                      className="w-full bg-editorial-bg border border-violet-500/30 rounded px-3 py-1.5 text-xs text-violet-400 placeholder:text-violet-400/30 focus:outline-none focus:border-violet-500 font-mono"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="p-4 bg-editorial-bg border-t border-editorial-border flex gap-3">
+              <button
+                onClick={() => setIsChangeModalOpen(false)}
+                className="flex-1 py-3 border border-editorial-border text-editorial-text-muted font-serif font-bold text-xs uppercase tracking-wider rounded hover:bg-editorial-card transition-colors"
+              >
+                Volver
+              </button>
+              <button
+                onClick={() => {
+                  if (changeCurrency === 'MIXED') {
+                    const reqUsd = parseNum((totalAbonado - total).toFixed(2));
+                    const u = parseNum(mixedChangeUsd);
+                    const b = parseNum(mixedChangeBs) / (exchangeRate || 1);
+                    const m = parseNum(mixedChangeMobile) / (exchangeRate || 1);
+                    const sum = parseNum((u + b + m).toFixed(2));
+                    if (Math.abs(sum - reqUsd) > 0.02) {
+                      onAddNotification(`El vuelto mixto no coincide. Esperado: $${reqUsd.toFixed(2)}, Ingresado: $${sum.toFixed(2)}`, 'warning');
+                      return;
+                    }
+                  }
+                  setIsChangeModalOpen(false);
+                  handleProcessSaleSubmit(undefined, true);
+                }}
+                className="flex-[2] py-3 bg-amber-500 text-black font-serif font-bold text-xs uppercase tracking-wider rounded hover:brightness-110 transition-colors"
+              >
+                ✅ Confirmar Vuelto y Emitir Ticket (F4/Enter)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Receipt Modal */}
       {selectedAuditClosing && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
           <div className="bg-editorial-card border border-editorial-border rounded w-full max-w-2xl flex flex-col shadow-2xl overflow-hidden animate-slide-up">

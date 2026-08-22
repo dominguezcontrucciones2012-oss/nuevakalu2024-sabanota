@@ -15,6 +15,16 @@ export interface Transaction {
   paymentMethod?: string;
   notes?: string;
   items?: any[];
+  addedPayments?: any[];
+  changeAmount?: number;
+  changeCurrency?: 'USD' | 'BS' | 'PAGO_MOVIL' | 'MIXED';
+  changeReference?: string;
+  mixedChange?: {
+    usd: number;
+    bs: number;
+    mobile: number;
+    mobileRef?: string;
+  };
 }
 
 export interface UserIdentity {
