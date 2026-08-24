@@ -5,6 +5,7 @@ import AIAssistantWidget from './contador/AIAssistantWidget';
 import VoiceNotesView from './contador/VoiceNotesView';
 import PhotoAlbumView from './contador/PhotoAlbumView';
 import CentralVaultView from './contador/CentralVaultView';
+import BudgetControlView from './contador/BudgetControlView';
 import CheeseTripsView from './CheeseTripsView';
 import { CentralVaultBalance, Transaction, CheeseTrip, CheeseProduct, ClientProfile } from '../types';
 
@@ -21,12 +22,13 @@ interface ContadorIAViewProps {
   onUpdateTrip?: (id: string, updates: Partial<CheeseTrip>) => Promise<void>;
   onSettleTrip?: (id: string, settlementData: Partial<CheeseTrip>) => Promise<void>;
   onAddNotification?: (msg: string, type: 'success'|'info'|'warning') => void;
+  onUpdateVault?: (updates: Partial<CentralVaultBalance>) => Promise<void>;
 }
 
 export default function ContadorIAView({ 
   isAdmin, vaultBalance, onAddTransaction, exchangeRate,
   cheeseTrips, cheeseProducts, clients, transactions,
-  onCreateTrip, onUpdateTrip, onSettleTrip, onAddNotification
+  onCreateTrip, onUpdateTrip, onSettleTrip, onAddNotification, onUpdateVault
 }: ContadorIAViewProps) {
   const [activeModule, setActiveModule] = useState<string | null>(null);
   const [modulePayload, setModulePayload] = useState<any>(null);
@@ -93,7 +95,7 @@ export default function ContadorIAView({
     }
   ];
 
-  if (activeModule === 'invoice-upload' || activeModule === 'budget-control') {
+  if (activeModule === 'invoice-upload') {
     return (
       <div className="relative h-full">
         <InvoiceUploadView 
@@ -103,6 +105,21 @@ export default function ContadorIAView({
           onSettleTrip={onSettleTrip}
           vaultBalance={vaultBalance}
           onAddTransaction={onAddTransaction}
+        />
+        <AIAssistantWidget />
+      </div>
+    );
+  }
+
+  if (activeModule === 'budget-control') {
+    return (
+      <div className="relative h-full">
+        <BudgetControlView
+          onBack={() => handleNavigateToModule(null)}
+          vaultBalance={vaultBalance}
+          exchangeRate={exchangeRate}
+          onAddTransaction={onAddTransaction}
+          onUpdateVault={onUpdateVault}
         />
         <AIAssistantWidget />
       </div>

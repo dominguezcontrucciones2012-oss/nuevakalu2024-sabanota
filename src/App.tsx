@@ -159,8 +159,17 @@ export default function App() {
       if (!snapshot.empty) setCheeseProducts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CheeseProduct)));
     });
 
-    const unsubTransactions = onSnapshot(query(collection(db, 'transactions'), orderBy('date', 'desc'), limit(50)), (snapshot) => {
-      if (!snapshot.empty) setTransactions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction)));
+    const unsubTransactions = onSnapshot(query(collection(db, 'transactions'), limit(1000)), (snapshot) => {
+      if (!snapshot.empty) {
+        const txs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
+        // Sort descending by ID so newest is first
+        txs.sort((a, b) => {
+          if (a.id > b.id) return -1;
+          if (a.id < b.id) return 1;
+          return 0;
+        });
+        setTransactions(txs);
+      }
     });
 
     const unsubClients = onSnapshot(query(collection(db, 'clients'), limit(1000)), (snapshot) => {
@@ -389,16 +398,31 @@ export default function App() {
       setSuppliers((prevSuppliers) =>
         prevSuppliers.map((s) => {
           if (s.id === supplierId) {
-            const currentDebt = Number(s.storeDebt || 0);
-            const newStoreDebt = currentDebt + debtAmount;
+            const currentBalanceOwed = Number(s.balanceOwed || 0);
+            let newBalanceOwed = currentBalanceOwed;
+            let newStoreDebt = Number(s.storeDebt || 0);
+
+            if (currentBalanceOwed > 0) {
+              if (currentBalanceOwed >= debtAmount) {
+                newBalanceOwed = currentBalanceOwed - debtAmount;
+              } else {
+                newStoreDebt = newStoreDebt + (debtAmount - currentBalanceOwed);
+                newBalanceOwed = 0;
+              }
+            } else {
+              newStoreDebt = newStoreDebt + debtAmount;
+            }
+
             // Persist supplier debt updates to Firebase
             updateDoc(doc(db, 'suppliers', supplierId), {
-              storeDebt: newStoreDebt
+              storeDebt: newStoreDebt,
+              balanceOwed: newBalanceOwed
             }).catch(e => console.error("Error updating supplier store debt", e));
             
             return {
               ...s,
-              storeDebt: newStoreDebt
+              storeDebt: newStoreDebt,
+              balanceOwed: newBalanceOwed
             };
           }
           return s;
@@ -417,6 +441,26 @@ export default function App() {
           notes: `Consumo de tienda (Libreta de Queso)`
         };
         setBills((prev) => [newBill, ...prev]);
+
+        // Generar asiento en el historial del quesero para el fiado de tienda
+        if (selectedSup) {
+          const supTxId = `TX-POS-SUP-${Date.now()}`;
+          const supTx: Transaction = {
+            id: supTxId,
+            entity: selectedSup.name,
+            category: 'credito',
+            date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+            invoiceNumber: `POS-${Math.floor(Math.random() * 9000 + 1000)}`,
+            amount: debtAmount,
+            isIncome: false, // RESTA (-)
+            status: 'Completado',
+            paymentMethod: 'Consumo de Tienda',
+            notes: 'Consumo / Fiado de víveres en tienda',
+            items: saleItems
+          };
+          
+          setDoc(doc(db, 'transactions', supTxId), supTx).catch(e => console.error("Error al registrar fiado en historial de quesero", e));
+        }
       }
     }
 
@@ -435,7 +479,7 @@ export default function App() {
 
     // Add general transaction record
     const newTx: Transaction = {
-      id: `TX-${Date.now().toString().slice(-4)}`,
+      id: `TX-${Date.now()}`,
       entity: customerName,
       category: 'ventas',
       date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
@@ -447,9 +491,9 @@ export default function App() {
       items: saleItems, // Saving items to show in the ticket later
       addedPayments: addedPayments || [],
       changeAmount: changeAmount || 0,
-      changeCurrency: changeCurrency || 'USD',
+      changeCurrency: (changeCurrency as 'USD' | 'BS' | 'PAGO_MOVIL' | 'MIXED') || 'USD',
       changeReference: changeReference || '',
-      mixedChange: mixedChange || undefined,
+      mixedChange: mixedChange || null,
       changeBs: changeBs || 0,
       bcvRateAtSettlement: bcvRateAtSettlement || settings.exchangeRate || 42.50
     };
@@ -457,9 +501,17 @@ export default function App() {
     // Save to Local State immediately (which triggers localStorage backup)
     setTransactions((prev) => [newTx, ...prev]);
 
+    // Eliminar cualquier valor undefined restante para evitar el fallo silencioso de Firebase
+    const sanitizedTx = { ...newTx };
+    Object.keys(sanitizedTx).forEach(key => {
+      if ((sanitizedTx as any)[key] === undefined) {
+        delete (sanitizedTx as any)[key];
+      }
+    });
+
     // Save to Firebase so it syncs globally and doesn't get overwritten by the listener
     try {
-      await setDoc(doc(db, 'transactions', newTx.id), newTx);
+      await setDoc(doc(db, 'transactions', sanitizedTx.id), sanitizedTx);
     } catch (err) {
       console.error("Error saving transaction to Firebase:", err);
     }
@@ -653,62 +705,57 @@ export default function App() {
   };
 
   // Libreta de Queso Handlers
-  const handleRecordSupplierStorePayment = (supplierId: string, amount: number, method: string = 'Efectivo', note: string = '', movementType: 'cargo' | 'abono' = 'abono') => {
+  const handleRecordSupplierStorePayment = (supplierId: string, amount: number, method: string = 'Efectivo / Caja Chica', note: string = '', currency: 'USD' | 'VES' = 'USD') => {
     setSuppliers((prev) =>
       prev.map((s) => {
         if (s.id === supplierId) {
           const currentDebt = s.storeDebt || 0;
-          return { ...s, storeDebt: movementType === 'cargo' ? currentDebt + amount : Math.max(0, currentDebt - amount) };
+          return { ...s, storeDebt: Math.max(0, currentDebt - amount) };
         }
         return s;
       })
     );
 
-    if (movementType === 'abono') {
-      // Mark corresponding supplier receivable bills as paid if they balance out
-      setBills((prevBills) => {
-        let remainingPayment = amount;
-        return prevBills.map((b) => {
-          if (b.type === 'receivable' && b.entityId === supplierId && b.status === 'Pendiente') {
-            if (remainingPayment >= b.amount) {
-              remainingPayment -= b.amount;
-              return { ...b, status: 'Pagado' };
-            }
-          }
-          return b;
-        });
-      });
-
-      setBalance((prev) => prev + amount);
-    } else {
-      // It's a 'cargo' (fiado), create a receivable bill for it
-      const sup = suppliers.find(s => s.id === supplierId);
-      const newBill: AccountBill = {
-        id: `bill-rcv-sup-${Date.now()}`,
-        type: 'receivable',
-        entityId: supplierId,
-        entityName: sup ? sup.name : 'Productor de Queso',
-        amount: amount,
-        dueDate: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-        status: 'Pendiente',
-        notes: note || `Consumo de tienda (Libreta de Queso)`
-      };
-      setBills((prev) => [newBill, ...prev]);
+    const sup = suppliers.find(s => s.id === supplierId);
+    if (sup) {
+      updateDoc(doc(db, 'suppliers', supplierId), {
+        storeDebt: Math.max(0, (sup.storeDebt || 0) - amount)
+      }).catch(e => console.error("Error updating supplier store debt", e));
     }
 
-    const sup = suppliers.find(s => s.id === supplierId);
+    const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+    const updatedVault = { ...currentVault };
+    
+    if (currency === 'VES') {
+      const bsAmount = amount * (settings.exchangeRate || 42.50);
+      if (method === 'Efectivo / Caja Chica') {
+         updatedVault.bs = (updatedVault.bs || 0) + bsAmount;
+      } else {
+         updatedVault.bankBs = (updatedVault.bankBs || 0) + bsAmount;
+      }
+    } else {
+      if (method === 'Efectivo / Caja Chica') {
+         updatedVault.usd = (updatedVault.usd || 0) + amount;
+      } else {
+         updatedVault.bankUsd = (updatedVault.bankUsd || 0) + amount;
+      }
+    }
+    
+    handleUpdateSettings({ centralVaultBalance: updatedVault });
+
     const newTx: Transaction = {
       id: `TX-${Date.now().toString().slice(-4)}`,
       entity: sup ? sup.name : 'Productor',
-      category: 'credito',
+      category: 'ingresos_cobranza',
       date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-      invoiceNumber: `LIB-${movementType.toUpperCase()}-${Math.floor(Math.random() * 9000 + 1000)}`,
+      invoiceNumber: `COB-PROD-${Math.floor(Math.random() * 9000 + 1000)}`,
       amount: amount,
-      isIncome: movementType === 'abono',
+      isIncome: true,
       status: 'Completado',
       paymentMethod: method,
-      notes: note || (movementType === 'cargo' ? 'Consumo Fiado' : 'Abono a Libreta')
+      notes: note || 'Abono a deuda de tienda'
     };
+    
     setTransactions((prev) => [newTx, ...prev]);
 
     try {
@@ -773,7 +820,7 @@ export default function App() {
 
     const netAmount = Math.min(owedToThem, owedToUs);
     const newTx: Transaction = {
-      id: `TX-${Date.now().toString().slice(-4)}`,
+      id: `TX-${Date.now()}`,
       entity: `Compensación Libreta: ${sup.name}`,
       category: 'credito',
       date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
@@ -793,7 +840,7 @@ export default function App() {
     addNotification(`Intercambio en Libreta de Queso: Se han compensado $${netAmount.toLocaleString()} M.N. de deudas cruzadas.`, 'success');
   };
 
-  const handlePaySupplierRemainingBalance = async (supplierId: string, amount: number, paymentSource: string, note?: string) => {
+  const handlePaySupplierRemainingBalance = async (supplierId: string, amount: number, paymentSource: string, note?: string, currency: 'USD' | 'VES' = 'USD') => {
     const sup = suppliers.find(s => s.id === supplierId);
     if (!sup) return;
     const newBalance = Math.max(0, sup.balanceOwed - amount);
@@ -811,16 +858,25 @@ export default function App() {
       const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
       const updatedVault = { ...currentVault };
       
-      if (paymentSource === 'Efectivo / Caja Chica') {
-         updatedVault.usd -= amount;
+      if (currency === 'VES') {
+        const bsAmount = amount * (settings.exchangeRate || 42.50);
+        if (paymentSource === 'Efectivo / Caja Chica') {
+           updatedVault.bs = (updatedVault.bs || 0) - bsAmount;
+        } else {
+           updatedVault.bankBs = (updatedVault.bankBs || 0) - bsAmount;
+        }
       } else {
-         updatedVault.bankUsd -= amount;
+        if (paymentSource === 'Efectivo / Caja Chica') {
+           updatedVault.usd = (updatedVault.usd || 0) - amount;
+        } else {
+           updatedVault.bankUsd = (updatedVault.bankUsd || 0) - amount;
+        }
       }
       
       handleUpdateSettings({ centralVaultBalance: updatedVault });
 
       const newTx: Transaction = {
-        id: `TX-${Date.now().toString().slice(-4)}`,
+        id: `TX-${Date.now()}`,
         entity: sup.name,
         category: 'compras',
         date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
@@ -1000,11 +1056,13 @@ export default function App() {
     supplierId: string;
     items: { productId: string; quantityKg: number; purchasePrice: number; sellingPrice: number; marginPercent: number; name: string; createNewItem?: boolean; }[];
     isCredit: boolean;
+    paymentMethod?: string;
   }) => {
     const selectedSup = suppliers.find(s => s.id === purchase.supplierId);
     if (!selectedSup || purchase.items.length === 0) return;
 
     let totalCost = 0;
+    let globalDeductionAmount = 0;
     const purchaseTxId = `F-COMP-${Math.floor(Math.random() * 8000 + 1000)}`;
 
     try {
@@ -1065,44 +1123,46 @@ export default function App() {
         }
       }
 
-      // Handle debt or cash balance
-      if (!purchase.isCredit) {
-        // Here we could also use an atomic increment for a balance doc if one existed,
-        // but for now we rely on the local state + transactions collection as it was before.
-      } else {
-        let deductionAmount = 0;
-        let newBalanceOwed = 0;
-        let newStoreDebt = 0;
+      // --- NETTING LOGIC FOR ALL PURCHASES ---
+      let netToPayOrCredit = totalCost;
+      let newBalanceOwed = selectedSup.balanceOwed || 0;
+      let newStoreDebt = selectedSup.storeDebt || 0;
 
-        const currentDebt = selectedSup.storeDebt || 0;
-        const currentBalanceOwed = selectedSup.balanceOwed || 0;
-
-        if (currentDebt > 0) {
-          if (totalCost >= currentDebt) {
-            deductionAmount = currentDebt;
-            newBalanceOwed = currentBalanceOwed + (totalCost - currentDebt);
-            newStoreDebt = 0;
-          } else {
-            deductionAmount = totalCost;
-            newBalanceOwed = currentBalanceOwed;
-            newStoreDebt = currentDebt - totalCost;
-          }
+      if (newStoreDebt > 0) {
+        if (netToPayOrCredit >= newStoreDebt) {
+          globalDeductionAmount = newStoreDebt;
+          netToPayOrCredit -= newStoreDebt;
+          newStoreDebt = 0;
         } else {
-          newBalanceOwed = currentBalanceOwed + totalCost;
-          newStoreDebt = currentDebt;
+          globalDeductionAmount = netToPayOrCredit;
+          newStoreDebt -= netToPayOrCredit;
+          netToPayOrCredit = 0;
         }
-
-        await updateDoc(doc(db, 'suppliers', purchase.supplierId), {
-          balanceOwed: newBalanceOwed,
-          storeDebt: newStoreDebt
-        });
       }
+
+      if (purchase.isCredit) {
+        newBalanceOwed += netToPayOrCredit;
+      }
+
+      setSuppliers((prev) =>
+        prev.map((s) => {
+          if (s.id === purchase.supplierId) {
+            return { ...s, balanceOwed: newBalanceOwed, storeDebt: newStoreDebt };
+          }
+          return s;
+        })
+      );
+
+      await updateDoc(doc(db, 'suppliers', purchase.supplierId), {
+        balanceOwed: newBalanceOwed,
+        storeDebt: newStoreDebt
+      });
 
       addNotification('Compra recibida, inventario actualizado y movimientos de Kardex registrados', 'success');
     } catch (err) {
       console.error('Error saving purchase to DB:', err);
       addNotification('Error crítico al guardar la compra en base de datos', 'warning');
-      return; // Stop if DB write failed to prevent desync
+      return;
     }
 
     // Increase product stock and update prices in LOCAL STATE for React reactivity
@@ -1130,96 +1190,82 @@ export default function App() {
       totalBs: Number((i.quantityKg * i.purchasePrice) * (settings.exchangeRate || 42.50))
     }));
 
-    if (!purchase.isCredit) {
-      // Deduct from business balance immediately (Cash payment)
-      setBalance(prev => prev - totalCost);
+    // Generate transaction for Ledger ('Entrega')
+    if (purchase.isCredit) {
       const newTx: Transaction = {
-        id: `TX-${Date.now().toString().slice(-4)}`,
+        id: `TX-${Date.now()}`,
         entity: selectedSup.name,
         category: 'compras',
         date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
         invoiceNumber: purchaseTxId,
         amount: totalCost,
-        isIncome: false,
+        isIncome: true, // Mark as income so ledger reads it as sum (+)
         status: 'Completado',
-        paymentMethod: 'Efectivo / Caja Chica',
+        notes: `Recibido ${purchase.items.map(i=>i.quantityKg + 'kg').join(', ')}. Pago CRÉDITO${globalDeductionAmount > 0 ? ` (Deducido $${globalDeductionAmount.toFixed(2)} deuda POS)` : ''}`,
         items: txItems
       };
       setTransactions((prev) => [newTx, ...prev]);
       try {
         setDoc(doc(db, 'transactions', newTx.id), newTx);
-      } catch (err) {
-        console.error("Error saving cash purchase to Firebase:", err);
-      }
+      } catch (e) { console.error(e); }
     } else {
-      let deductionAmount = 0;
-      let newBalanceOwed = 0;
-      let newStoreDebt = 0;
+      // Cash payment: Deduct from Vault immediately
+      let netToPayOrCredit = totalCost;
       const currentDebt = selectedSup.storeDebt || 0;
-      const currentBalanceOwed = selectedSup.balanceOwed || 0;
-
       if (currentDebt > 0) {
-        if (totalCost >= currentDebt) {
-          deductionAmount = currentDebt;
-          newBalanceOwed = currentBalanceOwed + (totalCost - currentDebt);
-          newStoreDebt = 0;
+        if (netToPayOrCredit >= currentDebt) {
+           netToPayOrCredit -= currentDebt;
         } else {
-          deductionAmount = totalCost;
-          newBalanceOwed = currentBalanceOwed;
-          newStoreDebt = currentDebt - totalCost;
+           netToPayOrCredit = 0;
         }
-      } else {
-        newBalanceOwed = currentBalanceOwed + totalCost;
-        newStoreDebt = currentDebt;
       }
 
-      // Increase supplier's balance owed (Accounts payable)
-      setSuppliers((prev) =>
-        prev.map((s) => {
-          if (s.id === purchase.supplierId) {
-            return { ...s, balanceOwed: newBalanceOwed, storeDebt: newStoreDebt };
-          }
-          return s;
-        })
-      );
+      if (netToPayOrCredit > 0) {
+        const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+        const updatedVault = { ...currentVault };
+        
+        if (purchase.paymentMethod === 'Efectivo / Caja Chica') {
+          updatedVault.usd -= netToPayOrCredit;
+        } else {
+          updatedVault.bankUsd -= netToPayOrCredit;
+        }
+        handleUpdateSettings({ centralVaultBalance: updatedVault });
 
-      // Add to bills pay list (only if there is a remaining balance to pay)
-      if (newBalanceOwed > selectedSup.balanceOwed) {
-        const newBill: AccountBill = {
-          id: `bill-pay-${Date.now()}`,
-          type: 'payable',
-          entityId: purchase.supplierId,
-          entityName: selectedSup.name,
-          amount: totalCost - deductionAmount,
-          dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-          status: 'Pendiente',
-          notes: `Compra Múltiple: ${purchase.items.length} ítems`
+        const newTx: Transaction = {
+          id: `TX-${Date.now().toString().slice(-4)}`,
+          entity: selectedSup.name,
+          category: 'compras',
+          date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+          invoiceNumber: purchaseTxId,
+          amount: netToPayOrCredit,
+          isIncome: false,
+          status: 'Completado',
+          paymentMethod: purchase.paymentMethod,
+          notes: `Pago al contado de Queso${globalDeductionAmount > 0 ? ` (Deducido $${globalDeductionAmount.toFixed(2)} deuda POS)` : ''}`,
+          items: txItems
         };
-        setBills((prev) => [newBill, ...prev]);
-      }
-
-      const notes = deductionAmount > 0 
-        ? `Recibido Queso ($${totalCost.toFixed(2)}) - Cobro deuda POS (-$${deductionAmount.toFixed(2)}) = A favor: $${(totalCost - deductionAmount).toFixed(2)}`
-        : `Recepción Queso a Libreta ($${totalCost.toFixed(2)}).`;
-
-      // Create a transaction record (compras) as pending
-      const newTx: Transaction = {
-        id: `TX-${Date.now().toString().slice(-4)}`,
-        entity: selectedSup ? selectedSup.name : 'Proveedor de Lácteos',
-        category: 'compras',
-        date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-        invoiceNumber: purchaseTxId,
-        amount: totalCost,
-        isIncome: false,
-        status: 'Pendiente',
-        notes: notes,
-        items: txItems
-      };
-      setTransactions((prev) => [newTx, ...prev]);
-      try {
-        setDoc(doc(db, 'transactions', newTx.id), newTx);
-      } catch (err) {
-        console.error("Error saving pending purchase to Firebase:", err);
+        setTransactions((prev) => [newTx, ...prev]);
+        try {
+          setDoc(doc(db, 'transactions', newTx.id), newTx);
+        } catch (e) { console.error(e); }
+      } else if (globalDeductionAmount > 0) {
+        // If it was paid but the netting consumed it entirely, still log the delivery!
+        const newTx: Transaction = {
+          id: `TX-${Date.now()}`,
+          entity: selectedSup.name,
+          category: 'compras',
+          date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+          invoiceNumber: purchaseTxId,
+          amount: totalCost,
+          isIncome: true, // It acts as a credit delivery that was wiped
+          status: 'Completado',
+          notes: `Recibido queso. Cobrado totalmente de deuda POS ($${globalDeductionAmount.toFixed(2)})`,
+          items: txItems
+        };
+        setTransactions((prev) => [newTx, ...prev]);
+        try {
+          setDoc(doc(db, 'transactions', newTx.id), newTx);
+        } catch (e) { console.error(e); }
       }
     }
 
@@ -1515,6 +1561,30 @@ export default function App() {
   };
 
 
+  const urlParams = new URLSearchParams(window.location.search);
+  const portalParam = urlParams.get('portal');
+  const portalId = urlParams.get('id');
+
+  if (portalParam && (portalParam === 'cliente' || portalParam === 'productor' || portalParam === 'proveedor' || portalParam === 'contador')) {
+    // If it's a client or supplier but there is no ID, we show it anyway (so they can search)
+    // For accountant it doesn't need an ID.
+    return (
+      <div className="min-h-screen bg-black text-white">
+        <MobilePortalsView
+          products={cheeseProducts}
+          clients={clients}
+          suppliers={suppliers}
+          mobileOrders={mobileOrders}
+          onAddMobileOrder={handleAddMobileOrder}
+          onDeliverMobileOrder={handleDeliverMobileOrder}
+          onCancelMobileOrder={handleCancelMobileOrder}
+          onAddNotification={addNotification}
+          isolatedType={portalParam as any}
+          isolatedId={portalId || undefined}
+        />
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (
@@ -1536,6 +1606,12 @@ export default function App() {
         userRole={currentUser?.role || 'cajero'}
         userName={currentUser?.name}
         isOpen={isSidebarOpen}
+        exchangeRate={settings.exchangeRate}
+        lastRateSync={(settings as any).lastRateSync}
+        onSyncRate={(rate, date) => {
+          handleUpdateSettings({ exchangeRate: rate, lastRateSync: date });
+          addNotification(`Tasa BCV actualizada a ${rate}`, 'success');
+        }}
       />
 
       {/* Main Canvas Frame */}
@@ -1709,6 +1785,14 @@ export default function App() {
               onUpdateTrip={handleUpdateTrip}
               onSettleTrip={handleSettleTrip}
               onAddNotification={addNotification}
+              onUpdateVault={async (updates) => {
+                await handleUpdateSettings({
+                  centralVaultBalance: {
+                    ...(settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 }),
+                    ...updates
+                  }
+                });
+              }}
               onAddTransaction={(tx) => {
                  const newTx: Transaction = {
                    id: `TX-${Date.now().toString().slice(-4)}`,

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOrder, Transaction } from '../types';
-import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X } from 'lucide-react';
+import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X, Scan } from 'lucide-react';
 import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '../utils';
 import { collection, addDoc, getDocs, query, orderBy, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
@@ -147,6 +147,11 @@ export default function CheesePOSView({
   const [startingCashBsInput, setStartingCashBsInput] = useState<string>(() => {
     return String(Number(localStorage.getItem('kalu_starting_bs')) || 0);
   });
+
+  // Multibarcode link states
+  const [unknownBarcode, setUnknownBarcode] = useState<string | null>(null);
+  const [barcodeLinkSearch, setBarcodeLinkSearch] = useState('');
+  const [linkingBarcode, setLinkingBarcode] = useState(false);
 
   const handleSaveStartingCashUsd = () => {
     const val = parseSafeDecimal(startingCashUsdInput);
@@ -529,8 +534,8 @@ export default function CheesePOSView({
   const incomeBiopago = getTransactionsTotalByMethod('BioPago', 'credito', true) * (exchangeRate || 1);
   const totalBiopago = salesBiopago + incomeBiopago;
 
-  // 6. Ventas a Crédito (Fiado) - Calculado desde saldos vivos reales (Clientes + Proveedores)
-  const totalCreditSales = clients.reduce((sum, c) => sum + (c.outstandingDebt || 0), 0) + suppliers.reduce((sum, s) => sum + (s.storeDebt || 0), 0);
+  // 6. Ventas a Crédito (Fiado) - Calculado desde las ventas del día actual
+  const totalCreditSales = validSalesHistory.reduce((sum, s) => sum + (Number(s.debtAmount) || 0), 0);
 
   // 7. Gastos en Efectivo USD y Bs
   const expensesCashUsd = getTransactionsTotalByMethod('Efectivo $', 'gastos', false) + getTransactionsTotalByMethod('Efectivo', 'gastos', false);
@@ -703,6 +708,26 @@ export default function CheesePOSView({
                   setSearchQuery(e.target.value);
                   setSelectedProductId(null);
                 }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && searchQuery.trim().length > 3) {
+                    const query = searchQuery.trim();
+                    const matches = products.filter(p => 
+                      (p.name || '').toLowerCase().includes(query.toLowerCase()) || 
+                      (p.category || '').toLowerCase().includes(query.toLowerCase()) ||
+                      (p.id || '').toLowerCase().includes(query.toLowerCase()) ||
+                      (p.barcode || '').toLowerCase() === query.toLowerCase() ||
+                      (p.barcodes || []).some(b => b.toLowerCase() === query.toLowerCase())
+                    );
+                    
+                    if (matches.length === 0) {
+                      // It's likely an unknown barcode scan
+                      setUnknownBarcode(query);
+                    } else if (matches.length === 1 && matches[0].stockKg > 0) {
+                      setSelectedProductId(matches[0].id);
+                      setQtyInput('0');
+                    }
+                  }
+                }}
                 className="w-full h-12 pl-4 pr-4 bg-editorial-bg border border-editorial-border rounded text-sm text-editorial-text-primary focus:outline-none focus:border-amber-500 font-sans"
               />
             </div>
@@ -715,7 +740,9 @@ export default function CheesePOSView({
                     try {
                       return (p.name || '').toLowerCase().includes((searchQuery || '').toLowerCase()) || 
                              (p.category || '').toLowerCase().includes((searchQuery || '').toLowerCase()) ||
-                             (p.id || '').toLowerCase().includes((searchQuery || '').toLowerCase());
+                             (p.id || '').toLowerCase().includes((searchQuery || '').toLowerCase()) ||
+                             (p.barcode || '').toLowerCase() === (searchQuery || '').toLowerCase() ||
+                             (p.barcodes || []).some(b => b.toLowerCase() === (searchQuery || '').toLowerCase());
                     } catch (e) {
                       console.error('Error filtrando producto:', p, e);
                       return false;
@@ -2169,6 +2196,102 @@ export default function CheesePOSView({
                 className="px-6 py-2 border border-editorial-border text-editorial-text-primary text-xs font-bold uppercase tracking-wider rounded hover:bg-editorial-card transition-colors"
               >
                 Cerrar Auditoría
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {unknownBarcode && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[100] p-4">
+          <div className="bg-editorial-bg border border-editorial-border rounded w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-4 border-b border-editorial-border bg-amber-500/10 flex justify-between items-start">
+              <div>
+                <h3 className="text-xl font-serif font-black uppercase text-amber-500 tracking-wider flex items-center gap-2">
+                  <Scan className="w-5 h-5" />
+                  Código Desconocido
+                </h3>
+                <p className="text-xs text-editorial-text-muted mt-1 font-mono">{unknownBarcode}</p>
+                <p className="text-[10px] uppercase text-editorial-text-muted mt-2 leading-tight">
+                  Selecciona el producto del inventario para vincular este código de barra (Máx. 5).
+                </p>
+              </div>
+            </div>
+            
+            <div className="p-4 bg-editorial-card">
+              <input
+                autoFocus
+                type="text"
+                placeholder="Buscar producto por nombre..."
+                value={barcodeLinkSearch}
+                onChange={(e) => setBarcodeLinkSearch(e.target.value)}
+                className="w-full bg-editorial-bg border border-editorial-border rounded p-3 text-sm text-editorial-text-primary focus:border-amber-500 transition-colors outline-none"
+              />
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {products
+                .filter(p => barcodeLinkSearch.length > 1 && (p.name || '').toLowerCase().includes(barcodeLinkSearch.toLowerCase()))
+                .map(p => {
+                  const currentBarcodes = p.barcodes || [];
+                  if (p.barcode && !currentBarcodes.includes(p.barcode)) currentBarcodes.push(p.barcode);
+                  const isFull = currentBarcodes.length >= 5;
+                  
+                  return (
+                    <div 
+                      key={p.id}
+                      onClick={async () => {
+                        if (isFull || linkingBarcode) return;
+                        setLinkingBarcode(true);
+                        try {
+                          const newBarcodes = [...new Set([...(p.barcodes || []), unknownBarcode])];
+                          if (p.barcode && !newBarcodes.includes(p.barcode)) newBarcodes.push(p.barcode);
+                          
+                          await updateDoc(doc(db, 'products', p.id), {
+                            barcodes: newBarcodes
+                          });
+                          
+                          // After linking, add 1 to cart
+                          handleAddToCart(p, 1);
+                          onAddNotification(`Código vinculado a ${p.name}`, 'success');
+                          
+                          setUnknownBarcode(null);
+                          setBarcodeLinkSearch('');
+                          setSearchQuery('');
+                          setTimeout(() => searchInputRef.current?.focus(), 100);
+                        } catch(e) {
+                          console.error(e);
+                          onAddNotification('Error al vincular código', 'warning');
+                        } finally {
+                          setLinkingBarcode(false);
+                        }
+                      }}
+                      className={`p-3 border border-editorial-border rounded flex justify-between items-center transition-colors ${isFull ? 'opacity-50' : 'cursor-pointer hover:border-amber-500/50 hover:bg-amber-500/5'}`}
+                    >
+                      <div>
+                        <div className="font-bold text-editorial-text-primary text-sm">{p.name}</div>
+                        <div className="text-[10px] text-editorial-text-muted uppercase">{p.category} • {currentBarcodes.length}/5 Códigos</div>
+                      </div>
+                      <div className="font-mono text-emerald-500 text-xs font-bold">${p.sellingPrice}</div>
+                    </div>
+                  );
+                })}
+              {barcodeLinkSearch.length <= 1 && (
+                <div className="text-center text-editorial-text-muted text-xs p-4">Escribe al menos 2 letras para buscar.</div>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-editorial-border bg-editorial-card flex justify-end">
+              <button 
+                onClick={() => {
+                  setUnknownBarcode(null);
+                  setBarcodeLinkSearch('');
+                  setSearchQuery('');
+                  setTimeout(() => searchInputRef.current?.focus(), 100);
+                }}
+                className="px-6 py-2 text-xs font-bold uppercase tracking-wider text-editorial-text-muted hover:text-editorial-text-primary transition-colors"
+              >
+                Cancelar
               </button>
             </div>
           </div>

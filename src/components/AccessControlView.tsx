@@ -10,7 +10,7 @@ export default function AccessControlView({ isAdmin }: AccessControlViewProps) {
       id: 'cliente',
       title: 'Portal del Cliente',
       desc: 'Acceso para clientes y compra de repuestos/quesos',
-      url: 'https://sistemekalu.web.app/cliente',
+      url: `${window.location.origin}/?portal=cliente`,
       icon: UserCircle,
       color: 'amber'
     },
@@ -18,7 +18,7 @@ export default function AccessControlView({ isAdmin }: AccessControlViewProps) {
       id: 'productor',
       title: 'Portal del Productor',
       desc: 'Acceso para productores y solicitud de insumos',
-      url: 'https://sistemekalu.web.app/productor',
+      url: `${window.location.origin}/?portal=productor`,
       icon: Users,
       color: 'emerald'
     },
@@ -26,7 +26,7 @@ export default function AccessControlView({ isAdmin }: AccessControlViewProps) {
       id: 'contador',
       title: 'Portal del Contador (IA)',
       desc: 'Acceso directo a la IA y balances (Solo Admin)',
-      url: 'https://sistemekalu.web.app/contabilidad',
+      url: `${window.location.origin}/?portal=contador`,
       icon: BrainCircuit,
       color: 'brand-accent'
     }

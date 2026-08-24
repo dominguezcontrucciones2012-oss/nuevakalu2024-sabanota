@@ -22,7 +22,8 @@ import {
   RefreshCw,
   Clock,
   CheckCircle,
-  Search
+  Search,
+  X
 } from 'lucide-react';
 
 interface CheeseInventoryViewProps {
@@ -88,6 +89,7 @@ export default function CheeseInventoryView({
   const [adjustPercent, setAdjustPercent] = useState<number>(5);
   const [adjustSelectedProdId, setAdjustSelectedProdId] = useState<string>('');
   const [adjustNewPrice, setAdjustNewPrice] = useState<number>(0);
+  const [newBarcodes, setNewBarcodes] = useState<string[]>([]);
 
 
   const csvFileInputRef = useRef<HTMLInputElement>(null);
@@ -103,12 +105,14 @@ export default function CheeseInventoryView({
       sellingPrice: newSellingPrice,
       alertThreshold: newAlert,
       agingDays: newCategory === 'Curado' ? 90 : newCategory === 'Semicurado' ? 30 : 1,
-      origin: newOrigin,
-      unit: newUnit
+      origin: newOrigin || 'Nacional',
+      unit: newUnit,
+      barcodes: newBarcodes
     });
     onAddNotification(`Queso ${newName} registrado en el inventario activo.`, 'success');
     setShowAddForm(false);
     setNewName('');
+    setNewBarcodes([]);
   };
 
   const handleSaveInlineEdit = async (e?: React.MouseEvent) => {
@@ -128,7 +132,8 @@ export default function CheeseInventoryView({
         purchasePrice: parseSafeDecimal(editingProduct.purchasePrice),
         sellingPrice: parseSafeDecimal(editingProduct.sellingPrice),
         stockKg: parseSafeDecimal(editingProduct.stockKg),
-        unit: editingProduct.unit || 'Kg'
+        unit: editingProduct.unit || 'Kg',
+        barcodes: editingProduct.barcodes || []
       });
       
       console.log('Edición procesada localmente, cerrando modo edición.');
@@ -406,6 +411,41 @@ export default function CheeseInventoryView({
                 />
               </div>
 
+              <div className="space-y-1.5 md:col-span-3 pb-4">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Códigos de Barra (MÁX 5)</label>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {newBarcodes.map((bc, idx) => (
+                    <span key={idx} className="bg-amber-500/10 text-amber-500 text-xs px-2 py-1 rounded font-mono flex items-center gap-2 border border-amber-500/30">
+                      {bc}
+                      <button 
+                        type="button"
+                        onClick={() => setNewBarcodes(newBarcodes.filter((_, i) => i !== idx))}
+                        className="hover:text-rose-500 cursor-pointer"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                {newBarcodes.length < 5 && (
+                  <input
+                    type="text"
+                    placeholder="Escanear código..."
+                    className="w-full md:w-1/3 h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs font-mono focus:border-amber-500 outline-none"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const val = e.currentTarget.value.trim();
+                        if (val && !newBarcodes.includes(val) && newBarcodes.length < 5) {
+                          setNewBarcodes([...newBarcodes, val]);
+                        }
+                        e.currentTarget.value = '';
+                      }
+                    }}
+                  />
+                )}
+              </div>
+
               <div className="md:col-span-3 pt-4 border-t border-editorial-border/40 flex justify-end">
                 <button
                   type="submit"
@@ -452,9 +492,71 @@ export default function CheeseInventoryView({
 
                     return (
                       <tr key={p.id} className="hover:bg-editorial-bg/30 transition-all">
-                        <td className="py-4 px-4">
+                        <td className="py-4 px-4 max-w-[250px]">
                           <div className="font-serif text-sm font-extrabold text-editorial-text-primary">{p.name || 'Sin nombre'}</div>
-                          <span className="font-mono text-[9px] text-editorial-text-muted/60">ID: {p.id}</span>
+                          
+                          {/* Barcodes UI */}
+                          <div className="mt-2 space-y-1">
+                            {isEditing ? (
+                              <div className="flex flex-col gap-2">
+                                <div className="flex flex-wrap gap-1">
+                                  {(editingProduct.barcodes || []).map((bc, idx) => (
+                                    <span key={idx} className="bg-amber-500/10 text-amber-500 text-[10px] px-2 py-0.5 rounded font-mono flex items-center gap-1 border border-amber-500/30">
+                                      {bc}
+                                      <button 
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setEditingProduct({
+                                            ...editingProduct,
+                                            barcodes: (editingProduct.barcodes || []).filter((_, i) => i !== idx)
+                                          });
+                                        }}
+                                        className="hover:text-rose-500 cursor-pointer"
+                                      >
+                                        <X className="w-3 h-3" />
+                                      </button>
+                                    </span>
+                                  ))}
+                                </div>
+                                {(!editingProduct.barcodes || editingProduct.barcodes.length < 5) && (
+                                  <input
+                                    type="text"
+                                    placeholder="Escanear código..."
+                                    className="w-full bg-editorial-bg border border-editorial-border rounded p-1 text-[10px] font-mono focus:border-amber-500 outline-none"
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        const val = e.currentTarget.value.trim();
+                                        if (val) {
+                                          const current = editingProduct.barcodes || [];
+                                          if (!current.includes(val) && current.length < 5) {
+                                            setEditingProduct({
+                                              ...editingProduct,
+                                              barcodes: [...current, val]
+                                            });
+                                          }
+                                          e.currentTarget.value = '';
+                                        }
+                                      }
+                                    }}
+                                  />
+                                )}
+                              </div>
+                            ) : (
+                              <div className="flex flex-wrap gap-1">
+                                {p.barcode && !p.barcodes?.includes(p.barcode) && (
+                                  <span className="bg-editorial-card border border-editorial-border text-editorial-text-muted text-[9px] px-1.5 py-0.5 rounded font-mono">{p.barcode}</span>
+                                )}
+                                {(p.barcodes || []).map((bc, idx) => (
+                                  <span key={idx} className="bg-editorial-card border border-editorial-border text-editorial-text-muted text-[9px] px-1.5 py-0.5 rounded font-mono">
+                                    {bc}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          
+                          <span className="font-mono text-[9px] text-editorial-text-muted/60 mt-1 block">ID: {p.id}</span>
                         </td>
                         <td className="py-4 px-4 font-sans text-editorial-text-muted">{p.category || '-'}</td>
                         <td className="py-4 px-4 font-sans text-editorial-text-muted">{p.origin || '-'}</td>

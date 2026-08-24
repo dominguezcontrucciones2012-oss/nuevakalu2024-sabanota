@@ -1,7 +1,44 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { collection, query, where, limit, onSnapshot, getDocs, orderBy } from 'firebase/firestore';
+import { db } from '../services/firebase';
 import { SupplierProfile, AccountBill, Transaction, CheeseProduct } from '../types';
 import { Truck, Store, Phone, Plus, BadgeAlert, FileCheck, CheckCircle, ExternalLink, Calendar, Eye, Wallet, CreditCard, Inbox, X, Search, Trash2 } from 'lucide-react';
 import { parseSafeDecimal } from '../utils';
+
+const parseCustomDate = (dateStr: string): number => {
+  if (!dateStr) return 0;
+  try {
+    // Si ya es un timestamp numérico o ISO válido
+    const direct = new Date(dateStr).getTime();
+    if (!isNaN(direct) && direct > 0) return direct;
+
+    // Traducir meses en español a inglés para que Date.parse funcione
+    const monthMap: Record<string, string> = {
+      'ene': 'Jan', 'feb': 'Feb', 'mar': 'Mar', 'abr': 'Apr', 'may': 'May', 'jun': 'Jun',
+      'jul': 'Jul', 'ago': 'Aug', 'sep': 'Sep', 'oct': 'Oct', 'nov': 'Nov', 'dic': 'Dec'
+    };
+    
+    let normalizedStr = dateStr.toLowerCase();
+    Object.keys(monthMap).forEach(es => {
+      normalizedStr = normalizedStr.replace(es, monthMap[es].toLowerCase());
+    });
+    
+    const translatedTime = new Date(normalizedStr).getTime();
+    if (!isNaN(translatedTime) && translatedTime > 0) return translatedTime;
+
+    // Formato: "21/8/2026, 14:29:25"
+    const [datePart, timePart = "00:00:00"] = dateStr.split(',').map(s => s.trim());
+    const [day, month, year] = datePart.split('/').map(Number);
+    const [hours, minutes, seconds] = timePart.split(':').map(Number);
+
+    if (year && month && day) {
+      return new Date(year, month - 1, day, hours || 0, minutes || 0, seconds || 0).getTime();
+    }
+  } catch (e) {
+    console.error("Error parsing date:", dateStr, e);
+  }
+  return 0;
+};
 
 interface SuppliersDebtsViewProps {
   suppliers: SupplierProfile[];
@@ -12,9 +49,9 @@ interface SuppliersDebtsViewProps {
   onAddSupplier: (sup: Omit<SupplierProfile, 'id' | 'balanceOwed'>) => void;
   onUpdateSupplier?: (id: string, updates: Partial<SupplierProfile>) => void;
   onPaySupplierBill: (billId: string, supplierId: string, amount: number) => void;
-  onRecordSupplierStorePayment?: (supplierId: string, amount: number, method: string, note: string, movementType: 'cargo' | 'abono') => void;
+  onRecordSupplierStorePayment?: (supplierId: string, amount: number, method: string, note: string, currency: 'USD' | 'VES') => void;
   onNetSupplierBalances?: (supplierId: string) => void;
-  onPaySupplierRemainingBalance?: (supplierId: string, amount: number, paymentSource: string, note?: string) => void;
+  onPaySupplierRemainingBalance?: (supplierId: string, amount: number, paymentSource: string, note?: string, currency?: 'USD' | 'VES') => void;
   onLoadPurchase?: (purchase: {
     supplierId: string;
     items: { productId: string; quantityKg: number; purchasePrice: number; sellingPrice: number; marginPercent: number; name: string; createNewItem?: boolean; }[];
@@ -75,6 +112,8 @@ export default function SuppliersDebtsView({
   const [searchQuery, setSearchQuery] = useState('');
 
   // Date filters for historial
+  const [localTransactions, setLocalTransactions] = useState<Transaction[]>([]);
+  const [isLoadingHistorial, setIsLoadingHistorial] = useState(false);
   const [historialStartDate, setHistorialStartDate] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 15);
@@ -139,6 +178,78 @@ export default function SuppliersDebtsView({
       setPayToUsMovementType('abono');
     }
   };
+
+  useEffect(() => {
+    if (activeModal === 'historial' && selectedSupplierId) {
+      const s = suppliers.find(sup => sup.id === selectedSupplierId);
+      if (!s) return;
+
+      setIsLoadingHistorial(true);
+      
+      // We do not use the date filter automatically on open. We just fetch the last 15.
+      if (showAllTime || !historialStartDate || !historialEndDate) {
+        // Query last 50
+        const q = query(
+          collection(db, 'transactions'),
+          where('entity', '==', s.name),
+          limit(50)
+        );
+        const unsub = onSnapshot(q, (snapshot) => {
+          const txs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
+          // Sort descending by ID to ensure newest first natively
+          txs.sort((a, b) => {
+            if (a.id > b.id) return -1;
+            if (a.id < b.id) return 1;
+            return 0;
+          });
+          setLocalTransactions(txs);
+          setIsLoadingHistorial(false);
+        });
+        return () => unsub();
+      } else {
+        // Range query mode
+        const fetchRange = async () => {
+          setIsLoadingHistorial(true);
+          // Convert local dates to ms boundaries
+          const startMs = new Date(historialStartDate + 'T00:00:00').getTime();
+          const endMs = new Date(historialEndDate + 'T23:59:59.999').getTime();
+          
+          const q = query(
+            collection(db, 'transactions'),
+            where('entity', '==', s.name),
+            limit(1000)
+          );
+          
+          const snapshot = await getDocs(q);
+          const allTxs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
+          
+          const filtered = allTxs.filter(tx => {
+            // Check by new ID pattern (TX-17000000)
+            const idParts = tx.id.split('-');
+            if (idParts.length >= 2 && idParts[1].length > 10) {
+               const txMs = parseInt(idParts[1], 10);
+               return txMs >= startMs && txMs <= endMs;
+            }
+            // Fallback robusto de fechas
+            const txTime = parseCustomDate(tx.date);
+            if (txTime === 0) return true; // Si no se puede parsear, no la ocultes
+            return txTime >= startMs && txTime <= endMs;
+          });
+          
+          filtered.sort((a, b) => {
+            if (a.id > b.id) return -1;
+            if (a.id < b.id) return 1;
+            return 0;
+          });
+          
+          setLocalTransactions(filtered);
+          setIsLoadingHistorial(false);
+        };
+        fetchRange();
+      }
+    }
+  }, [activeModal, selectedSupplierId, suppliers, showAllTime, historialStartDate, historialEndDate]);
+
 
   const openEditModal = (s: SupplierProfile) => {
     setEditingSupplier(s);
@@ -474,17 +585,12 @@ export default function SuppliersDebtsView({
               if (!s) return null;
 
               if (activeModal === 'historial') {
-                const supTxRaw = transactions.filter(t => t.entity.includes(s.name));
+                const supTxRaw = localTransactions;
                 
                 // Parse dates and sort chronologically for balance calculation (oldest first)
                 const sortedAllTx = supTxRaw.map(tx => {
-                  const parts = tx.date.split(',')[0].split('/'); // assuming DD/MM/YYYY
-                  const time = tx.date.split(',')[1]?.trim() || "00:00:00";
-                  let d = new Date();
-                  if (parts.length === 3) {
-                    d = new Date(`${parts[2]}-${parts[1]}-${parts[0]}T${time}`);
-                    if (isNaN(d.getTime())) d = new Date();
-                  }
+                  const ms = parseCustomDate(tx.date);
+                  const d = ms > 0 ? new Date(ms) : new Date();
                   return { ...tx, parsedDate: d };
                 }).sort((a, b) => a.parsedDate.getTime() - b.parsedDate.getTime());
 
@@ -513,11 +619,8 @@ export default function SuppliersDebtsView({
                 // Reverse for display (newest first, or keep chronological if preferred)
                 // Kardex format is usually newest last, so we can keep chronological
                 
-                // Apply filters
-                const filteredTx = showAllTime ? txWithBalance : txWithBalance.filter(tx => {
-                  const txDate = tx.parsedDate.toISOString().split('T')[0];
-                  return txDate >= historialStartDate && txDate <= historialEndDate;
-                });
+                // No need to apply date filters again, it was handled in useEffect
+                const filteredTx = txWithBalance;
 
                 return (
                   <div className="flex flex-col h-full overflow-hidden w-full max-w-full">
@@ -527,9 +630,20 @@ export default function SuppliersDebtsView({
                         <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><Eye className="w-5 h-5 text-amber-500"/> Estado de Cuenta: {s.name}</h3>
                         <p className="text-[10px] font-mono text-neutral-400 mt-1 uppercase">Historial de Movimientos y Saldo Progresivo</p>
                       </div>
-                      <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
-                        <X className="w-5 h-5" />
-                      </button>
+                      <div className="flex items-center gap-4">
+                        <div className="bg-neutral-800/80 px-4 py-2 rounded border border-neutral-700/50 text-right">
+                          <span className="text-[10px] font-mono uppercase text-neutral-400 block leading-none mb-1">Saldo Neto Disponible</span>
+                          <span className="font-mono font-bold text-sm text-amber-500">
+                            $ {(s.balanceOwed - (s.storeDebt || 0)).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                          </span>
+                          <span className="block text-[9px] font-mono text-neutral-500 mt-0.5">
+                            Bs {((s.balanceOwed - (s.storeDebt || 0)) * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
                     </div>
 
                     {/* Date Filters */}
@@ -565,21 +679,38 @@ export default function SuppliersDebtsView({
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-neutral-800/50">
-                          {filteredTx.length === 0 ? (
+                          {isLoadingHistorial ? (
+                            <tr>
+                              <td colSpan={7} className="py-12 text-center text-neutral-500">Cargando movimientos...</td>
+                            </tr>
+                          ) : filteredTx.length === 0 ? (
                             <tr>
                               <td colSpan={7} className="py-12 text-center text-neutral-500">No hay movimientos en este periodo.</td>
                             </tr>
                           ) : (
                             filteredTx.map((tx) => {
                                let catLabel: string = tx.category;
-                               if (tx.category === 'credito') catLabel = 'Consumo POS';
-                               else if (tx.category === 'compras') catLabel = 'Recepción Queso';
+                               let badgeClasses = "inline-block px-2 py-1 rounded bg-neutral-800 border border-neutral-700 text-[10px] font-mono uppercase text-neutral-300";
                                
+                               if (tx.category === 'compras' && tx.isIncome) {
+                                 catLabel = 'Entrega';
+                                 badgeClasses = "inline-block px-2 py-1 rounded bg-yellow-500/20 border border-yellow-500/30 text-[10px] font-mono uppercase text-yellow-500 font-bold tracking-wider";
+                               } else if (tx.category === 'credito' && !tx.isIncome) {
+                                 catLabel = 'COMPRA_POS';
+                                 badgeClasses = "inline-block px-2 py-1 rounded bg-neutral-700/50 border border-neutral-600/50 text-[10px] font-mono uppercase text-neutral-400 tracking-wider";
+                               } else if (tx.category === 'compras' && !tx.isIncome) {
+                                 catLabel = 'Pago';
+                                 badgeClasses = "inline-block px-2 py-1 rounded bg-blue-500/20 border border-blue-500/30 text-[10px] font-mono uppercase text-blue-500 font-bold tracking-wider";
+                               } else if (tx.category === 'credito' && tx.isIncome) {
+                                 catLabel = 'Abono';
+                                 badgeClasses = "inline-block px-2 py-1 rounded bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-mono uppercase text-emerald-500 font-bold tracking-wider";
+                               }
+
                                return (
                                  <tr key={tx.id} className="hover:bg-neutral-800/30 transition-colors">
                                    <td className="py-3 px-4 whitespace-nowrap text-neutral-300 font-mono text-[10px]">{tx.date.split(',')[0]}</td>
                                    <td className="py-3 px-4 whitespace-nowrap">
-                                     <span className="inline-block px-2 py-1 rounded bg-neutral-800 border border-neutral-700 text-[10px] font-mono uppercase text-neutral-300">
+                                     <span className={badgeClasses}>
                                        {catLabel}
                                      </span>
                                    </td>
@@ -770,8 +901,8 @@ export default function SuppliersDebtsView({
 
               if (activeModal === 'pagar') {
                 const inputAmt = parseSafeDecimal(payToThemAmount) || 0;
-                const usdAmount = payToThemCurrency === 'VES' ? inputAmt / exchangeRate : inputAmt;
-                const isOverpaid = usdAmount > s.balanceOwed;
+                const usdAmount = payToThemCurrency === 'VES' ? (inputAmt / exchangeRate) : inputAmt;
+                const isOverpaid = (Math.round(usdAmount * 100) / 100) > (Math.round(s.balanceOwed * 100) / 100);
                 const isValidAmount = inputAmt > 0 && !isOverpaid;
 
                 return (
@@ -826,8 +957,11 @@ export default function SuppliersDebtsView({
                         <button
                           type="button"
                           onClick={() => {
-                            setPayToThemCurrency('USD');
-                            setPayToThemAmount(String(s.balanceOwed));
+                            if (payToThemCurrency === 'VES') {
+                              setPayToThemAmount(((s.balanceOwed || 0) * exchangeRate).toFixed(2));
+                            } else {
+                              setPayToThemAmount((s.balanceOwed || 0).toFixed(2));
+                            }
                           }}
                           className="px-3 py-1.5 bg-neutral-800 border border-amber-500/50 hover:bg-amber-500/20 text-amber-500 text-[10px] font-mono font-bold uppercase rounded transition-colors cursor-pointer"
                         >
@@ -842,7 +976,20 @@ export default function SuppliersDebtsView({
                         </div>
                         <div className="space-y-1.5 flex-[1]">
                           <label className="text-[10px] font-mono text-neutral-400 uppercase block">Moneda</label>
-                          <select value={payToThemCurrency} onChange={e => setPayToThemCurrency(e.target.value as 'USD' | 'VES')} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
+                          <select value={payToThemCurrency} onChange={e => {
+                            const newCurrency = e.target.value as 'USD' | 'VES';
+                            if (newCurrency !== payToThemCurrency) {
+                              const amt = parseSafeDecimal(payToThemAmount);
+                              if (amt > 0) {
+                                if (newCurrency === 'VES') {
+                                  setPayToThemAmount((amt * exchangeRate).toFixed(2));
+                                } else {
+                                  setPayToThemAmount((amt / exchangeRate).toFixed(2));
+                                }
+                              }
+                              setPayToThemCurrency(newCurrency);
+                            }
+                          }} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
                             <option value="USD">Dólares ($)</option>
                             <option value="VES">Bolívares (Bs)</option>
                           </select>
@@ -876,7 +1023,7 @@ export default function SuppliersDebtsView({
                             if (!isValidAmount) return;
                             const note = `Liquidación de deuda a productor. Pago de ${payToThemCurrency === 'USD' ? '$' : 'Bs '}${inputAmt} ${payToThemCurrency} (Tasa: ${exchangeRate}). Fuente: ${payToThemSource}`;
                             
-                            onPaySupplierRemainingBalance?.(s.id, usdAmount, payToThemSource, note);
+                            onPaySupplierRemainingBalance?.(s.id, usdAmount, payToThemSource, note, payToThemCurrency);
                             onAddNotification(`Pago de $${usdAmount.toFixed(2)} USD a ${s.name} registrado exitosamente.`, 'success');
                             setActiveModal(null);
                           }}
@@ -891,25 +1038,30 @@ export default function SuppliersDebtsView({
               }
 
               if (activeModal === 'abonar') {
+                const inputAmt = parseSafeDecimal(payToUsAmount) || 0;
+                const usdAmount = payToUsCurrency === 'VES' ? (inputAmt / exchangeRate) : inputAmt;
+                const isOverpaid = (Math.round(usdAmount * 100) / 100) > (Math.round((s.storeDebt || 0) * 100) / 100);
+                const isValidAmount = inputAmt > 0 && !isOverpaid;
+
                 return (
                   <div className="flex flex-col h-full">
                     {/* Header */}
                     <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
-                      <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><CreditCard className="w-5 h-5"/> Movimiento Libreta</h3>
+                      <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><CreditCard className="w-5 h-5"/> Cobrar Deuda de Tienda a Productor</h3>
                       <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
                         <X className="w-5 h-5" />
                       </button>
                     </div>
                     {/* Content */}
                     <div className="p-5 space-y-4 flex-1 overflow-y-auto">
-                      <div className="bg-neutral-800 border border-neutral-700 rounded p-4 text-center">
-                        <span className="text-[10px] font-mono uppercase text-neutral-400 block tracking-wider">Él Nos Debe Actualmente</span>
+                      <div className="bg-emerald-500/10 border border-emerald-500/30 rounded p-4 text-center">
+                        <span className="text-[10px] font-mono uppercase text-emerald-400/80 block tracking-wider">Él Nos Debe Actualmente</span>
                         <span 
                           onClick={() => {
                             setPayToUsAmount((s.storeDebt || 0).toFixed(2));
                             setPayToUsCurrency('USD');
                           }}
-                          className="font-mono text-3xl font-extrabold text-amber-500 block mt-1 cursor-pointer hover:underline hover:text-amber-400 transition-colors"
+                          className="font-mono text-3xl font-extrabold text-emerald-500 block mt-1 cursor-pointer hover:underline hover:text-emerald-400 transition-colors"
                         >
                           $ {(s.storeDebt || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD
                         </span>
@@ -918,38 +1070,71 @@ export default function SuppliersDebtsView({
                             setPayToUsAmount(((s.storeDebt || 0) * exchangeRate).toFixed(2));
                             setPayToUsCurrency('VES');
                           }}
-                          className="text-xs font-mono text-neutral-500 block mt-1 cursor-pointer hover:underline hover:text-amber-400 transition-colors"
+                          className="text-xs font-mono text-emerald-500/70 block mt-1 cursor-pointer hover:underline hover:text-emerald-400 transition-colors"
                         >
                           Bs {((s.storeDebt || 0) * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
                         </span>
                       </div>
 
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Tipo de Movimiento</label>
-                        <select value={payToUsMovementType} onChange={e => setPayToUsMovementType(e.target.value as 'cargo' | 'abono')} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
-                          <option value="cargo">Crédito / Consumo Fiado (Él saca víveres, AUMENTA la deuda)</option>
-                          <option value="abono">Abono / Pago (Él paga su cuenta, DISMINUYE la deuda)</option>
-                        </select>
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (payToUsCurrency === 'VES') {
+                              setPayToUsAmount(((s.storeDebt || 0) * exchangeRate).toFixed(2));
+                            } else {
+                              setPayToUsAmount((s.storeDebt || 0).toFixed(2));
+                            }
+                          }}
+                          className="px-3 py-1.5 bg-neutral-800 border border-emerald-500/50 hover:bg-emerald-500/20 text-emerald-500 text-[10px] font-mono font-bold uppercase rounded transition-colors cursor-pointer"
+                        >
+                          Liquidar Total Deuda
+                        </button>
                       </div>
 
                       <div className="flex gap-4">
                         <div className="space-y-1.5 flex-[2]">
-                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto</label>
-                          <input type="text" inputMode="decimal" value={payToUsAmount} onChange={e => setPayToUsAmount(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" placeholder="0.00" />
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto a Cobrar</label>
+                          <input type="text" inputMode="decimal" value={payToUsAmount} onChange={e => setPayToUsAmount(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all" placeholder="0.00" />
                         </div>
                         <div className="space-y-1.5 flex-[1]">
                           <label className="text-[10px] font-mono text-neutral-400 uppercase block">Moneda</label>
-                          <select value={payToUsCurrency} onChange={e => setPayToUsCurrency(e.target.value as 'USD' | 'VES')} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
+                          <select value={payToUsCurrency} onChange={e => {
+                            const newCurrency = e.target.value as 'USD' | 'VES';
+                            if (newCurrency !== payToUsCurrency) {
+                              const amt = parseSafeDecimal(payToUsAmount);
+                              if (amt > 0) {
+                                if (newCurrency === 'VES') {
+                                  setPayToUsAmount((amt * exchangeRate).toFixed(2));
+                                } else {
+                                  setPayToUsAmount((amt / exchangeRate).toFixed(2));
+                                }
+                              }
+                              setPayToUsCurrency(newCurrency);
+                            }
+                          }} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all cursor-pointer">
                             <option value="USD">Dólares ($)</option>
                             <option value="VES">Bolívares (Bs)</option>
                           </select>
                         </div>
                       </div>
 
+                      {payToUsCurrency === 'VES' && inputAmt > 0 && (
+                        <div className="text-right text-[10px] font-mono text-neutral-400">
+                          Equivalente: <strong className="text-emerald-500">${usdAmount.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</strong> (Tasa: {exchangeRate})
+                        </div>
+                      )}
+
+                      {isOverpaid && (
+                        <div className="bg-rose-950/40 border border-rose-900 rounded p-3 text-xs text-rose-400 font-mono flex items-start gap-2">
+                          <BadgeAlert className="w-4 h-4 shrink-0 mt-0.5" />
+                          <span>El monto ingresado no puede superar la deuda total de <strong>${(s.storeDebt || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD</strong>.</span>
+                        </div>
+                      )}
+
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Método</label>
-                        <select value={payToUsMethod} onChange={e => setPayToUsMethod(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
-                          <option value="Libreta de Queso">Descontar de Libreta de Queso</option>
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Método de Ingreso</label>
+                        <select value={payToUsMethod} onChange={e => setPayToUsMethod(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all cursor-pointer">
                           <option value="Efectivo / Caja Chica">Efectivo / Caja Chica</option>
                           <option value="Pago Móvil / Banco">Pago Móvil / Banco</option>
                         </select>
@@ -957,27 +1142,23 @@ export default function SuppliersDebtsView({
 
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-mono text-neutral-400 uppercase block">Concepto / Referencia / Nota</label>
-                        <input type="text" value={payToUsNote} onChange={e => setPayToUsNote(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" placeholder="Ej. Víveres del día / Abono semanal" />
+                        <input type="text" value={payToUsNote} onChange={e => setPayToUsNote(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all" placeholder="Ej. Abono por víveres / Pago de deuda" />
                       </div>
                       
                       <div className="pt-2">
                         <button
+                          disabled={!isValidAmount}
                           onClick={() => {
-                            const inputAmt = parseSafeDecimal(payToUsAmount);
-                            if (isNaN(inputAmt) || inputAmt <= 0) return onAddNotification('Monto inválido', 'warning');
-                            const usdAmount = payToUsCurrency === 'VES' ? inputAmt / exchangeRate : inputAmt;
+                            if (!isValidAmount) return;
+                            const note = `Cobro a productor. Ingreso de ${payToUsCurrency === 'USD' ? '$' : 'Bs '}${inputAmt} ${payToUsCurrency} (Tasa: ${exchangeRate}). ${payToUsNote}`;
                             
-                            onRecordSupplierStorePayment?.(s.id, usdAmount, payToUsMethod, payToUsNote, payToUsMovementType);
-                            onAddNotification(`${payToUsMovementType === 'cargo' ? 'Crédito' : 'Abono'} de $${usdAmount.toFixed(2)} USD registrado correctamente.`, 'success');
+                            onRecordSupplierStorePayment?.(s.id, usdAmount, payToUsMethod, note, payToUsCurrency);
+                            onAddNotification(`Cobro de $${usdAmount.toFixed(2)} USD a ${s.name} registrado correctamente.`, 'success');
                             setActiveModal(null);
                           }}
-                          className={`w-full py-3 text-neutral-900 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer ${
-                            payToUsMovementType === 'cargo' 
-                              ? 'bg-rose-500 hover:bg-rose-400' 
-                              : 'bg-emerald-500 hover:bg-emerald-400'
-                          }`}
+                          className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-neutral-900 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          Confirmar {payToUsMovementType === 'cargo' ? 'Crédito' : 'Abono'} a Libreta
+                          Confirmar Cobro
                         </button>
                       </div>
                     </div>

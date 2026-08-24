@@ -38,6 +38,8 @@ interface MobilePortalsViewProps {
   onDeliverMobileOrder: (orderId: string) => void;
   onCancelMobileOrder: (orderId: string) => void;
   onAddNotification: (msg: string, type: 'success' | 'info' | 'warning') => void;
+  isolatedType?: 'cliente' | 'productor' | 'proveedor' | 'contador';
+  isolatedId?: string;
 }
 
 interface CatalogProduct {
@@ -95,7 +97,9 @@ export default function MobilePortalsView({
   onAddMobileOrder,
   onDeliverMobileOrder,
   onCancelMobileOrder,
-  onAddNotification
+  onAddNotification,
+  isolatedType,
+  isolatedId
 }: MobilePortalsViewProps) {
   // Authentication & Session States for Each Phone Simulator (Zero visual overlap or exposure between users)
   const [loggedClient, setLoggedClient] = useState<ClientProfile | null>(null);
@@ -106,6 +110,19 @@ export default function MobilePortalsView({
   const [supplierPhoneInput, setSupplierPhoneInput] = useState<string>('');
   const [clientPinInput, setClientPinInput] = useState<string>('');
   const [supplierPinInput, setSupplierPinInput] = useState<string>('');
+
+  // Auto-login logic for isolated mode
+  React.useEffect(() => {
+    if (isolatedId) {
+      if (isolatedType === 'cliente') {
+        const client = clients.find(c => c.id === isolatedId);
+        if (client) setLoggedClient(client);
+      } else if (isolatedType === 'productor' || isolatedType === 'proveedor') {
+        const supplier = suppliers.find(s => s.id === isolatedId);
+        if (supplier) setLoggedSupplier(supplier);
+      }
+    }
+  }, [isolatedId, isolatedType, clients, suppliers]);
 
   // Shopping Catalog Local States (Separate for each portal)
   const [clientSearch, setClientSearch] = useState('');
@@ -355,47 +372,54 @@ export default function MobilePortalsView({
   });
 
   return (
-    <div className="space-y-8 animate-fade-in max-w-7xl mx-auto pb-16">
+    <div className={`animate-fade-in ${isolatedType ? 'w-full min-h-screen flex flex-col bg-black' : 'space-y-8 max-w-7xl mx-auto pb-16'}`}>
       {/* Header and Explanation */}
-      <div className="border-b border-editorial-border pb-6">
-        <div className="flex items-center gap-3 mb-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-amber-500" />
-          <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-editorial-text-muted">
-            PORTALES INDIVIDUALES PRIVADOS Y EXCLUSIVOS
-          </span>
+      {!isolatedType && (
+        <div className="border-b border-editorial-border pb-6">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+            <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-editorial-text-muted">
+              PORTALES INDIVIDUALES PRIVADOS Y EXCLUSIVOS
+            </span>
+          </div>
+          <h2 className="font-serif text-3xl font-bold tracking-tight text-editorial-text-primary">
+            Portal de Productores: Libreta de Queso &amp; Cliente Normal
+          </h2>
+          <p className="text-xs text-editorial-text-muted/80 max-w-3xl mt-2 leading-relaxed">
+            Cada usuario inicia sesión en su propio teléfono de forma aislada y segura. <strong>No pueden ver la información de otros clientes o productores.</strong> 
+            Desde aquí consultan en tiempo real cuánto deben, revisan el catálogo completo (más de 1,000 productos simulados como repuestos de moto, comidas y quesos) 
+            y realizan sus pedidos directo al CRM.
+          </p>
         </div>
-        <h2 className="font-serif text-3xl font-bold tracking-tight text-editorial-text-primary">
-          Portal de Productores: Libreta de Queso &amp; Cliente Normal
-        </h2>
-        <p className="text-xs text-editorial-text-muted/80 max-w-3xl mt-2 leading-relaxed">
-          Cada usuario inicia sesión en su propio teléfono de forma aislada y segura. <strong>No pueden ver la información de otros clientes o productores.</strong> 
-          Desde aquí consultan en tiempo real cuánto deben, revisan el catálogo completo (más de 1,000 productos simulados como repuestos de moto, comidas y quesos) 
-          y realizan sus pedidos directo al CRM.
-        </p>
-      </div>
+      )}
 
       {/* Grid of Devices */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+      <div className={`flex-1 flex flex-col ${!isolatedType ? 'grid grid-cols-1 lg:grid-cols-3 gap-8 items-start' : 'w-full'}`}>
         
         {/* PHONE 1: PORTAL CLIENTE NORMAL */}
-        <div className="flex flex-col items-center bg-editorial-card/30 border border-editorial-border rounded-xl p-6 shadow-sm">
+        {(!isolatedType || isolatedType === 'cliente') && (
+        <div className={!isolatedType ? "flex flex-col items-center bg-editorial-card/30 border border-editorial-border rounded-xl p-6 shadow-sm" : "w-full min-h-screen bg-black text-white flex flex-col"}>
+          {!isolatedType && (
           <div className="text-center mb-4">
             <h3 className="text-xs font-mono uppercase tracking-widest font-bold text-editorial-text-primary mb-1">
               Dispositivo: Teléfono del Cliente
             </h3>
             <p className="text-[10px] text-editorial-text-muted">Acceso individual seguro</p>
           </div>
+          )}
 
           {/* Smartphone Shell Mockup */}
-          <div className="w-[335px] h-[610px] bg-zinc-950 border-[8px] border-zinc-800 rounded-[38px] overflow-hidden shadow-2xl relative flex flex-col font-sans select-none">
+          <div className={!isolatedType ? "w-[335px] h-[610px] bg-zinc-950 border-[8px] border-zinc-800 rounded-[38px] overflow-hidden shadow-2xl relative flex flex-col font-sans select-none" : "flex-1 w-full bg-zinc-950 flex flex-col font-sans select-none"}>
             {/* Speaker & Camera Notch */}
+            {!isolatedType && (
             <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-4.5 bg-zinc-800 rounded-b-xl z-20 flex justify-center items-center">
               <div className="w-2.5 h-2.5 rounded-full bg-zinc-900 mr-2" />
               <div className="w-10 h-1 rounded-full bg-zinc-900" />
             </div>
+            )}
 
             {/* Screen Content */}
-            <div className="flex-1 overflow-y-auto bg-zinc-900 text-zinc-100 p-4 pt-7 flex flex-col text-xs">
+            <div className={`flex-1 overflow-y-auto bg-zinc-900 text-zinc-100 flex flex-col text-xs ${!isolatedType ? 'p-4 pt-7' : 'px-4 py-6'}`}>
               
               {!loggedClient ? (
                 /* CLIENT PORTAL: LOCK / LOGIN SCREEN */
@@ -640,26 +664,32 @@ export default function MobilePortalsView({
             </div>
           </div>
         </div>
+        )}
 
         {/* PHONE 2: PORTAL DE PRODUCTORES: LIBRETA DE QUESO */}
-        <div className="flex flex-col items-center bg-editorial-card/30 border border-editorial-border rounded-xl p-6 shadow-sm">
+        {(!isolatedType || isolatedType === 'productor' || isolatedType === 'proveedor') && (
+        <div className={!isolatedType ? "flex flex-col items-center bg-editorial-card/30 border border-editorial-border rounded-xl p-6 shadow-sm" : "w-full min-h-screen bg-black text-white flex flex-col"}>
+          {!isolatedType && (
           <div className="text-center mb-4">
             <h3 className="text-xs font-mono uppercase tracking-widest font-bold text-editorial-text-primary mb-1">
               Dispositivo: Teléfono del Productor
             </h3>
             <p className="text-[10px] text-editorial-text-muted">Acceso individual seguro (Libreta de Queso)</p>
           </div>
+          )}
 
           {/* Smartphone Shell Mockup */}
-          <div className="w-[335px] h-[610px] bg-zinc-950 border-[8px] border-zinc-800 rounded-[38px] overflow-hidden shadow-2xl relative flex flex-col font-sans select-none">
+          <div className={!isolatedType ? "w-[335px] h-[610px] bg-zinc-950 border-[8px] border-zinc-800 rounded-[38px] overflow-hidden shadow-2xl relative flex flex-col font-sans select-none" : "flex-1 w-full bg-zinc-950 flex flex-col font-sans select-none"}>
             {/* Speaker & Camera Notch */}
+            {!isolatedType && (
             <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-4.5 bg-zinc-800 rounded-b-xl z-20 flex justify-center items-center">
               <div className="w-2.5 h-2.5 rounded-full bg-zinc-900 mr-2" />
               <div className="w-10 h-1 rounded-full bg-zinc-900" />
             </div>
+            )}
 
             {/* Screen Content */}
-            <div className="flex-1 overflow-y-auto bg-slate-900 text-slate-100 p-4 pt-7 flex flex-col text-xs">
+            <div className={`flex-1 overflow-y-auto bg-slate-900 text-slate-100 flex flex-col text-xs ${!isolatedType ? 'p-4 pt-7' : 'px-4 py-6'}`}>
               
               {!loggedSupplier ? (
                 /* PRODUCER PORTAL: LOCK / LOGIN SCREEN */
@@ -915,26 +945,32 @@ export default function MobilePortalsView({
             </div>
           </div>
         </div>
+        )}
 
         {/* PHONE 3: PORTAL EMPLEADO (DAISY) - CARGA DE FACTURAS */}
-        <div className="flex flex-col items-center bg-brand-accent/5 border border-brand-accent/20 rounded-xl p-6 shadow-sm">
+        {(!isolatedType || isolatedType === 'contador') && (
+        <div className={!isolatedType ? "flex flex-col items-center bg-brand-accent/5 border border-brand-accent/20 rounded-xl p-6 shadow-sm" : "w-full min-h-screen bg-black text-white flex flex-col"}>
+          {!isolatedType && (
           <div className="text-center mb-4">
             <h3 className="text-xs font-mono uppercase tracking-widest font-bold text-brand-accent mb-1">
               Dispositivo: Empleado (Daisy)
             </h3>
             <p className="text-[10px] text-editorial-text-muted">Carga Rápida mediante QR</p>
           </div>
+          )}
 
           {/* Smartphone Shell Mockup */}
-          <div className="w-[335px] h-[610px] bg-zinc-950 border-[8px] border-zinc-800 rounded-[38px] overflow-hidden shadow-2xl relative flex flex-col font-sans select-none">
+          <div className={!isolatedType ? "w-[335px] h-[610px] bg-zinc-950 border-[8px] border-zinc-800 rounded-[38px] overflow-hidden shadow-2xl relative flex flex-col font-sans select-none" : "flex-1 w-full bg-zinc-950 flex flex-col font-sans select-none"}>
             {/* Speaker & Camera Notch */}
+            {!isolatedType && (
             <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-4.5 bg-zinc-800 rounded-b-xl z-20 flex justify-center items-center">
               <div className="w-2.5 h-2.5 rounded-full bg-zinc-900 mr-2" />
               <div className="w-10 h-1 rounded-full bg-zinc-900" />
             </div>
+            )}
 
             {/* Screen Content */}
-            <div className="flex-1 overflow-hidden bg-zinc-950 text-zinc-100 flex flex-col text-xs pt-7 relative">
+            <div className={`flex-1 overflow-hidden bg-zinc-950 text-zinc-100 flex flex-col text-xs relative ${!isolatedType ? 'pt-7' : ''}`}>
               {!daisyScanned ? (
                 <div className="flex-1 flex flex-col justify-center items-center p-6 text-center">
                   <div className="w-16 h-16 bg-brand-accent/20 rounded-full flex items-center justify-center mb-4 animate-pulse">
@@ -959,10 +995,12 @@ export default function MobilePortalsView({
             </div>
           </div>
         </div>
+        )}
 
       </div>
 
       {/* CASHIER MOBILE ORDER DESK RECEIVER */}
+      {!isolatedType && (
       <div className="bg-editorial-card border border-editorial-border rounded-lg p-6 space-y-6 shadow-sm">
         <div className="flex items-center justify-between border-b border-editorial-border/60 pb-4">
           <div className="flex items-center gap-2.5">
@@ -1090,6 +1128,7 @@ export default function MobilePortalsView({
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

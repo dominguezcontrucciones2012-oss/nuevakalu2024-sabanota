@@ -18,8 +18,12 @@ import {
   Smartphone,
   BrainCircuit,
   QrCode,
-  BookOpen
+  BookOpen,
+  RotateCw,
+  ShieldCheck
 } from 'lucide-react';
+import { useState } from 'react';
+import { fetchOfficialBcvRate } from '../services/exchangeRateService';
 
 interface SidebarProps {
   currentView: ViewType;
@@ -29,12 +33,30 @@ interface SidebarProps {
   userRole?: string;
   userName?: string;
   isOpen?: boolean;
+  exchangeRate?: number;
+  lastRateSync?: string;
+  onSyncRate?: (rate: number, syncDate: string) => void;
 }
 
-export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, userRole = 'cajero', userName = 'Invitado', isOpen = true }: SidebarProps) {
+export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, userRole = 'cajero', userName = 'Invitado', isOpen = true, exchangeRate = 0, lastRateSync, onSyncRate }: SidebarProps) {
+  const [isSyncingRate, setIsSyncingRate] = useState(false);
+
   const getInitials = (name: string) => {
     return name.substring(0, 2).toUpperCase();
   };
+
+  const handleSyncRate = async () => {
+    setIsSyncingRate(true);
+    try {
+      const { rate, timestamp } = await fetchOfficialBcvRate();
+      onSyncRate?.(rate, timestamp);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSyncingRate(false);
+    }
+  };
+
   const allMenuItems = [
     {
       id: 'portal-dashboard' as ViewType,
@@ -121,11 +143,11 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
     : allMenuItems;
 
   return (
-    <aside className={`transition-all duration-300 ease-in-out border-r border-editorial-border bg-editorial-bg flex flex-col justify-between py-8 min-h-screen sticky top-0 shrink-0 h-screen select-none overflow-y-auto overflow-x-hidden ${
+    <aside className={`transition-all duration-300 ease-in-out border-r border-editorial-border bg-editorial-bg flex flex-col py-8 min-h-screen sticky top-0 shrink-0 h-screen select-none overflow-y-auto overflow-x-hidden ${
       isOpen ? 'w-80 px-8 opacity-100' : 'w-0 px-0 opacity-0 border-r-0'
     }`}>
       {/* Top Branding Section */}
-      <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-8 shrink-0">
         <div className="flex items-center gap-4">
           <div className="w-6 h-6 rounded-full bg-amber-500 animate-pulse" />
           <div>
@@ -142,7 +164,7 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
       </div>
 
       {/* Navigation List */}
-      <nav className="flex flex-col gap-4 my-6">
+      <nav className="flex flex-col gap-4 my-6 shrink-0">
         <span className="text-[10px] tracking-[0.2em] font-mono text-editorial-text-muted uppercase mb-1">
           MENÚ OPERATIVO
         </span>
@@ -187,8 +209,38 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
         })}
       </nav>
 
+      {/* BCV Widget */}
+      <div className="flex flex-col gap-4 mt-auto mb-6 shrink-0">
+        <div className="bg-editorial-card border border-editorial-border rounded p-3">
+          <div className="flex justify-between items-center mb-2">
+            <span className="text-[10px] tracking-widest font-mono text-editorial-text-muted uppercase">TASA BCV</span>
+            <div className="flex items-center gap-2">
+              <div className="bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">
+                <ShieldCheck className="w-3 h-3" />
+                <span className="text-[8px] font-bold uppercase tracking-wider">Sincronizada</span>
+              </div>
+              <button onClick={handleSyncRate} disabled={isSyncingRate} className="text-editorial-text-muted hover:text-amber-500 transition-colors disabled:opacity-50">
+                <RotateCw className={`w-3.5 h-3.5 ${isSyncingRate ? 'animate-spin text-amber-500' : ''}`} />
+              </button>
+            </div>
+          </div>
+          <div className="text-xl font-bold font-serif text-amber-500 text-center mb-2">
+            {exchangeRate?.toFixed(2)} <span className="text-xs text-editorial-text-muted font-sans">BS/USD</span>
+          </div>
+          <div className="flex items-center justify-center gap-1 text-[9px] text-editorial-text-muted font-mono uppercase tracking-wider">
+            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            En vivo · BCV Oficial
+          </div>
+          {lastRateSync && (
+            <div className="text-center text-[8px] text-editorial-text-muted/60 mt-1">
+              {new Date(lastRateSync).toLocaleString('es-VE')}
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Footer Profile & Logout */}
-      <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-6 shrink-0">
         <div className="h-px bg-editorial-border w-full" />
 
         <div className="flex items-center justify-between">

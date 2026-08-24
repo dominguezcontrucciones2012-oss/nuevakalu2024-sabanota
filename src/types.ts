@@ -25,6 +25,8 @@ export interface Transaction {
     mobile: number;
     mobileRef?: string;
   };
+  changeBs?: number;
+  bcvRateAtSettlement?: number;
   isVoided?: boolean;
 }
 
@@ -92,6 +94,8 @@ export interface CheeseProduct {
   agingDays: number;     // Standard maturation time
   origin: string;        // E.g., Martin Niño
   unit?: 'Kg' | 'Lt' | 'Und';
+  barcode?: string;
+  barcodes?: string[];
 }
 
 export interface KardexMovement {
