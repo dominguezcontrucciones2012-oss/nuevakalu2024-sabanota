@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOrder, Transaction } from '../types';
 import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X, Scan } from 'lucide-react';
 import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '../utils';
-import { collection, addDoc, getDocs, query, orderBy, doc, updateDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, orderBy, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../services/firebase';
 
 interface CheesePOSViewProps {
@@ -396,6 +396,7 @@ export default function CheesePOSView({
     const receipt = {
       id: `REC-${Date.now().toString().slice(-6)}`,
       date: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        timestamp: serverTimestamp(),
       clientName: customerName,
       items: [...cart],
       subtotal,
@@ -556,6 +557,7 @@ export default function CheesePOSView({
       const report = {
         id: `CLO-${Date.now().toString().slice(-4)}`,
         date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+        timestamp: serverTimestamp(),
         startingCashUsd,
         startingCashBs,
         salesCashUsd,
@@ -585,8 +587,7 @@ export default function CheesePOSView({
         differenceUsd: diffUsd,
         differenceBs: diffBs,
         status: (diffUsd === 0 && diffBs === 0) ? 'Balance Perfecto' : (diffUsd > 0 || diffBs > 0) ? 'Sobrante' : 'Faltante',
-        timestamp: new Date().toISOString()
-      };
+        };
       
       await addDoc(collection(db, 'cashClosings'), report);
 

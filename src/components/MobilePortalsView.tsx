@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { collection, query, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
 import {
   Smartphone,
   ShoppingBag,
@@ -302,11 +303,12 @@ export default function MobilePortalsView({
     const total = orderItems.reduce((sum, item) => sum + item.subtotal, 0);
 
     const newOrder: MobileOrder = {
-      id: `PED-CLI-${Date.now().toString().slice(-4)}`,
+      id: `PED-CLI-${Date.now()}`,
       type: 'client',
       entityId: loggedClient.id,
       entityName: loggedClient.name,
       date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+        timestamp: serverTimestamp(),
       items: orderItems,
       total,
       paymentMethod: clientPayment,
@@ -341,11 +343,12 @@ export default function MobilePortalsView({
     const total = orderItems.reduce((sum, item) => sum + item.subtotal, 0);
 
     const newOrder: MobileOrder = {
-      id: `PED-PROV-${Date.now().toString().slice(-4)}`,
+      id: `PED-PROV-${Date.now()}`,
       type: 'supplier',
       entityId: loggedSupplier.id,
       entityName: loggedSupplier.name,
       date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+        timestamp: serverTimestamp(),
       items: orderItems,
       total,
       paymentMethod: supplierPayment,

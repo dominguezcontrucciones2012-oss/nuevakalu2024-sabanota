@@ -17,7 +17,7 @@ import {
 import { exportToJson, importFromJson, createSnapshot, restoreSnapshot } from '../services/backupService';
 
 import { db } from '../services/firebase';
-import { doc, setDoc, updateDoc, deleteDoc, getDocs, collection } from 'firebase/firestore';
+import { doc, setDoc, updateDoc, deleteDoc, getDocs, collection, serverTimestamp } from 'firebase/firestore';
 
 interface SettingsAdminViewProps {
   settings: BusinessSettings;
@@ -228,8 +228,9 @@ export default function SettingsAdminView({
       setTimeout(() => {
         setBackupStep('completed');
         const newBkp = {
-          id: `BKP-${Date.now().toString().slice(-4)}`,
+          id: `BKP-${Date.now()}`,
           date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+        timestamp: serverTimestamp(),
           file: `kalu_respaldo_${new Date().toISOString().split('T')[0]}.json`,
           size: '---',
           status: 'Descargado Localmente'

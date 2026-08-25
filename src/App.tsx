@@ -53,6 +53,7 @@ import SettingsAdminView from './components/SettingsAdminView';
 import MobilePortalsView from './components/MobilePortalsView';
 import AccessControlView from './components/AccessControlView';
 import ContadorIAView from './components/ContadorIAView';
+import CollectionsView from './components/contador/CollectionsView';
 
 import { CheckCircle2, Info, AlertTriangle, X } from 'lucide-react';
 import { db } from './services/firebase';
@@ -1591,7 +1592,7 @@ export default function App() {
       <LoginView
         users={users}
         onLoginSuccess={handleLoginSuccess}
-        onAddNotification={(msg, type) => addNotification(msg, type || 'info')}
+        onAddNotification={(msg, type) => addNotification(msg, type as 'info' | 'success' | 'warning' || 'info')}
       />
     );
   }
@@ -1827,7 +1828,17 @@ export default function App() {
               }}
             />
           )}
-        </main>
+
+          {currentView === 'collections' && (
+
+            <CollectionsView
+
+              onAddNotification={(msg, type) => addNotification(msg, type || 'info')}
+
+            />
+
+          )}
+      </main>
       </div>
 
       {firebaseLoopAlert && (

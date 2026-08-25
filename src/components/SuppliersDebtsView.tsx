@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, limit, onSnapshot, getDocs, orderBy } from 'firebase/firestore';
+import { collection, query, where, limit, onSnapshot, getDocs, orderBy, serverTimestamp } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { SupplierProfile, AccountBill, Transaction, CheeseProduct } from '../types';
 import { Truck, Store, Phone, Plus, BadgeAlert, FileCheck, CheckCircle, ExternalLink, Calendar, Eye, Wallet, CreditCard, Inbox, X, Search, Trash2 } from 'lucide-react';
@@ -117,11 +117,13 @@ export default function SuppliersDebtsView({
   const [historialStartDate, setHistorialStartDate] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 15);
-    return d.toISOString().split('T')[0];
+    const offset = d.getTimezoneOffset() * 60000;
+    return new Date(d.getTime() - offset).toISOString().split('T')[0];
   });
   const [historialEndDate, setHistorialEndDate] = useState(() => {
     const d = new Date();
-    return d.toISOString().split('T')[0];
+    const offset = d.getTimezoneOffset() * 60000;
+    return new Date(d.getTime() - offset).toISOString().split('T')[0];
   });
   const [showAllTime, setShowAllTime] = useState(false);
 
@@ -196,11 +198,19 @@ export default function SuppliersDebtsView({
         );
         const unsub = onSnapshot(q, (snapshot) => {
           const txs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
-          // Sort descending by ID to ensure newest first natively
           txs.sort((a, b) => {
-            if (a.id > b.id) return -1;
-            if (a.id < b.id) return 1;
-            return 0;
+            const getMs = (tx: any) => {
+              if (tx.timestamp && typeof tx.timestamp.toMillis === 'function') return tx.timestamp.toMillis();
+              if (tx.timestamp && typeof tx.timestamp === 'number') return tx.timestamp;
+              // fallback a extraer el timestamp del ID
+              const parts = tx.id.split('-');
+              for (const part of parts) {
+                if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+              }
+              // último fallback a la cadena
+              return new Date(tx.date || 0).getTime();
+            };
+            return getMs(b) - getMs(a); // descendente (más reciente arriba)
           });
           setLocalTransactions(txs);
           setIsLoadingHistorial(false);
@@ -222,14 +232,21 @@ export default function SuppliersDebtsView({
           
           const snapshot = await getDocs(q);
           const allTxs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
-          
           const filtered = allTxs.filter(tx => {
-            // Check by new ID pattern (TX-17000000)
+            // Check by new ID pattern (TX-17000000 or similar)
             const idParts = tx.id.split('-');
-            if (idParts.length >= 2 && idParts[1].length > 10) {
-               const txMs = parseInt(idParts[1], 10);
+            let txMs = 0;
+            for (const part of idParts) {
+              if (part.length >= 12 && !isNaN(Number(part))) {
+                txMs = parseInt(part, 10);
+                break;
+              }
+            }
+            
+            if (txMs > 0) {
                return txMs >= startMs && txMs <= endMs;
             }
+            
             // Fallback robusto de fechas
             const txTime = parseCustomDate(tx.date);
             if (txTime === 0) return true; // Si no se puede parsear, no la ocultes
@@ -237,9 +254,16 @@ export default function SuppliersDebtsView({
           });
           
           filtered.sort((a, b) => {
-            if (a.id > b.id) return -1;
-            if (a.id < b.id) return 1;
-            return 0;
+            const getMs = (tx: any) => {
+              if (tx.timestamp && typeof tx.timestamp.toMillis === 'function') return tx.timestamp.toMillis();
+              if (tx.timestamp && typeof tx.timestamp === 'number') return tx.timestamp;
+              const parts = tx.id.split('-');
+              for (const part of parts) {
+                if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+              }
+              return new Date(tx.date || 0).getTime();
+            };
+            return getMs(b) - getMs(a);
           });
           
           setLocalTransactions(filtered);
@@ -588,15 +612,12 @@ export default function SuppliersDebtsView({
                 const supTxRaw = localTransactions;
                 
                 // Parse dates and sort chronologically for balance calculation (oldest first)
-                const sortedAllTx = supTxRaw.map(tx => {
-                  const ms = parseCustomDate(tx.date);
-                  const d = ms > 0 ? new Date(ms) : new Date();
-                  return { ...tx, parsedDate: d };
-                }).sort((a, b) => a.parsedDate.getTime() - b.parsedDate.getTime());
+                // supTxRaw is sorted descending (newest first). We need it ascending (oldest first) to compute the running balance progressively.
+                const ascendingTx = [...supTxRaw].reverse();
 
                 // Calculate running balance
                 let currentBalance = 0;
-                const txWithBalance = sortedAllTx.map(tx => {
+                const txWithBalance = ascendingTx.map(tx => {
                   let sum = 0;
                   let rest = 0;
                   
@@ -616,11 +637,8 @@ export default function SuppliersDebtsView({
                   };
                 });
 
-                // Reverse for display (newest first, or keep chronological if preferred)
-                // Kardex format is usually newest last, so we can keep chronological
-                
-                // No need to apply date filters again, it was handled in useEffect
-                const filteredTx = txWithBalance;
+                // Reverse back to descending for display (newest first at the top)
+                const filteredTx = txWithBalance.reverse();
 
                 return (
                   <div className="flex flex-col h-full overflow-hidden w-full max-w-full">

@@ -107,7 +107,13 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
       icon: TrendingUp,
       description: 'Flujo de caja, gastos y rentabilidad'
     },
-
+    {
+      id: 'collections' as ViewType,
+      num: '07',
+      label: 'Centro de Cobranzas',
+      icon: Receipt,
+      description: 'Robot de conciliación y pagos PWA'
+    },
     {
       id: 'mobile-portals' as ViewType,
       num: '08',

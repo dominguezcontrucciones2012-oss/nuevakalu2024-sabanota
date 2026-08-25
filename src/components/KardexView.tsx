@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, orderBy, limit, getDocs, where, startAfter, QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
+import { collection, query, orderBy, limit, getDocs, where, startAfter, QueryDocumentSnapshot, DocumentData, serverTimestamp } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { KardexMovement } from '../types';
 import { Search, Filter, BookOpen, ArrowUpRight, ArrowDownRight, AlertTriangle, Edit3, RefreshCw, DownloadCloud } from 'lucide-react';
@@ -57,7 +57,20 @@ export default function KardexView() {
       const uniqueData = combinedData.filter((v, i, a) => a.findIndex(t => (t.id === v.id)) === i);
       
       // Sort descending by date
-      uniqueData.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      uniqueData.sort((a, b) => {
+        const getMs = (item: any) => {
+          if (item.timestamp && typeof item.timestamp.toMillis === 'function') return item.timestamp.toMillis();
+          if (item.timestamp && typeof item.timestamp === 'number') return item.timestamp;
+          if (item.id) {
+            const parts = item.id.split('-');
+            for (const part of parts) {
+              if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+            }
+          }
+          return new Date(item.date).getTime() || 0;
+        };
+        return getMs(b) - getMs(a);
+      });
 
       setMovements(uniqueData);
       localStorage.setItem(CACHE_KEY, JSON.stringify(uniqueData));
@@ -100,7 +113,20 @@ export default function KardexView() {
       if (olderMovements.length > 0) {
         const combinedData = [...movements, ...olderMovements];
         const uniqueData = combinedData.filter((v, i, a) => a.findIndex(t => (t.id === v.id)) === i);
-        uniqueData.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        uniqueData.sort((a, b) => {
+          const getMs = (item: any) => {
+            if (item.timestamp && typeof item.timestamp.toMillis === 'function') return item.timestamp.toMillis();
+            if (item.timestamp && typeof item.timestamp === 'number') return item.timestamp;
+            if (item.id) {
+              const parts = item.id.split('-');
+              for (const part of parts) {
+                if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+              }
+            }
+            return new Date(item.date).getTime() || 0;
+          };
+          return getMs(b) - getMs(a);
+        });
         setMovements(uniqueData);
         localStorage.setItem(CACHE_KEY, JSON.stringify(uniqueData));
       }

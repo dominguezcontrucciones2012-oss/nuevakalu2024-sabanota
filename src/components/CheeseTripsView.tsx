@@ -14,7 +14,7 @@ interface CheeseTripsViewProps {
   onUpdateTrip: (id: string, updates: Partial<CheeseTrip>) => Promise<void>;
   onSettleTrip: (id: string, settlementData: Partial<CheeseTrip>) => Promise<void>;
   onAddNotification: (msg: string, type: 'success'|'info'|'warning') => void;
-  onNavigateToModule?: (moduleId: string) => void;
+  onNavigateToModule?: (moduleId: string, params?: any) => void;
   onAddTransaction?: (tx: Partial<Transaction>) => void;
 }
 

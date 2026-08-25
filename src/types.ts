@@ -6,8 +6,9 @@
 export interface Transaction {
   id: string;
   entity: string;
-  category: 'cloud' | 'payment' | 'hardware' | 'deployment' | 'database' | 'ventas' | 'gastos' | 'compras' | 'credito';
+  category: 'cloud' | 'payment' | 'hardware' | 'deployment' | 'database' | 'ventas' | 'gastos' | 'compras' | 'credito' | 'ingresos_cobranza';
   date: string;
+  timestamp?: any;
   invoiceNumber: string;
   amount: number;
   isIncome: boolean;
@@ -57,13 +58,14 @@ export interface ActivityStream {
   type: 'sale' | 'auth' | 'warning' | 'info';
   amount?: number;
 }
-export type ViewType = 'portal-dashboard' | 'pos-terminal' | 'access-control' | 'inventory' | 'kardex' | 'clients' | 'suppliers' | 'finances' | 'support' | 'settings' | 'mobile-portals' | 'contador-ia' | 'cheese-trips';
+export type ViewType = 'portal-dashboard' | 'pos-terminal' | 'access-control' | 'inventory' | 'kardex' | 'clients' | 'suppliers' | 'finances' | 'support' | 'settings' | 'mobile-portals' | 'contador-ia' | 'cheese-trips' | 'collections';
 export interface MobileOrder {
   id: string;
   type: 'client' | 'supplier'; // client order for cheese OR supplier order for supplies/food (repuestos/comida)
   entityId: string; // client id or supplier id
   entityName: string;
   date: string;
+  timestamp?: any;
   items: {
     productId: string;
     name: string;
@@ -101,6 +103,7 @@ export interface CheeseProduct {
 export interface KardexMovement {
   id: string;
   date: string;
+  timestamp?: any;
   productId: string;
   productName: string;
   unit: 'Kg' | 'Lt' | 'Und';
@@ -196,6 +199,7 @@ export interface CustomerComplaint {
   clientName: string;
   phone: string;
   date: string;
+  timestamp?: any;
   category: 'Calidad' | 'Atención' | 'Precio' | 'Otros';
   description: string;
   status: 'Pendiente' | 'Resuelto';
@@ -205,6 +209,7 @@ export interface CustomerComplaint {
 export interface BusinessSettings {
   businessName: string;
   exchangeRate?: number;
+  lastRateSync?: string;
   taxId: string; // RFC
   address: string;
   taxRate: number; // IVA percentage
