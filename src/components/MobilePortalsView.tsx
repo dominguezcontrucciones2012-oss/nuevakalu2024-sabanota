@@ -489,58 +489,44 @@ export default function MobilePortalsView({
                 /* CLIENT PORTAL: LOCK / LOGIN SCREEN */
                 <div className="flex-1 flex flex-col justify-between py-6">
                   <div className="text-center mt-6 space-y-2">
-                    <div className="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto">
-                      <ShoppingBag className="w-6 h-6 text-amber-500" />
+                    <div className="w-20 h-20 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto mb-3">
+                      <ShoppingBag className="w-10 h-10 text-amber-500" />
                     </div>
-                    <h4 className="font-serif text-lg font-bold text-zinc-100">Kalu Móvil</h4>
-                    <p className="text-[9px] font-mono text-zinc-400 uppercase tracking-widest">Tienda en Línea</p>
+                    <h4 className="font-serif text-2xl font-bold text-zinc-100">Mundo Kalu</h4>
+                    <p className="text-xs tracking-widest text-slate-400 font-semibold uppercase">TIENDA ONLINE DE CRÉDITO</p>
                   </div>
 
-                  <form onSubmit={handleClientLoginSubmit} className="space-y-4 bg-zinc-950/50 p-4 rounded-xl border border-zinc-800">
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-mono uppercase text-zinc-400 block">Cédula, Celular o Nombre:</label>
+                  <form onSubmit={handleClientLoginSubmit} className="space-y-5 bg-slate-900/40 p-6 rounded-3xl border border-slate-800">
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-mono uppercase text-slate-400 block ml-1">CÉDULA, CELULAR O NOMBRE</label>
                       <input
                         type="text"
-                        placeholder="Ej. 15082352, o Antonio"
+                        placeholder="Ingresa tu cédula, celular o nombre"
                         value={clientPhoneInput}
                         onChange={(e) => setClientPhoneInput(e.target.value)}
-                        className="w-full bg-zinc-900 border border-zinc-700 rounded px-2.5 py-2 text-xs text-zinc-100 focus:outline-none focus:border-amber-500 font-mono"
+                        className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/60 font-mono"
                       />
                     </div>
-                    <div className="space-y-1">
-                      <label className="text-[9px] font-mono uppercase text-zinc-400 block">PIN de Acceso (4 dígitos):</label>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-mono uppercase text-slate-400 block ml-1">PIN DE ACCESO (6 DÍGITOS)</label>
                       <input
                         type="password"
-                        maxLength={4}
-                        placeholder="••••"
+                        maxLength={6}
+                        placeholder="······"
                         value={clientPinInput}
                         onChange={(e) => setClientPinInput(e.target.value)}
-                        className="w-full bg-zinc-900 border border-zinc-700 rounded px-2.5 py-2 text-xs text-zinc-100 focus:outline-none focus:border-amber-500 font-mono tracking-[0.5em] text-center"
+                        className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/60 font-mono tracking-[0.5em] text-center"
                       />
                     </div>
                     
-                    <button
-                      type="submit"
-                      className="w-full py-2 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold uppercase rounded text-[10px] tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                    >
-                      <UserCheck className="w-3.5 h-3.5" />
-                      Ingresar a mi Cuenta
-                    </button>
-
-                    <div className="pt-2 border-t border-zinc-800 text-center">
-                      <span className="text-[8px] text-zinc-500 block">Cuentas demo disponibles:</span>
-                      <div className="flex flex-wrap gap-1 justify-center mt-1">
-                        {clients.slice(0, 3).map(c => (
-                          <button
-                            key={c.id}
-                            type="button"
-                            onClick={() => setClientPhoneInput(c?.name || '')}
-                            className="bg-zinc-800 hover:bg-zinc-700 text-[8px] text-zinc-300 px-1.5 py-0.5 rounded transition-all"
-                          >
-                            {(c?.name || 'Cliente').split(' ')[0]}
-                          </button>
-                        ))}
-                      </div>
+                    <div className="pt-2">
+                      <button
+                        type="submit"
+                        className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-3.5 rounded-2xl uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2"
+                      >
+                        <User className="w-4 h-4" />
+                        INGRESAR A MI CUENTA
+                      </button>
                     </div>
                   </form>
 
