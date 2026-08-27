@@ -29,6 +29,15 @@ export default function AccessControlView({ isAdmin }: AccessControlViewProps) {
       url: `${window.location.origin}/?portal=contador`,
       icon: BrainCircuit,
       color: 'brand-accent'
+    },
+    {
+      id: 'kalu-qr',
+      title: 'Mundo Kalu (Caja)',
+      desc: 'QR Maestro para vitrina. Escanear para Crédito.',
+      url: `${window.location.origin}/?portal=cliente#qr`,
+      icon: QrCode,
+      color: 'amber',
+      printable: true
     }
   ];
 
@@ -67,15 +76,41 @@ export default function AccessControlView({ isAdmin }: AccessControlViewProps) {
               />
             </div>
             
-            <a 
-              href={qr.url} 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="text-[10px] font-mono font-bold text-brand-accent hover:underline uppercase tracking-widest flex items-center gap-1 mt-auto"
-            >
-              <QrCode className="w-3.5 h-3.5" />
-              Ver Enlace
-            </a>
+            <div className="flex gap-2 mt-auto w-full">
+              <a 
+                href={qr.url} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className={`flex-1 text-[10px] font-mono font-bold text-brand-accent hover:underline uppercase tracking-widest flex items-center justify-center gap-1 bg-brand-accent/10 py-2 rounded-lg`}
+              >
+                <QrCode className="w-3.5 h-3.5" />
+                Ver
+              </a>
+              {(qr as any).printable && (
+                <button
+                  onClick={() => window.print()}
+                  className="flex-[2] text-[10px] font-mono font-bold text-amber-950 uppercase tracking-widest flex items-center justify-center gap-1 bg-amber-500 hover:bg-amber-400 py-2 rounded-lg transition-colors"
+                >
+                  🖨️ Imprimir QR
+                </button>
+              )}
+            </div>
+            
+            {/* Print Layout */}
+            {(qr as any).printable && (
+              <div className="hidden print:flex fixed inset-0 z-[9999] bg-white text-black flex-col items-center justify-center p-8">
+                <div className="border-8 border-amber-500 rounded-3xl p-12 text-center max-w-2xl">
+                  <h1 className="text-6xl font-black mb-4 uppercase">Mundo Kalu</h1>
+                  <h2 className="text-3xl font-bold mb-12 text-gray-600 uppercase">Pagos y Crédito en Mostrador</h2>
+                  <img 
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qr.url)}`}
+                    alt="QR Maestro"
+                    className="w-96 h-96 mx-auto mb-12"
+                  />
+                  <p className="text-2xl font-bold uppercase">Escanea este código con tu cámara para procesar tu compra</p>
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>

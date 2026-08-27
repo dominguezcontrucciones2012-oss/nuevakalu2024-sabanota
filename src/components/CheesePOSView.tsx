@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOrder, Transaction } from '../types';
-import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X, Scan } from 'lucide-react';
+import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X, Scan, Store } from 'lucide-react';
 import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '../utils';
 import { collection, addDoc, getDocs, query, orderBy, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../services/firebase';
@@ -1183,7 +1183,8 @@ export default function CheesePOSView({
                               { id: 'Efectivo Bs', label: 'Bs Efectivo', icon: Coins, color: 'text-lime-400', border: 'border-lime-400/50', activeBg: 'bg-lime-400/20', hover: 'hover:border-lime-400' },
                               { id: 'Pago Móvil', label: 'Pago Móvil', icon: Smartphone, color: 'text-violet-400', border: 'border-violet-400/50', activeBg: 'bg-violet-400/20', hover: 'hover:border-violet-400' },
                               { id: 'Tarjeta / Punto', label: 'Tarjeta', icon: CreditCard, color: 'text-cyan-400', border: 'border-cyan-400/50', activeBg: 'bg-cyan-400/20', hover: 'hover:border-cyan-400' },
-                              { id: 'BioPago', label: 'Biopago', icon: Fingerprint, color: 'text-fuchsia-400', border: 'border-fuchsia-400/50', activeBg: 'bg-fuchsia-400/20', hover: 'hover:border-fuchsia-400' }
+                              { id: 'BioPago', label: 'Biopago', icon: Fingerprint, color: 'text-fuchsia-400', border: 'border-fuchsia-400/50', activeBg: 'bg-fuchsia-400/20', hover: 'hover:border-fuchsia-400' },
+                              { id: 'Mundo Kalu', label: 'Crédito Kalu', icon: Store, color: 'text-amber-500', border: 'border-amber-500/50', activeBg: 'bg-amber-500/20', hover: 'hover:border-amber-500' }
                             ].map(m => (
                               <button
                                 key={m.id}
@@ -1223,21 +1224,40 @@ export default function CheesePOSView({
                             </div>
                             
                             {/* Reference Inputs */}
-                            {(paymentMethod === 'Pago Móvil' || paymentMethod === 'BioPago' || paymentMethod === 'Tarjeta / Punto') && (
+                            {(paymentMethod === 'Pago Móvil' || paymentMethod === 'BioPago' || paymentMethod === 'Tarjeta / Punto' || paymentMethod === 'Mundo Kalu') && (
                               <div className="space-y-2 animate-in fade-in duration-200">
                                 <label className="font-mono text-[10px] uppercase tracking-widest text-amber-500 block">
-                                  {paymentMethod === 'Tarjeta / Punto' ? 'APROBACIÓN PUNTO' : 'REFERENCIA'}
+                                  {paymentMethod === 'Tarjeta / Punto' ? 'APROBACIÓN PUNTO' : paymentMethod === 'Mundo Kalu' ? 'CÉDULA / ID CLIENTE' : 'REFERENCIA'}
                                 </label>
                                 <input
                                   type="text"
                                   value={paymentReference}
                                   onChange={(e) => setPaymentReference(e.target.value)}
-                                  placeholder="N° Ref..."
+                                  placeholder={paymentMethod === 'Mundo Kalu' ? "Cédula del cliente..." : "N° Ref..."}
                                   className="w-full h-10 px-3 bg-editorial-card border border-editorial-border rounded text-sm text-editorial-text-primary focus:outline-none focus:border-amber-500 font-mono"
                                 />
                               </div>
                             )}
                           </div>
+                          
+                          {/* Mundo Kalu Breakdown */}
+                          {paymentMethod === 'Mundo Kalu' && Number(paidAmountInput || 0) > 0 && (
+                            <div className="mb-4 p-3 border border-amber-500/30 bg-amber-500/5 rounded animate-in fade-in space-y-2">
+                              <div className="flex justify-between items-center">
+                                <span className="text-[10px] text-editorial-text-muted uppercase tracking-widest font-mono">Inicial Requerida (20%)</span>
+                                <span className="text-xs font-bold text-amber-500">${(Number(paidAmountInput || 0) * 0.20).toFixed(2)}</span>
+                              </div>
+                              <div className="flex justify-between items-center">
+                                <span className="text-[10px] text-editorial-text-muted uppercase tracking-widest font-mono">A Financiar</span>
+                                <span className="text-xs font-bold text-editorial-text-primary">${(Number(paidAmountInput || 0) * 0.80).toFixed(2)}</span>
+                              </div>
+                              <div className="h-px bg-amber-500/20 my-1"></div>
+                              <div className="flex justify-between items-center">
+                                <span className="text-[10px] text-editorial-text-muted uppercase tracking-widest font-mono">Cuotas Sugeridas</span>
+                                <span className="text-[10px] font-bold text-amber-500 uppercase">4x ${( (Number(paidAmountInput || 0) * 0.80) / 4 ).toFixed(2)}</span>
+                              </div>
+                            </div>
+                          )}
                           
                           <button
                             type="button"

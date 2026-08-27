@@ -36,7 +36,7 @@ import InvoiceUploadView from './contador/InvoiceUploadView';
 import PaymentsTab from './PaymentsTab';
 import ProfileTab from './ProfileTab';
 import StoreTab from './StoreTab';
-
+import { QrScannerTab } from './QrScannerTab';
 interface MobilePortalsViewProps {
   products: CheeseProduct[];
   clients: ClientProfile[];
@@ -750,112 +750,11 @@ export default function MobilePortalsView({
                   )}
 
                   {clientActiveTab === 'qr' && (
-                    <div className="flex-1 bg-zinc-950 flex flex-col relative animate-fade-in pb-16">
-                      <div className="absolute inset-0 bg-emerald-900/10 opacity-30"></div>
-                      
-                      <div className="relative z-10 flex flex-col h-full p-6 pt-10">
-                        <div className="text-center mb-10">
-                          <h2 className="text-xl font-black text-white mb-2">Escanear QR de Pago</h2>
-                          <p className="text-[10px] text-zinc-400 max-w-[250px] mx-auto">Apunta al código QR ubicado en la vitrina o mostrador de la tienda para procesar tu compra</p>
-                        </div>
-                        
-                        <div className="flex-1 flex items-center justify-center pb-20">
-                          <div 
-                            className="w-64 h-64 border-2 border-emerald-500/30 rounded-3xl relative overflow-hidden shadow-[0_0_50px_rgba(16,185,129,0.15)] cursor-pointer"
-                            onClick={() => setShowQrPaymentModal(true)}
-                          >
-                            {/* Scanning line animation */}
-                            <div className="absolute top-1/2 left-0 w-full h-1 bg-emerald-400 shadow-[0_0_15px_#34d399] animate-pulse"></div>
-                            
-                            {/* Corner brackets */}
-                            <div className="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-emerald-500 rounded-tl-3xl"></div>
-                            <div className="absolute top-0 right-0 w-10 h-10 border-t-4 border-r-4 border-emerald-500 rounded-tr-3xl"></div>
-                            <div className="absolute bottom-0 left-0 w-10 h-10 border-b-4 border-l-4 border-emerald-500 rounded-bl-3xl"></div>
-                            <div className="absolute bottom-0 right-0 w-10 h-10 border-b-4 border-r-4 border-emerald-500 rounded-br-3xl"></div>
-                            
-                            <div className="w-full h-full flex items-center justify-center bg-emerald-500/5 backdrop-blur-sm">
-                              <p className="text-[10px] text-emerald-500/60 font-bold uppercase tracking-widest text-center">Toca para<br/>simular escaneo</p>
-                            </div>
-                          </div>
-                        </div>
-                        
-                        <div className="absolute bottom-24 left-0 right-0 flex justify-center gap-4 px-6">
-                          <button className="w-12 h-12 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-400 hover:text-white transition-colors shadow-lg">
-                            <span className="text-xl">🔦</span>
-                          </button>
-                          <button 
-                            onClick={() => setShowQrPaymentModal(true)}
-                            className="flex-1 bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center text-[11px] font-bold text-zinc-300 hover:text-white transition-colors shadow-lg"
-                          >
-                            Ingresar monto manualmente
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Payment Modal */}
-                      {showQrPaymentModal && (
-                        <div className="absolute inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col justify-end animate-in fade-in duration-200 pb-16">
-                          <div className="bg-zinc-950 border-t border-zinc-800 rounded-t-[2.5rem] p-6 w-full animate-in slide-in-from-bottom duration-300">
-                            <div className="flex justify-between items-center mb-6">
-                              <h3 className="text-lg font-black text-white">Pagar en Tienda Kalu</h3>
-                              <button onClick={() => { setShowQrPaymentModal(false); setQrPaymentAmount(''); }} className="w-8 h-8 flex items-center justify-center bg-zinc-900 text-zinc-400 hover:text-white rounded-full">✕</button>
-                            </div>
-                            
-                            <div className="mb-6">
-                              <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest block mb-2">Monto de tu compra</label>
-                              <div className="relative">
-                                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-xl font-black text-emerald-500">$</span>
-                                <input
-                                  type="number"
-                                  placeholder="0.00"
-                                  value={qrPaymentAmount}
-                                  onChange={(e) => setQrPaymentAmount(e.target.value)}
-                                  className="w-full bg-zinc-900 border-2 border-zinc-800 rounded-2xl py-4 pl-10 pr-4 text-3xl font-black text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                                />
-                              </div>
-                            </div>
-                            
-                            {Number(qrPaymentAmount || 0) > 0 && (() => {
-                              const amount = Number(qrPaymentAmount || 0);
-                              const level = getClientLevelInfo((loggedClient as any)?.loyaltyPoints || 0).level;
-                              const inicialPct = level >= 5 ? 0.10 : level >= 3 ? 0.15 : 0.20;
-                              const inicial = amount * inicialPct;
-                              const aFinanciar = amount - inicial;
-                              
-                              return (
-                                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 mb-6 space-y-3">
-                                  <div className="flex justify-between items-center">
-                                    <span className="text-xs text-zinc-400">Inicial Requerida ({Math.round(inicialPct * 100)}%)</span>
-                                    <span className="text-sm font-black text-emerald-400">${Number(inicial || 0).toFixed(2)}</span>
-                                  </div>
-                                  <div className="flex justify-between items-center">
-                                    <span className="text-xs text-zinc-400">A financiar (Corto Plazo)</span>
-                                    <span className="text-sm font-black text-white">${Number(aFinanciar || 0).toFixed(2)}</span>
-                                  </div>
-                                  <div className="border-t border-zinc-800 pt-3 flex justify-between items-center">
-                                    <span className="text-xs font-bold text-zinc-300">Línea a utilizar</span>
-                                    <span className="text-[10px] font-black text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded uppercase">Principal</span>
-                                  </div>
-                                </div>
-                              );
-                            })()}
-                            
-                            <button 
-                              disabled={Number(qrPaymentAmount || 0) <= 0}
-                              onClick={() => {
-                                alert('Pago procesado simulado exitosamente.');
-                                setShowQrPaymentModal(false);
-                                setQrPaymentAmount('');
-                                setClientActiveTab('inicio');
-                              }}
-                              className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 disabled:text-zinc-500 text-zinc-950 font-black uppercase rounded-2xl text-sm tracking-widest transition-all"
-                            >
-                              Confirmar Pago
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                    <QrScannerTab 
+                      loggedClient={loggedClient}
+                      onNavigateTab={setClientActiveTab}
+                      getClientLevelInfo={getClientLevelInfo}
+                    />
                   )}
 
                   {clientActiveTab === 'pagos' && (
