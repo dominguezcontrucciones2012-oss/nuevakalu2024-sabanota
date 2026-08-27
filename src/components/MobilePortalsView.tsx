@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { collection, query, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../services/firebase';
 import {
   Smartphone,
   ShoppingBag,
@@ -21,14 +22,20 @@ import {
   LogOut,
   UserCheck,
   Phone,
-  Grid,
   MapPin,
   Heart,
   QrCode,
-  Scan
+  Scan,
+  Store,
+  Home,
+  ArrowLeft,
+  HelpCircle
 } from 'lucide-react';
 import { CheeseProduct, ClientProfile, SupplierProfile, MobileOrder } from '../types';
 import InvoiceUploadView from './contador/InvoiceUploadView';
+import PaymentsTab from './PaymentsTab';
+import ProfileTab from './ProfileTab';
+import StoreTab from './StoreTab';
 
 interface MobilePortalsViewProps {
   products: CheeseProduct[];
@@ -122,14 +129,64 @@ export default function MobilePortalsView({
         const supplier = suppliers.find(s => s.id === isolatedId);
         if (supplier) setLoggedSupplier(supplier);
       }
+    } else {
+      // Local persistence for non-isolated mode
+      const savedClientId = localStorage.getItem('kaluMobileClientId');
+      if (savedClientId && clients.length > 0) {
+        const client = clients.find(c => c.id === savedClientId);
+        if (client) setLoggedClient(client);
+      }
+      const savedSupplierId = localStorage.getItem('kaluMobileSupplierId');
+      if (savedSupplierId && suppliers.length > 0) {
+        const supplier = suppliers.find(s => s.id === savedSupplierId);
+        if (supplier) setLoggedSupplier(supplier);
+      }
     }
   }, [isolatedId, isolatedType, clients, suppliers]);
+
+  React.useEffect(() => {
+    if (loggedClient) localStorage.setItem('kaluMobileClientId', loggedClient.id);
+    else localStorage.removeItem('kaluMobileClientId');
+  }, [loggedClient]);
+
+  React.useEffect(() => {
+    if (loggedSupplier) localStorage.setItem('kaluMobileSupplierId', loggedSupplier.id);
+    else localStorage.removeItem('kaluMobileSupplierId');
+  }, [loggedSupplier]);
+
+
 
   // Shopping Catalog Local States (Separate for each portal)
   const [clientSearch, setClientSearch] = useState('');
   const [clientCategory, setClientCategory] = useState<'Todos' | 'Quesos' | 'Repuestos' | 'Comidas'>('Todos');
   const [clientCart, setClientCart] = useState<{ productId: string; quantity: number }[]>([]);
   const [clientPayment, setClientPayment] = useState<'contado' | 'fiado'>('contado');
+  const [localQuantities, setLocalQuantities] = useState<Record<string, number>>({});
+  const [addFeedback, setAddFeedback] = useState<Record<string, boolean>>({});
+  const [clientActiveTab, setClientActiveTab] = useState<'inicio' | 'tienda' | 'nivel' | 'qr' | 'pagos' | 'perfil'>('inicio');
+  const [showClientCartModal, setShowClientCartModal] = useState(false);
+  const [showQrPaymentModal, setShowQrPaymentModal] = useState(false);
+  const [qrPaymentAmount, setQrPaymentAmount] = useState<string>('');
+
+  React.useEffect(() => {
+    const savedTab = localStorage.getItem('kaluMobileClientTab') as any;
+    if (savedTab) setClientActiveTab(savedTab);
+  }, []);
+
+  React.useEffect(() => {
+    localStorage.setItem('kaluMobileClientTab', clientActiveTab);
+  }, [clientActiveTab]);
+
+  const getClientLevelInfo = (points: number) => {
+    const p = Number(points || 0);
+    if (p < 200) return { level: 1, name: 'Kalu Vecino', nextGoal: 200, nextPrize: 'Premio de $5 + tickets', progress: (p / 200) * 100 };
+    if (p < 500) return { level: 2, name: 'Kalu Club Vecino', nextGoal: 500, nextPrize: 'Cupones dobles', progress: ((p - 200) / 300) * 100 };
+    if (p < 1200) return { level: 3, name: 'Kalu Bronce Plus', nextGoal: 1200, nextPrize: 'Sorteo Moto', progress: ((p - 500) / 700) * 100 };
+    if (p < 2500) return { level: 4, name: 'Kalu Plata', nextGoal: 2500, nextPrize: 'Micro-crédito', progress: ((p - 1200) / 1300) * 100 };
+    if (p < 5000) return { level: 5, name: 'Kalu Oro', nextGoal: 5000, nextPrize: 'Línea VIP', progress: ((p - 2500) / 2500) * 100 };
+    return { level: 6, name: 'Kalu Black VIP', nextGoal: 5000, nextPrize: 'Nivel Máximo', progress: 100 };
+  };
+
 
   const [supplierSearch, setSupplierSearch] = useState('');
   const [supplierCategory, setSupplierCategory] = useState<'Todos' | 'Repuestos' | 'Comidas' | 'Quesos'>('Todos');
@@ -281,8 +338,8 @@ export default function MobilePortalsView({
   };
 
   // Submit Client Order
-  const submitClientOrder = (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitClientOrder = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!loggedClient) return;
     if (clientCart.length === 0) {
       onAddNotification('El carrito está vacío.', 'warning');
@@ -300,24 +357,28 @@ export default function MobilePortalsView({
       };
     });
 
-    const total = orderItems.reduce((sum, item) => sum + item.subtotal, 0);
+    const totalAmount = orderItems.reduce((sum, item) => sum + item.subtotal, 0);
 
-    const newOrder: MobileOrder = {
-      id: `PED-CLI-${Date.now()}`,
-      type: 'client',
-      entityId: loggedClient.id,
-      entityName: loggedClient.name,
-      date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
-        timestamp: serverTimestamp(),
+    const newOrder = {
+      clientId: loggedClient.id,
+      clientName: loggedClient.name,
+      clientPhone: loggedClient.phone || '',
       items: orderItems,
-      total,
+      totalAmount,
       paymentMethod: clientPayment,
-      status: 'Pendiente'
+      status: 'pendiente',
+      createdAt: serverTimestamp()
     };
 
-    onAddMobileOrder(newOrder);
-    setClientCart([]);
-    onAddNotification(`¡Pedido ${newOrder.id} enviado! Será cargado como: ${clientPayment === 'fiado' ? 'Fiado / Crédito' : 'Pago al retirar'}.`, 'success');
+    try {
+      await addDoc(collection(db, 'pwa_remote_orders'), newOrder);
+      setClientCart([]);
+      setShowClientCartModal(false);
+      onAddNotification('Pedido enviado al cajero con éxito', 'success');
+    } catch (err) {
+      console.error('Error enviando pedido:', err);
+      onAddNotification('Hubo un error al enviar el pedido', 'warning');
+    }
   };
 
   // Submit Supplier Order
@@ -490,178 +551,388 @@ export default function MobilePortalsView({
                 </div>
               ) : (
                 /* CLIENT PORTAL: LOGGED IN STORE & ACCOUNT */
-                <div className="flex-1 flex flex-col min-h-0">
-                  {/* Internal Bar */}
-                  <div className="flex justify-between items-center border-b border-zinc-800 pb-2 mb-3">
-                    <div className="flex items-center gap-1.5">
-                      <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                      <div>
-                        <p className="font-bold text-zinc-100 leading-none">{loggedClient.name}</p>
-                        <p className="text-[8px] text-zinc-400 mt-0.5">Cliente Normal</p>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setLoggedClient(null);
-                        setClientCart([]);
-                      }}
-                      className="p-1 text-zinc-500 hover:text-zinc-300 rounded"
-                      title="Cerrar sesión"
-                    >
-                      <LogOut className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  {/* Private Balance & Loyalty Card */}
-                  <div className="bg-gradient-to-br from-zinc-950 to-zinc-900 border border-zinc-800/80 rounded-xl p-3 mb-3.5 relative overflow-hidden">
-                    <div className="absolute right-2 top-2 opacity-5">
-                      <ShoppingBag className="w-16 h-16 text-zinc-100" />
-                    </div>
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <span className="text-[8px] font-mono uppercase text-zinc-400 block">Mi Estado de Cuenta:</span>
-                        <p className="text-xs font-bold text-zinc-200 mt-0.5">
-                          Fiar en Tienda: <span className="text-amber-500 font-mono">${loggedClient.outstandingDebt.toFixed(2)} M.N.</span>
-                        </p>
-                        <p className="text-[8px] text-zinc-500 font-mono mt-0.5">Límite Permitido: $5,000.00 M.N.</p>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-[8px] font-mono uppercase text-zinc-400 block">Puntos Kalu:</span>
-                        <span className="text-xs font-mono font-bold text-emerald-400">
-                          ⭐️ {loggedClient.loyaltyPoints} pts
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* VIRTUAL STORE SEARCH & CATEGORIES */}
-                  <div className="space-y-2 mb-3">
-                    {/* Search bar inside phone */}
-                    <div className="relative">
-                      <Search className="w-3 h-3 text-zinc-500 absolute left-2.5 top-2" />
-                      <input
-                        type="text"
-                        placeholder="Buscar repuestos, comidas, quesos..."
-                        value={clientSearch}
-                        onChange={(e) => setClientSearch(e.target.value)}
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 pl-7 text-[10px] text-zinc-200 focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-
-                    {/* Category tabs */}
-                    <div className="flex gap-1 overflow-x-auto pb-1 no-scrollbar text-[9px] font-mono">
-                      {(['Todos', 'Quesos', 'Repuestos', 'Comidas'] as const).map(cat => (
-                        <button
-                          key={cat}
-                          onClick={() => setClientCategory(cat)}
-                          className={`px-2 py-1 rounded-full border transition-all shrink-0 ${
-                            clientCategory === cat
-                              ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 font-bold'
-                              : 'bg-zinc-950 border-zinc-800 text-zinc-400'
-                          }`}
+                <div className="flex-1 flex flex-col min-h-0 relative pb-16">
+                  {clientActiveTab === 'inicio' && (
+                    <div className="p-4 space-y-6 flex-1 overflow-y-auto animate-fade-in pb-24">
+                      {/* Top Bar / Customer Level Pill */}
+                      <div className="flex justify-start mb-2">
+                        <button 
+                          onClick={() => setClientActiveTab('nivel')}
+                          className="flex items-center gap-3 bg-neutral-900 border border-neutral-800 rounded-full pl-1.5 pr-5 py-1.5 transition-colors hover:bg-neutral-800 cursor-pointer shadow-md"
                         >
-                          {cat}
+                          <div className="w-9 h-9 rounded-full bg-emerald-500 flex items-center justify-center">
+                            <span className="text-neutral-900 font-black text-lg leading-none">K</span>
+                          </div>
+                          <span className="text-white text-base font-bold uppercase tracking-wider">
+                            Nivel K{getClientLevelInfo(loggedClient.loyaltyPoints).level}
+                          </span>
                         </button>
-                      ))}
-                    </div>
-                  </div>
+                      </div>
 
-                  {/* Catalog display */}
-                  <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5">
-                    {filteredClientProducts.length === 0 ? (
-                      <p className="text-center text-[10px] text-zinc-500 py-4 font-mono">No se encontraron productos</p>
-                    ) : (
-                      filteredClientProducts.map(p => {
-                        const cartItem = clientCart.find(item => item.productId === p.id);
-                        return (
-                          <div key={p.id} className="bg-zinc-800/60 border border-zinc-700/40 rounded-lg p-2 flex justify-between items-center transition-all">
-                            <div>
-                              <div className="flex items-center gap-1">
-                                <span className={`px-1 py-0.2 rounded text-[7px] font-mono uppercase ${
-                                  p.category === 'Repuestos' ? 'bg-blue-500/20 text-blue-400' :
-                                  p.category === 'Comidas' ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/20 text-amber-400'
-                                }`}>
-                                  {p.category}
-                                </span>
-                                <p className="font-bold text-zinc-200 text-[10.5px] max-w-[150px] truncate leading-tight">{p.name}</p>
+                      {/* Primer Bloque: Estado e Historial */}
+                      <div className="bg-neutral-900 border border-neutral-800 p-5 rounded-3xl shadow-lg">
+                        <div className="text-center">
+                          <p className="text-[10px] text-zinc-400 font-mono uppercase tracking-widest mb-1.5">Tu Deuda / Fiar en Tienda</p>
+                          <h2 className="text-4xl font-black text-white">${Number(loggedClient?.outstandingDebt || 0).toFixed(2)}</h2>
+                        </div>
+                        <div className="border-t border-neutral-800 my-5"></div>
+                        <div>
+                          <p className="text-[10px] font-bold text-zinc-300 uppercase mb-3">Últimos Movimientos</p>
+                          <div className="space-y-4">
+                            {/* Dummy history items */}
+                            <div className="flex justify-between items-center">
+                              <div className="flex items-center gap-3">
+                                <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center">
+                                  <ShoppingBag className="w-4 h-4 text-emerald-500" />
+                                </div>
+                                <div>
+                                  <p className="text-xs font-bold text-zinc-200">Compra en Tienda</p>
+                                  <p className="text-[9px] text-zinc-500">Ayer, 14:30</p>
+                                </div>
                               </div>
-                              <p className="text-[10px] text-amber-500 font-mono mt-0.5">
-                                ${p.price.toFixed(2)} <span className="text-zinc-500 text-[8px]">/{p.unit}</span>
-                              </p>
+                              <span className="text-xs font-black text-white">$45.00</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <div className="flex items-center gap-3">
+                                <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center">
+                                  <CreditCard className="w-4 h-4 text-emerald-500" />
+                                </div>
+                                <div>
+                                  <p className="text-xs font-bold text-zinc-200">Abono a Cuenta</p>
+                                  <p className="text-[9px] text-zinc-500">Hace 3 días</p>
+                                </div>
+                              </div>
+                              <span className="text-xs font-black text-emerald-400">-$20.00</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Segundo Bloque: Tus líneas */}
+                      <div>
+                        <h3 className="text-sm font-bold text-white mb-3 px-1">Tus líneas</h3>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl relative overflow-hidden shadow-md">
+                            <p className="text-[10px] font-bold text-zinc-400 uppercase mb-1">Línea Principal</p>
+                            <p className="text-lg font-black text-white">${Number((loggedClient as any)?.creditLimit || 0).toFixed(2)}</p>
+                            <div className="absolute bottom-0 left-0 w-full h-1.5 bg-emerald-500"></div>
+                          </div>
+                          <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl relative overflow-hidden shadow-md">
+                            <p className="text-[10px] font-bold text-zinc-400 uppercase mb-1">Línea Comida</p>
+                            <p className="text-lg font-black text-white">${Number((loggedClient as any)?.foodCreditLimit || (loggedClient as any)?.creditLimit || 0).toFixed(2)}</p>
+                            <div className="absolute bottom-0 left-0 w-full h-1.5 bg-amber-500"></div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Tercer Bloque: Accesos Rápidos */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <button className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 hover:border-emerald-500/50 transition-colors shadow-sm">
+                          <Smartphone className="w-6 h-6 text-emerald-400" />
+                          <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-wide">Pagar celular</span>
+                        </button>
+                        <button className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 hover:border-emerald-500/50 transition-colors shadow-sm">
+                          <FileText className="w-6 h-6 text-emerald-400" />
+                          <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-wide">Pagar servicios</span>
+                        </button>
+                        <button className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 hover:border-amber-500/50 transition-colors shadow-sm">
+                          <div className="flex text-2xl leading-none">🎫</div>
+                          <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-wide">Canjear cupones</span>
+                        </button>
+                        <button className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 hover:border-amber-500/50 transition-colors shadow-sm">
+                          <div className="flex text-2xl leading-none">🎁</div>
+                          <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-wide">Invitar y ganar</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {clientActiveTab === 'nivel' && (() => {
+                    const levelInfo = getClientLevelInfo(loggedClient.loyaltyPoints);
+                    return (
+                      <div className="flex-1 flex flex-col bg-zinc-950 animate-fade-in text-white pb-24 overflow-y-auto">
+                        {/* Cabecera Superior */}
+                        <div className="flex items-center justify-between p-4 border-b border-zinc-900">
+                          <button onClick={() => setClientActiveTab('inicio')} className="w-8 h-8 flex items-center justify-center rounded-full bg-zinc-900 text-zinc-300 hover:text-white transition-colors shadow-sm">
+                            <ArrowLeft className="w-5 h-5" />
+                          </button>
+                          <h1 className="text-sm font-bold text-zinc-100 uppercase tracking-widest">Club Kalu Más</h1>
+                          <button className="w-8 h-8 flex items-center justify-center rounded-full bg-zinc-900 text-zinc-300 hover:text-white transition-colors shadow-sm">
+                            <HelpCircle className="w-5 h-5" />
+                          </button>
+                        </div>
+
+                        <div className="p-4 space-y-5">
+                          {/* Tarjeta Principal de Nivel */}
+                          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 relative overflow-hidden shadow-lg">
+                            <div className="absolute top-0 right-0 -mr-6 -mt-6 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl"></div>
+                            
+                            <div className="flex justify-between items-start mb-6 relative z-10">
+                              <div>
+                                <h2 className="text-3xl font-black text-white tracking-tight mb-1">Nivel K{levelInfo.level}</h2>
+                                <p className="text-sm font-medium text-emerald-400 mb-2">{levelInfo.name}</p>
+                                <button className="text-[10px] uppercase font-bold tracking-wider text-zinc-400 hover:text-emerald-400 flex items-center gap-1 transition-colors">
+                                  Conocer beneficios <ChevronRight className="w-3 h-3" />
+                                </button>
+                              </div>
+                              <div className="w-12 h-12 rounded-full bg-emerald-500 flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.3)]">
+                                <span className="text-zinc-900 font-black text-2xl leading-none">K</span>
+                              </div>
                             </div>
 
-                            <div className="flex items-center gap-1 shrink-0">
-                              {cartItem && (
-                                <>
-                                  <button
-                                    onClick={() => handleClientCartRemove(p.id)}
-                                    className="w-4.5 h-4.5 bg-zinc-700 hover:bg-zinc-600 rounded flex items-center justify-center font-bold text-zinc-300 cursor-pointer"
-                                  >
-                                    -
-                                  </button>
-                                  <span className="w-5 text-center font-mono font-bold text-zinc-200 text-[10px]">
-                                    {cartItem.quantity}
-                                  </span>
-                                </>
-                              )}
-                              <button
-                                onClick={() => handleClientCartAdd(p.id)}
-                                className="w-4.5 h-4.5 bg-amber-500 text-zinc-950 font-bold rounded flex items-center justify-center hover:bg-amber-400 cursor-pointer"
-                              >
-                                +
+                            <div className="grid grid-cols-3 gap-2 pt-5 border-t border-zinc-800/80 relative z-10">
+                              <div>
+                                <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Línea Principal</p>
+                                <p className="text-[8px] text-zinc-500 mb-1">Hasta 12 cuotas</p>
+                                <p className="text-sm font-black text-white">${Number((loggedClient as any)?.creditLimit || 5000).toFixed(0)}</p>
+                              </div>
+                              <div>
+                                <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Línea Mercado</p>
+                                <p className="text-[8px] text-zinc-500 mb-1">1 cuota / Corto plazo</p>
+                                <p className="text-sm font-black text-white">${Number(loggedClient?.outstandingDebt || 0).toFixed(0)}</p>
+                              </div>
+                              <div>
+                                <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Inicial</p>
+                                <p className="text-[8px] text-zinc-500 mb-1">Desde</p>
+                                <p className="text-sm font-black text-emerald-400">20%</p>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Bloque de Puntos Kalu y Acciones Rápidas */}
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-3">
+                              <p className="text-sm font-bold text-zinc-200">
+                                <span className="text-amber-500 mr-1.5">⭐</span>
+                                {Number(loggedClient?.loyaltyPoints || 0)} puntos
+                              </p>
+                              <button className="bg-zinc-800 hover:bg-zinc-700 text-xs font-bold px-4 py-1.5 rounded-full transition-colors text-white">
+                                Usar puntos
+                              </button>
+                            </div>
+                            
+                            <div className="grid grid-cols-2 gap-3">
+                              <button className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 flex flex-col gap-1 items-start hover:border-emerald-500/50 transition-colors group">
+                                <span className="text-lg">💸</span>
+                                <span className="text-xs font-bold text-zinc-300 group-hover:text-emerald-400 flex items-center gap-1">Subir línea <ChevronRight className="w-3 h-3" /></span>
+                              </button>
+                              <button className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 flex flex-col gap-1 items-start hover:border-emerald-500/50 transition-colors group">
+                                <span className="text-lg">⏳</span>
+                                <span className="text-xs font-bold text-zinc-300 group-hover:text-emerald-400 flex items-center gap-1">Ver progreso <ChevronRight className="w-3 h-3" /></span>
                               </button>
                             </div>
                           </div>
-                        );
-                      })
-                    )}
-                  </div>
 
-                  {/* Cart checkout */}
-                  {clientCart.length > 0 && (
-                    <form onSubmit={submitClientOrder} className="mt-2.5 pt-2.5 border-t border-zinc-800 space-y-2 bg-zinc-950/80 p-2.5 rounded-lg shrink-0">
-                      <div className="flex justify-between items-center text-[11px]">
-                        <span className="text-[8px] uppercase font-mono tracking-wider text-zinc-400">Total a pagar:</span>
-                        <span className="font-mono font-bold text-amber-500">
-                          ${clientCart.reduce((sum, item) => sum + (MOBILE_CATALOG.find(p => p.id === item.productId)?.price || 0) * item.quantity, 0).toFixed(2)} M.N.
-                        </span>
+                          {/* Sección Inferior: Tu progreso */}
+                          <div className="pt-2">
+                            <div className="flex items-center justify-between mb-4">
+                              <h3 className="text-sm font-bold text-white">Tu progreso</h3>
+                              <button className="text-xs font-bold text-amber-500 hover:text-amber-400 px-3 py-1 bg-amber-500/10 rounded-full transition-colors">
+                                Conocer más
+                              </button>
+                            </div>
+
+                            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 space-y-6 shadow-md">
+                              <div>
+                                <div className="flex justify-between items-end mb-2">
+                                  <span className="text-[10px] font-bold text-zinc-400 uppercase">Cantidad pagada con tu línea</span>
+                                  <span className="text-sm font-black text-white">${Number((loggedClient as any)?.totalPaid || 0).toFixed(0)}</span>
+                                </div>
+                                <div className="w-full bg-zinc-950 rounded-full h-2 overflow-hidden shadow-inner">
+                                  <div className="bg-cyan-400 h-2 rounded-full" style={{ width: '65%' }}></div>
+                                </div>
+                              </div>
+                              
+                              <div>
+                                <div className="flex justify-between items-end mb-2">
+                                  <span className="text-[10px] font-bold text-zinc-400 uppercase">Cuotas pagadas a tiempo</span>
+                                  <span className="text-sm font-black text-white">12 <span className="text-[10px] font-normal text-zinc-500">/ 15</span></span>
+                                </div>
+                                <div className="w-full bg-zinc-950 rounded-full h-2 overflow-hidden shadow-inner">
+                                  <div className="bg-cyan-400 h-2 rounded-full" style={{ width: '80%' }}></div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
                       </div>
+                    );
+                  })()}
 
-                      {/* Payment */}
-                      <div className="grid grid-cols-2 gap-1.5 text-[8px]">
-                        <button
-                          type="button"
-                          onClick={() => setClientPayment('contado')}
-                          className={`py-1 rounded font-mono uppercase transition-all border ${
-                            clientPayment === 'contado'
-                              ? 'bg-amber-500 border-amber-600 text-zinc-950 font-bold'
-                              : 'bg-zinc-800 border-zinc-700 text-zinc-400'
-                          }`}
-                        >
-                          Efectivo
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setClientPayment('fiado')}
-                          className={`py-1 rounded font-mono uppercase transition-all border ${
-                            clientPayment === 'fiado'
-                              ? 'bg-amber-500 border-amber-600 text-zinc-950 font-bold'
-                              : 'bg-zinc-800 border-zinc-700 text-zinc-400'
-                          }`}
-                        >
-                          Pedir Fiado
-                        </button>
-                      </div>
-
-                      <button
-                        type="submit"
-                        className="w-full py-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold uppercase rounded text-[9px] tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1"
-                      >
-                        <ShoppingBag className="w-3 h-3" />
-                        Mandar Pedido en Espera
-                      </button>
-                    </form>
+                  {clientActiveTab === 'tienda' && (
+                    <StoreTab onNavigateTab={setClientActiveTab} />
                   )}
+
+                  {clientActiveTab === 'qr' && (
+                    <div className="flex-1 bg-zinc-950 flex flex-col relative animate-fade-in pb-16">
+                      <div className="absolute inset-0 bg-emerald-900/10 opacity-30"></div>
+                      
+                      <div className="relative z-10 flex flex-col h-full p-6 pt-10">
+                        <div className="text-center mb-10">
+                          <h2 className="text-xl font-black text-white mb-2">Escanear QR de Pago</h2>
+                          <p className="text-[10px] text-zinc-400 max-w-[250px] mx-auto">Apunta al código QR ubicado en la vitrina o mostrador de la tienda para procesar tu compra</p>
+                        </div>
+                        
+                        <div className="flex-1 flex items-center justify-center pb-20">
+                          <div 
+                            className="w-64 h-64 border-2 border-emerald-500/30 rounded-3xl relative overflow-hidden shadow-[0_0_50px_rgba(16,185,129,0.15)] cursor-pointer"
+                            onClick={() => setShowQrPaymentModal(true)}
+                          >
+                            {/* Scanning line animation */}
+                            <div className="absolute top-1/2 left-0 w-full h-1 bg-emerald-400 shadow-[0_0_15px_#34d399] animate-pulse"></div>
+                            
+                            {/* Corner brackets */}
+                            <div className="absolute top-0 left-0 w-10 h-10 border-t-4 border-l-4 border-emerald-500 rounded-tl-3xl"></div>
+                            <div className="absolute top-0 right-0 w-10 h-10 border-t-4 border-r-4 border-emerald-500 rounded-tr-3xl"></div>
+                            <div className="absolute bottom-0 left-0 w-10 h-10 border-b-4 border-l-4 border-emerald-500 rounded-bl-3xl"></div>
+                            <div className="absolute bottom-0 right-0 w-10 h-10 border-b-4 border-r-4 border-emerald-500 rounded-br-3xl"></div>
+                            
+                            <div className="w-full h-full flex items-center justify-center bg-emerald-500/5 backdrop-blur-sm">
+                              <p className="text-[10px] text-emerald-500/60 font-bold uppercase tracking-widest text-center">Toca para<br/>simular escaneo</p>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="absolute bottom-24 left-0 right-0 flex justify-center gap-4 px-6">
+                          <button className="w-12 h-12 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-400 hover:text-white transition-colors shadow-lg">
+                            <span className="text-xl">🔦</span>
+                          </button>
+                          <button 
+                            onClick={() => setShowQrPaymentModal(true)}
+                            className="flex-1 bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center text-[11px] font-bold text-zinc-300 hover:text-white transition-colors shadow-lg"
+                          >
+                            Ingresar monto manualmente
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Payment Modal */}
+                      {showQrPaymentModal && (
+                        <div className="absolute inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col justify-end animate-in fade-in duration-200 pb-16">
+                          <div className="bg-zinc-950 border-t border-zinc-800 rounded-t-[2.5rem] p-6 w-full animate-in slide-in-from-bottom duration-300">
+                            <div className="flex justify-between items-center mb-6">
+                              <h3 className="text-lg font-black text-white">Pagar en Tienda Kalu</h3>
+                              <button onClick={() => { setShowQrPaymentModal(false); setQrPaymentAmount(''); }} className="w-8 h-8 flex items-center justify-center bg-zinc-900 text-zinc-400 hover:text-white rounded-full">✕</button>
+                            </div>
+                            
+                            <div className="mb-6">
+                              <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest block mb-2">Monto de tu compra</label>
+                              <div className="relative">
+                                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-xl font-black text-emerald-500">$</span>
+                                <input
+                                  type="number"
+                                  placeholder="0.00"
+                                  value={qrPaymentAmount}
+                                  onChange={(e) => setQrPaymentAmount(e.target.value)}
+                                  className="w-full bg-zinc-900 border-2 border-zinc-800 rounded-2xl py-4 pl-10 pr-4 text-3xl font-black text-white focus:outline-none focus:border-emerald-500 transition-colors"
+                                />
+                              </div>
+                            </div>
+                            
+                            {Number(qrPaymentAmount || 0) > 0 && (() => {
+                              const amount = Number(qrPaymentAmount || 0);
+                              const level = getClientLevelInfo((loggedClient as any)?.loyaltyPoints || 0).level;
+                              const inicialPct = level >= 5 ? 0.10 : level >= 3 ? 0.15 : 0.20;
+                              const inicial = amount * inicialPct;
+                              const aFinanciar = amount - inicial;
+                              
+                              return (
+                                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 mb-6 space-y-3">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-xs text-zinc-400">Inicial Requerida ({Math.round(inicialPct * 100)}%)</span>
+                                    <span className="text-sm font-black text-emerald-400">${Number(inicial || 0).toFixed(2)}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-xs text-zinc-400">A financiar (Corto Plazo)</span>
+                                    <span className="text-sm font-black text-white">${Number(aFinanciar || 0).toFixed(2)}</span>
+                                  </div>
+                                  <div className="border-t border-zinc-800 pt-3 flex justify-between items-center">
+                                    <span className="text-xs font-bold text-zinc-300">Línea a utilizar</span>
+                                    <span className="text-[10px] font-black text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded uppercase">Principal</span>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                            
+                            <button 
+                              disabled={Number(qrPaymentAmount || 0) <= 0}
+                              onClick={() => {
+                                alert('Pago procesado simulado exitosamente.');
+                                setShowQrPaymentModal(false);
+                                setQrPaymentAmount('');
+                                setClientActiveTab('inicio');
+                              }}
+                              className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 disabled:text-zinc-500 text-zinc-950 font-black uppercase rounded-2xl text-sm tracking-widest transition-all"
+                            >
+                              Confirmar Pago
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {clientActiveTab === 'pagos' && (
+                    <PaymentsTab
+                      currentDebt={Number((loggedClient as any)?.outstandingDebt || 0)}
+                      bcvRate={36.5}
+                      debtList={Number((loggedClient as any)?.outstandingDebt || 0) > 0 ? [{ id: 'd-1', concept: 'Fiar en Tienda', currentInstallment: 1, totalInstallments: 1, dueDate: 'Vencida', amountUSD: Number((loggedClient as any)?.outstandingDebt || 0) }] : []}
+                      paymentHistory={[]}
+                      clientData={loggedClient}
+                      onReportPayment={(payload) => {
+                        alert('Pago procesado simulado. En ambiente real, esto se enviaría al dashboard de caja.');
+                        setClientActiveTab('inicio');
+                      }}
+                    />
+                  )}
+
+                  {clientActiveTab === 'perfil' && (
+                    <ProfileTab
+                      clientData={loggedClient}
+                      clubLevel={Number((loggedClient as any)?.level || 1)}
+                      kaluPoints={Number((loggedClient as any)?.loyaltyPoints || 0)}
+                      onLogout={() => {
+                        setLoggedClient(null);
+                        setClientActiveTab('inicio');
+                      }}
+                      onNavigateSubView={(view) => {
+                        console.log('Navigating to', view);
+                      }}
+                      onNavigateTab={(tab) => setClientActiveTab(tab)}
+                    />
+                  )}
+
+                  {clientActiveTab !== 'inicio' && clientActiveTab !== 'tienda' && clientActiveTab !== 'qr' && clientActiveTab !== 'pagos' && clientActiveTab !== 'nivel' && clientActiveTab !== 'perfil' && (
+                    <div className="flex-1 flex items-center justify-center">
+                      <p className="text-zinc-500 text-xs">Sección en construcción</p>
+                    </div>
+                  )}
+
+                  {/* BOTTOM NAVIGATION BAR */}
+                  <div className="absolute bottom-0 left-0 right-0 h-16 bg-zinc-950 border-t border-zinc-800 flex justify-around items-center px-2 z-40 rounded-b-[30px] md:rounded-b-none">
+                    <button onClick={() => setClientActiveTab('inicio')} className={`flex flex-col items-center justify-center w-12 h-12 rounded-xl transition-all ${clientActiveTab === 'inicio' ? 'text-emerald-500' : 'text-zinc-500 hover:text-zinc-400'}`}>
+                      <Home className="w-5 h-5 mb-1" />
+                      <span className="text-[7px] uppercase font-bold tracking-wider">Inicio</span>
+                    </button>
+                    <button onClick={() => setClientActiveTab('tienda')} className={`flex flex-col items-center justify-center w-12 h-12 rounded-xl transition-all ${clientActiveTab === 'tienda' ? 'text-emerald-500' : 'text-zinc-500 hover:text-zinc-400'}`}>
+                      <Store className="w-5 h-5 mb-1" />
+                      <span className="text-[7px] uppercase font-bold tracking-wider">Tienda</span>
+                    </button>
+                    
+                    {/* Botón Central QR */}
+                    <button onClick={() => setClientActiveTab('qr')} className="relative -top-5 flex flex-col items-center justify-center w-14 h-14 rounded-full bg-emerald-500 text-zinc-950 shadow-[0_0_15px_rgba(16,185,129,0.3)] hover:scale-105 transition-transform border-4 border-zinc-950">
+                      <Scan className="w-6 h-6" />
+                    </button>
+                    
+                    <button onClick={() => setClientActiveTab('pagos')} className={`flex flex-col items-center justify-center w-12 h-12 rounded-xl transition-all ${clientActiveTab === 'pagos' ? 'text-emerald-500' : 'text-zinc-500 hover:text-zinc-400'}`}>
+                      <CreditCard className="w-5 h-5 mb-1" />
+                      <span className="text-[7px] uppercase font-bold tracking-wider">Pagos</span>
+                    </button>
+                    <button onClick={() => setClientActiveTab('perfil')} className={`flex flex-col items-center justify-center w-12 h-12 rounded-xl transition-all ${clientActiveTab === 'perfil' ? 'text-emerald-500' : 'text-zinc-500 hover:text-zinc-400'}`}>
+                      <User className="w-5 h-5 mb-1" />
+                      <span className="text-[7px] uppercase font-bold tracking-wider">Perfil</span>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -789,7 +1060,7 @@ export default function MobilePortalsView({
                       <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-2 text-center">
                         <span className="text-[7px] text-slate-400 uppercase block">Nos Deben</span>
                         <span className="font-mono text-emerald-400 font-bold text-xs">
-                          ${loggedSupplier.balanceOwed.toFixed(2)}
+                          ${Number(loggedSupplier.balanceOwed || 0).toFixed(2)}
                         </span>
                         <span className="text-[6.5px] text-slate-500 block leading-none mt-0.5">(Quesos Entregados)</span>
                       </div>
@@ -797,7 +1068,7 @@ export default function MobilePortalsView({
                       <div className="bg-rose-500/5 border border-rose-500/20 rounded-lg p-2 text-center">
                         <span className="text-[7px] text-slate-400 uppercase block">Debo en Tienda</span>
                         <span className="font-mono text-rose-400 font-bold text-xs">
-                          ${(loggedSupplier.storeDebt || 0).toFixed(2)}
+                          ${Number(loggedSupplier.storeDebt || 0).toFixed(2)}
                         </span>
                         <span className="text-[6.5px] text-slate-500 block leading-none mt-0.5">(Consumos / Moto)</span>
                       </div>
@@ -809,7 +1080,7 @@ export default function MobilePortalsView({
                         const net = loggedSupplier.balanceOwed - (loggedSupplier.storeDebt || 0);
                         return (
                           <span className={net >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
-                            {net >= 0 ? `$${net.toFixed(2)} M.N.` : `$${Math.abs(net).toFixed(2)} M.N. (Deuda)`}
+                            {net >= 0 ? `$${Number(net || 0).toFixed(2)} M.N.` : `$${Number(Math.abs(net) || 0).toFixed(2)} M.N. (Deuda)`}
                           </span>
                         );
                       })()}
@@ -867,7 +1138,7 @@ export default function MobilePortalsView({
                                 <p className="font-bold text-slate-200 text-[10.5px] max-w-[150px] truncate leading-tight">{p.name}</p>
                               </div>
                               <p className="text-[10px] text-emerald-400 font-mono mt-0.5">
-                                ${p.price.toFixed(2)} <span className="text-slate-500 text-[8px]">/{p.unit}</span>
+                                ${Number(p.price || 0).toFixed(2)} <span className="text-slate-500 text-[8px]">/{p.unit}</span>
                               </p>
                             </div>
 
@@ -904,7 +1175,7 @@ export default function MobilePortalsView({
                       <div className="flex justify-between items-center text-[11px]">
                         <span className="text-[8px] uppercase font-mono tracking-wider text-slate-400">Total Insumos:</span>
                         <span className="font-mono font-bold text-emerald-400">
-                          ${supplierCart.reduce((sum, item) => sum + (MOBILE_CATALOG.find(p => p.id === item.productId)?.price || 0) * item.quantity, 0).toFixed(2)} M.N.
+                          ${Number(supplierCart.reduce((sum, item) => sum + (MOBILE_CATALOG.find(p => p.id === item.productId)?.price || 0) * item.quantity, 0)).toFixed(2)} M.N.
                         </span>
                       </div>
 
@@ -1094,7 +1365,7 @@ export default function MobilePortalsView({
                     {order.items.map((item, idx) => (
                       <div key={idx} className="flex justify-between border-b border-editorial-border/20 pb-0.5 text-editorial-text-primary/90">
                         <span>• {item.name} (x{item.quantity})</span>
-                        <span>${item.subtotal.toFixed(2)}</span>
+                        <span>${Number(item.subtotal || 0).toFixed(2)}</span>
                       </div>
                     ))}
                   </div>

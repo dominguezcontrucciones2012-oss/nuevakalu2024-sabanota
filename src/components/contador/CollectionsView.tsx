@@ -78,7 +78,7 @@ export default function CollectionsView({
       onAddNotification?.('Pago aprobado y conciliado exitosamente', 'success');
     } catch (e) {
       console.error(e);
-      onAddNotification?.('Error al aprobar pago', 'error');
+      onAddNotification?.('Error al aprobar pago', 'warning');
     }
   };
 
@@ -91,7 +91,7 @@ export default function CollectionsView({
       onAddNotification?.('Pago rechazado', 'info');
     } catch (e) {
       console.error(e);
-      onAddNotification?.('Error al rechazar', 'error');
+      onAddNotification?.('Error al rechazar', 'warning');
     }
   };
 
