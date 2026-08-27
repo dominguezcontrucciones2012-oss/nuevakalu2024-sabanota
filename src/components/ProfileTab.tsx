@@ -38,7 +38,7 @@ export default function ProfileTab({
   const [activeSubView, setActiveSubView] = useState<SubViewType>('main');
   const [filterTab, setFilterTab] = useState<FilterTabType>('por_pagar');
   const [rewardTab, setRewardTab] = useState<RewardTabType>('disponibles');
-  
+
   // Seguridad States
   const [useBiometrics, setUseBiometrics] = useState(false);
   const [showIdentityModal, setShowIdentityModal] = useState(false);
@@ -55,7 +55,7 @@ export default function ProfileTab({
         </div>
 
         <div className="flex justify-between px-2 gap-4">
-          <button 
+          <button
             onClick={() => setActiveSubView('mis_datos')}
             className="flex flex-col items-center gap-2 group"
           >
@@ -64,8 +64,8 @@ export default function ProfileTab({
             </div>
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Tus datos</span>
           </button>
-          
-          <button 
+
+          <button
             onClick={() => setActiveSubView('mis_compras')}
             className="flex flex-col items-center gap-2 group"
           >
@@ -74,8 +74,8 @@ export default function ProfileTab({
             </div>
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Tus compras</span>
           </button>
-          
-          <button 
+
+          <button
             onClick={() => onNavigateSubView && onNavigateSubView('ayuda')}
             className="flex flex-col items-center gap-2 group"
           >
@@ -88,7 +88,7 @@ export default function ProfileTab({
       </div>
 
       <div className="p-5 space-y-6">
-        
+
         {/* 2. Tarjeta de Nivel Mundo Kalu */}
         <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex justify-between items-center shadow-lg relative overflow-hidden">
           <div className="absolute top-0 right-0 -mr-4 -mt-4 w-24 h-24 bg-emerald-500/10 blur-2xl rounded-full"></div>
@@ -105,7 +105,7 @@ export default function ProfileTab({
         <div>
           <h3 className="text-sm font-bold text-white mb-3">Información</h3>
           <div className="bg-slate-900/50 border border-slate-800 rounded-2xl overflow-hidden">
-            <button 
+            <button
               onClick={() => setActiveSubView('mis_recompensas')}
               className="w-full flex items-center justify-between p-4 border-b border-slate-800/80 hover:bg-slate-800/50 transition-colors"
             >
@@ -115,7 +115,7 @@ export default function ProfileTab({
               </div>
               <ChevronRight className="w-4 h-4 text-slate-500" />
             </button>
-            <button 
+            <button
               onClick={() => setActiveSubView('seguridad')}
               className="w-full flex items-center justify-between p-4 border-b border-slate-800/80 hover:bg-slate-800/50 transition-colors"
             >
@@ -125,7 +125,7 @@ export default function ProfileTab({
               </div>
               <ChevronRight className="w-4 h-4 text-slate-500" />
             </button>
-            <button 
+            <button
               onClick={() => setActiveSubView('sobre_kalu')}
               className="w-full flex items-center justify-between p-4 hover:bg-slate-800/50 transition-colors"
             >
@@ -155,14 +155,14 @@ export default function ProfileTab({
 
       {/* 5. Cierre de Sesión & Versión */}
       <div className="mt-auto p-5 space-y-4">
-        <button 
+        <button
           onClick={onLogout}
           className="w-full flex items-center justify-between bg-slate-900/30 hover:bg-slate-900 border border-slate-800/50 hover:border-slate-800 p-4 rounded-2xl transition-all group"
         >
           <span className="text-slate-300 font-semibold text-sm group-hover:text-white transition-colors">Cerrar sesión</span>
           <LogOut className="w-5 h-5 text-slate-500 group-hover:text-red-400 transition-colors" />
         </button>
-        
+
         <p className="text-center text-[10px] text-slate-600 font-mono tracking-widest uppercase">
           Versión 3.2.0
         </p>
@@ -281,7 +281,7 @@ export default function ProfileTab({
       </div>
 
       <div className="p-5 space-y-6">
-        <div 
+        <div
           onClick={() => {
             setActiveSubView('main');
             if (onNavigateTab) onNavigateTab('pagos');
@@ -300,27 +300,24 @@ export default function ProfileTab({
         </div>
 
         <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
-          <button 
+          <button
             onClick={() => setFilterTab('por_pagar')}
-            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${
-              filterTab === 'por_pagar' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
-            }`}
+            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${filterTab === 'por_pagar' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
+              }`}
           >
             Por pagar
           </button>
-          <button 
+          <button
             onClick={() => setFilterTab('pagadas')}
-            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${
-              filterTab === 'pagadas' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
-            }`}
+            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${filterTab === 'pagadas' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
+              }`}
           >
             Pagadas
           </button>
-          <button 
+          <button
             onClick={() => setFilterTab('canceladas')}
-            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${
-              filterTab === 'canceladas' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
-            }`}
+            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${filterTab === 'canceladas' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
+              }`}
           >
             Canceladas
           </button>
@@ -412,27 +409,24 @@ export default function ProfileTab({
       <div className="p-5 flex-1 flex flex-col">
         {/* Segmentador / Filtro Superior */}
         <div className="flex items-center gap-2 overflow-x-auto pb-4 scrollbar-hide mb-2">
-          <button 
+          <button
             onClick={() => setRewardTab('disponibles')}
-            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${
-              rewardTab === 'disponibles' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
-            }`}
+            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${rewardTab === 'disponibles' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
+              }`}
           >
             Disponibles
           </button>
-          <button 
+          <button
             onClick={() => setRewardTab('utilizadas')}
-            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${
-              rewardTab === 'utilizadas' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
-            }`}
+            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${rewardTab === 'utilizadas' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
+              }`}
           >
             Utilizadas
           </button>
-          <button 
+          <button
             onClick={() => setRewardTab('vencidas')}
-            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${
-              rewardTab === 'vencidas' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
-            }`}
+            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${rewardTab === 'vencidas' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
+              }`}
           >
             Vencidas
           </button>
@@ -442,7 +436,7 @@ export default function ProfileTab({
         {rewardTab === 'disponibles' && (
           <div className="flex flex-col flex-1 animate-in fade-in">
             <p className="text-sm text-slate-400 mb-8 leading-relaxed">Estas recompensas están listas para que las aproveches al máximo.</p>
-            
+
             <div className="flex-1 flex flex-col items-center justify-center text-center">
               <div className="w-20 h-20 bg-slate-900 rounded-full border border-slate-800 flex items-center justify-center mb-6 shadow-inner relative">
                 <div className="absolute inset-0 bg-emerald-500/10 rounded-full blur-xl"></div>
@@ -453,7 +447,7 @@ export default function ProfileTab({
                 Sigue sumando puntos y canjéalos por beneficios increíbles en Mundo Kalu.
               </p>
             </div>
-            
+
             <button className="w-full mt-8 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3.5 rounded-xl uppercase tracking-widest text-sm transition-all shadow-[0_0_20px_rgba(16,185,129,0.3)]">
               Usar mis puntos
             </button>
@@ -463,7 +457,7 @@ export default function ProfileTab({
         {rewardTab === 'utilizadas' && (
           <div className="flex flex-col flex-1 animate-in fade-in">
             <p className="text-sm text-slate-400 mb-6 leading-relaxed">Estas son las recompensas que ya aprovechaste hasta el momento.</p>
-            
+
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex justify-between items-center shadow-sm">
               <div>
                 <h4 className="font-bold text-sm text-slate-100">2 cuotas en Tiendas Kalu</h4>
@@ -482,7 +476,7 @@ export default function ProfileTab({
         {rewardTab === 'vencidas' && (
           <div className="flex flex-col flex-1 animate-in fade-in">
             <p className="text-sm text-slate-400 mb-8 leading-relaxed">Estas recompensas ya no están activas, pero hay más esperando por ti.</p>
-            
+
             <div className="flex-1 flex flex-col items-center justify-center text-center">
               <div className="w-20 h-20 bg-slate-900 rounded-full border border-slate-800 flex items-center justify-center mb-6 shadow-inner relative opacity-50">
                 <Wind className="w-8 h-8 text-slate-500 relative z-10" />
@@ -509,7 +503,7 @@ export default function ProfileTab({
 
       <div className="p-5">
         <div className="bg-slate-900/50 border border-slate-800 rounded-2xl overflow-hidden">
-          <button 
+          <button
             onClick={() => setShowIdentityModal(true)}
             className="w-full flex items-center justify-between p-4 border-b border-slate-800/80 hover:bg-slate-800/50 transition-colors"
           >
@@ -519,7 +513,7 @@ export default function ProfileTab({
             </div>
             <ChevronRight className="w-4 h-4 text-slate-500" />
           </button>
-          
+
           <div className="w-full flex items-center justify-between p-4">
             <div className="flex items-center gap-3">
               <ShieldCheck className="w-5 h-5 text-emerald-500" />
@@ -529,7 +523,7 @@ export default function ProfileTab({
               </div>
             </div>
             {/* Custom Toggle Switch */}
-            <div 
+            <div
               onClick={() => setUseBiometrics(!useBiometrics)}
               className={`w-12 h-6 rounded-full p-1 cursor-pointer transition-colors duration-300 ease-in-out flex items-center ${useBiometrics ? 'bg-emerald-500' : 'bg-slate-800'}`}
             >
@@ -652,7 +646,7 @@ export default function ProfileTab({
     <div className="flex-1 bg-slate-950 flex flex-col relative animate-fade-in text-slate-100 pb-20 overflow-y-auto">
       {/* Main flow routing */}
       {renderMainView()}
-      
+
       {activeSubView === 'mis_datos' && renderMisDatos()}
       {activeSubView === 'info_personal' && renderInfoPersonal()}
       {activeSubView === 'mis_direcciones' && renderMisDirecciones()}
@@ -665,22 +659,22 @@ export default function ProfileTab({
       {/* Modal de Identidad */}
       {showIdentityModal && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end animate-in fade-in duration-200">
-          <div 
+          <div
             className="w-full max-w-md mx-auto bg-slate-900 border-t border-slate-800 rounded-t-3xl p-6 text-center animate-in slide-in-from-bottom-full duration-300"
             onClick={(e) => e.stopPropagation()} // Prevent clicking inside modal from closing it if we added an overlay click handler
           >
             <div className="w-12 h-1.5 bg-slate-800 rounded-full mx-auto mb-6"></div>
-            
+
             <div className="w-16 h-16 bg-emerald-500/10 rounded-full border border-emerald-500/20 flex items-center justify-center mx-auto mb-4">
               <Key className="w-8 h-8 text-emerald-500" />
             </div>
-            
+
             <h3 className="text-xl font-bold text-slate-100">Validemos tu identidad</h3>
             <p className="text-sm text-slate-400 mt-2 mb-8">
               Necesitamos verificar que seas tú. Este paso no te llevará mucho tiempo.
             </p>
-            
-            <button 
+
+            <button
               onClick={() => {
                 setShowIdentityModal(false);
                 setActiveSubView('seguridad_codigo');
@@ -689,7 +683,7 @@ export default function ProfileTab({
             >
               Comenzar
             </button>
-            <button 
+            <button
               onClick={() => setShowIdentityModal(false)}
               className="w-full mt-3 text-slate-400 hover:text-white font-bold py-3 text-sm transition-colors"
             >

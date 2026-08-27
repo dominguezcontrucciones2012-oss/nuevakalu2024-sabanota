@@ -87,7 +87,25 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }
       <div className="relative z-10 flex flex-col h-full p-6 pt-10">
         <div className="text-center mb-6">
           <h2 className="text-xl font-black text-white mb-2">Escanear QR de Pago</h2>
-          <p className="text-[10px] text-zinc-400 max-w-[250px] mx-auto">
+          <p className="text-zinc-500 text-[10px] mt-4 max-w-[200px] mx-auto text-center">
+            Mundo Kalu App v2.4.1 • La cámara local está desactivada.
+          </p>
+          
+          {/* DEV FALLBACK FOR TESTING PWA -> POS */}
+          <div className="mt-8 w-full max-w-[300px] border border-amber-500/30 rounded-xl p-4 bg-amber-500/5">
+             <h3 className="text-amber-500 font-black text-xs uppercase tracking-wider mb-3 flex items-center gap-2">
+                <span>⚡</span> Modo Dev (Simular Escaneo)
+             </h3>
+             <div className="space-y-3">
+                <button
+                   onClick={() => handleManualEntry()}
+                   className="w-full bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 py-2.5 rounded-lg text-xs font-bold transition-colors"
+                >
+                   Simular Escaneo de Tienda
+                </button>
+             </div>
+          </div>
+          <p className="text-[10px] text-zinc-400 max-w-[250px] mx-auto mt-6">
             Apunta al código QR ubicado en la vitrina o mostrador de la tienda
           </p>
         </div>

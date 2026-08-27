@@ -1,45 +1,67 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { CreditCard, Check, Copy, ArrowRight, Banknote, X, CheckCircle, Clock, XCircle, Image as ImageIcon } from 'lucide-react';
-import { ClientProfile } from '../types';
-
-export interface PaymentHistoryItem {
-  id: string;
-  date: string;
-  status: 'Aprobado' | 'En Revisión' | 'Rechazado';
-  amountUSD: number;
-}
-
-export interface DebtItem {
-  id: string;
-  concept: string;
-  currentInstallment: number;
-  totalInstallments: number;
-  dueDate: string;
-  amountUSD: number;
-}
+import { ClientProfile, DebtInstallment, Transaction } from '../types';
+import { collection, query, where, onSnapshot, doc, updateDoc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../services/firebase';
 
 interface PaymentsTabProps {
-  currentDebt: number;
   bcvRate: number;
-  debtList: DebtItem[];
-  paymentHistory: PaymentHistoryItem[];
-  clientData: any;
-  onReportPayment: (payload: any) => void;
+  clientData: ClientProfile;
+  onNavigateTab?: (tab: any) => void;
+  onAddNotification?: (msg: string, type: 'success'|'info'|'warning') => void;
 }
 
 export default function PaymentsTab({
-  currentDebt,
   bcvRate,
-  debtList,
-  paymentHistory,
   clientData,
-  onReportPayment
+  onNavigateTab,
+  onAddNotification
 }: PaymentsTabProps) {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [selectedDebt, setSelectedDebt] = useState<DebtItem | null>(null);
+  const [selectedDebt, setSelectedDebt] = useState<DebtInstallment | null>(null);
   const [selectedBank, setSelectedBank] = useState<'0102' | '0134'>('0102');
   const [paymentType, setPaymentType] = useState<'completo' | 'parcial'>('completo');
   
+  // Real-time Data
+  const [debtList, setDebtList] = useState<DebtInstallment[]>([]);
+  const [paymentHistory, setPaymentHistory] = useState<Transaction[]>([]);
+
+  useEffect(() => {
+    if (!clientData?.id) return;
+    // 1. Escuchar Cuotas Pendientes
+    const qDebts = query(
+      collection(db, 'installments'),
+      where('clientId', '==', clientData.id),
+      where('status', '==', 'pending')
+    );
+    const unsubDebts = onSnapshot(qDebts, (snap) => {
+      const debts: DebtInstallment[] = [];
+      snap.forEach(doc => debts.push({ id: doc.id, ...doc.data() } as DebtInstallment));
+      // Sort by due date
+      debts.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+      setDebtList(debts);
+    });
+
+    // 2. Escuchar Historial de Pagos
+    const qPayments = query(
+      collection(db, 'transactions'),
+      where('clientId', '==', clientData.id),
+      where('category', '==', 'ingresos_cobranza')
+    );
+    const unsubPayments = onSnapshot(qPayments, (snap) => {
+      const payments: Transaction[] = [];
+      snap.forEach(doc => payments.push({ id: doc.id, ...doc.data() } as Transaction));
+      // Sort desc
+      payments.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      setPaymentHistory(payments);
+    });
+
+    return () => {
+      unsubDebts();
+      unsubPayments();
+    };
+  }, [clientData?.id]);
+
   // Modal forms
   const [paymentAmountBs, setPaymentAmountBs] = useState<string>('');
   const [reference, setReference] = useState('');
@@ -60,9 +82,9 @@ export default function PaymentsTab({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const openPaymentModal = (debt: DebtItem) => {
+  const openPaymentModal = (debt: DebtInstallment) => {
     setSelectedDebt(debt);
-    const amountBs = Number(debt.amountUSD * bcvRate).toFixed(2);
+    const amountBs = Number(debt.amount * bcvRate).toFixed(2);
     setPaymentAmountBs(amountBs);
     setPaymentType('completo');
     setReference('');
@@ -83,24 +105,42 @@ export default function PaymentsTab({
     }
   };
 
-  const submitPayment = () => {
-    if (!selectedDebt) return;
+  const submitPayment = async () => {
+    if (!selectedDebt || !clientData?.id) return;
     
-    const payload = {
-      debtId: selectedDebt.id,
-      amountBs: Number(paymentAmountBs || 0),
-      amountUSD: Number(paymentAmountBs || 0) / bcvRate,
-      reference,
-      bank: selectedBank,
-      hasImage: !!imageFile,
+    const payload: Partial<Transaction> = {
+      category: 'ingresos_cobranza',
+      isIncome: true,
+      amount: Number(paymentAmountBs || 0) / bcvRate,
+      changeBs: Number(paymentAmountBs || 0),
+      paymentMethod: 'Pago Móvil',
       status: 'pending_verification',
-      timestamp: new Date()
+      clientId: clientData.id,
+      installmentIds: [selectedDebt.id],
+      notes: `Abono a Cuota ${selectedDebt.id} - Ref: ${reference}`,
+      date: new Date().toISOString(),
+      timestamp: serverTimestamp()
     };
     
-    onReportPayment(payload);
-    setShowPaymentModal(false);
+    try {
+       await addDoc(collection(db, 'transactions'), payload);
+       
+       // Update installment status
+       await updateDoc(doc(db, 'installments', selectedDebt.id), {
+          status: 'in_review'
+       });
+
+       if (onAddNotification) onAddNotification('Pago reportado y en revisión por el cajero.', 'success');
+       setShowPaymentModal(false);
+    } catch (e) {
+       console.error(e);
+       if (onAddNotification) onAddNotification('Error al reportar pago', 'warning');
+    }
   };
 
+  const currentDebt = debtList
+    .filter((item: any) => item.status !== 'paid')
+    .reduce((acc: number, curr: any) => acc + (Number(curr.amountUSD) || Number(curr.amount) || 0), 0);
   const debtTotalBs = Number(currentDebt * bcvRate).toFixed(2);
 
   return (
@@ -138,12 +178,12 @@ export default function PaymentsTab({
                 <div key={debt.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 shadow-sm flex flex-col gap-3 relative overflow-hidden">
                   <div className="flex justify-between items-start z-10">
                     <div>
-                      <h4 className="font-bold text-sm text-zinc-100">{debt.concept}</h4>
-                      <p className="text-[10px] text-zinc-400 mt-0.5">Cuota {debt.currentInstallment} de {debt.totalInstallments} • Vence: {debt.dueDate}</p>
+                      <h4 className="font-bold text-sm text-zinc-100">Abono a Crédito</h4>
+                      <p className="text-[10px] text-zinc-400 mt-0.5">Vence: {new Date(debt.dueDate).toLocaleDateString('es-ES')}</p>
                     </div>
                     <div className="text-right">
-                      <p className="font-black text-white text-lg">${Number(debt.amountUSD || 0).toFixed(2)}</p>
-                      <p className="text-[9px] text-zinc-500 font-mono">Bs. {Number(debt.amountUSD * bcvRate).toFixed(2)}</p>
+                      <p className="font-black text-white text-lg">${Number(debt.amount || 0).toFixed(2)}</p>
+                      <p className="text-[9px] text-zinc-500 font-mono">Bs. {Number(debt.amount * bcvRate).toFixed(2)}</p>
                     </div>
                   </div>
                   <button 
@@ -172,21 +212,22 @@ export default function PaymentsTab({
               paymentHistory.map(hist => (
                 <div key={hist.id} className="flex justify-between items-center bg-zinc-900/50 border border-zinc-800 p-3 rounded-xl">
                   <div className="flex items-center gap-3">
-                    {hist.status === 'Aprobado' && <CheckCircle className="w-6 h-6 text-emerald-500" />}
-                    {hist.status === 'En Revisión' && <Clock className="w-6 h-6 text-amber-500" />}
-                    {hist.status === 'Rechazado' && <XCircle className="w-6 h-6 text-red-500" />}
+                    {(hist.status === 'approved' || hist.status === 'Completado') && <CheckCircle className="w-6 h-6 text-emerald-500" />}
+                    {(hist.status === 'pending_approval' || hist.status === 'Pendiente') && <Clock className="w-6 h-6 text-amber-500" />}
+                    {hist.status === 'rejected' && <XCircle className="w-6 h-6 text-red-500" />}
                     
                     <div>
-                      <p className="text-xs font-bold text-zinc-200">{hist.date}</p>
+                      <p className="text-xs font-bold text-zinc-200">{new Date(hist.date).toLocaleDateString('es-ES')}</p>
                       <p className={`text-[9px] uppercase tracking-wider font-bold ${
-                        hist.status === 'Aprobado' ? 'text-emerald-500' :
-                        hist.status === 'En Revisión' ? 'text-amber-500' : 'text-red-500'
+                        (hist.status === 'approved' || hist.status === 'Completado') ? 'text-emerald-500' :
+                        (hist.status === 'pending_approval' || hist.status === 'Pendiente') ? 'text-amber-500' : 'text-red-500'
                       }`}>
-                        {hist.status}
+                        {hist.status === 'approved' || hist.status === 'Completado' ? 'Aprobado' :
+                         hist.status === 'pending_approval' || hist.status === 'Pendiente' ? 'En Revisión' : 'Rechazado'}
                       </p>
                     </div>
                   </div>
-                  <p className="font-black text-sm text-white">${Number(hist.amountUSD || 0).toFixed(2)}</p>
+                  <p className="font-black text-sm text-white">${Number(hist.amount || 0).toFixed(2)}</p>
                 </div>
               ))
             )}

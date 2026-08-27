@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { collection, query, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, onSnapshot, addDoc, serverTimestamp, where, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import {
   Smartphone,
@@ -167,6 +167,51 @@ export default function MobilePortalsView({
   const [showClientCartModal, setShowClientCartModal] = useState(false);
   const [showQrPaymentModal, setShowQrPaymentModal] = useState(false);
   const [qrPaymentAmount, setQrPaymentAmount] = useState<string>('');
+  
+  // Real-Time Sync: Aprobación de Crédito (Cashea Style)
+  const [pendingCreditRequest, setPendingCreditRequest] = useState<any>(null);
+
+  const [activeInstallments, setActiveInstallments] = useState<any[]>([]);
+
+  React.useEffect(() => {
+    if (!loggedClient) {
+       setPendingCreditRequest(null);
+       setActiveInstallments([]);
+       return;
+    }
+    
+    // Listener de peticiones pendientes
+    const q = query(
+       collection(db, 'transactions'),
+       where('clientId', '==', loggedClient.id),
+       where('status', '==', 'pending_approval')
+    );
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+       if (!snapshot.empty) {
+          const docData = snapshot.docs[0];
+          setPendingCreditRequest({ id: docData.id, ...docData.data() });
+       } else {
+          setPendingCreditRequest(null);
+       }
+    });
+
+    // Listener de cuotas (deuda real)
+    const qInst = query(
+       collection(db, 'installments'),
+       where('clientId', '==', loggedClient.id),
+       where('status', '==', 'pending')
+    );
+    const unsubInst = onSnapshot(qInst, (snap) => {
+       const inst: any[] = [];
+       snap.forEach(doc => inst.push({ id: doc.id, ...doc.data() }));
+       setActiveInstallments(inst);
+    });
+
+    return () => {
+       unsubscribe();
+       unsubInst();
+    };
+  }, [loggedClient]);
 
   React.useEffect(() => {
     const savedTab = localStorage.getItem('kaluMobileClientTab') as any;
@@ -209,7 +254,10 @@ export default function MobilePortalsView({
       (c.phone && c.phone.replace(/\D/g, '').includes(phoneClean.replace(/\D/g, ''))) || 
       (c.name && c.name.toLowerCase().includes(phoneClean.toLowerCase())) ||
       (c.cedula && c.cedula.includes(phoneClean)) ||
-      (c.rfc && c.rfc.includes(phoneClean))
+      (c.rfc && c.rfc.includes(phoneClean)) ||
+      (c.ci && c.ci.includes(phoneClean)) ||
+      (c.ciRif && c.ciRif.includes(phoneClean)) ||
+      (c.idNumber && c.idNumber.includes(phoneClean))
     );
 
     if (found) {
@@ -218,6 +266,9 @@ export default function MobilePortalsView({
       if (found.pin) expectedPin = found.pin;
       else if (found.cedula && found.cedula.length >= 4) expectedPin = found.cedula.slice(-4);
       else if (found.rfc && found.rfc.length >= 4) expectedPin = found.rfc.slice(-4);
+      else if (found.ci && found.ci.length >= 4) expectedPin = found.ci.slice(-4);
+      else if (found.ciRif && found.ciRif.length >= 4) expectedPin = found.ciRif.slice(-4);
+      else if (found.idNumber && found.idNumber.length >= 4) expectedPin = found.idNumber.slice(-4);
       else if (found.phone) {
          const ph = found.phone.replace(/\D/g, '');
          if (ph.length >= 4) expectedPin = ph.slice(-4);
@@ -559,7 +610,12 @@ export default function MobilePortalsView({
                       <div className="bg-neutral-900 border border-neutral-800 p-5 rounded-3xl shadow-lg">
                         <div className="text-center">
                           <p className="text-[10px] text-zinc-400 font-mono uppercase tracking-widest mb-1.5">Tu Deuda / Fiar en Tienda</p>
-                          <h2 className="text-4xl font-black text-white">${Number(loggedClient?.outstandingDebt || 0).toFixed(2)}</h2>
+                          <h2 className="text-4xl font-black text-white">
+                            ${(() => {
+                              const totalPending = activeInstallments.reduce((sum, item) => sum + (Number(item.amountUSD) || Number(item.amount) || 0), 0);
+                              return totalPending.toFixed(2);
+                            })()}
+                          </h2>
                         </div>
                         <div className="border-t border-neutral-800 my-5"></div>
                         <div>
@@ -600,12 +656,24 @@ export default function MobilePortalsView({
                         <div className="grid grid-cols-2 gap-3">
                           <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl relative overflow-hidden shadow-md">
                             <p className="text-[10px] font-bold text-zinc-400 uppercase mb-1">Línea Principal</p>
-                            <p className="text-lg font-black text-white">${Number((loggedClient as any)?.creditLimit || 0).toFixed(2)}</p>
+                            <p className="text-lg font-black text-white">
+                              ${(() => {
+                                const totalPending = activeInstallments.reduce((sum, item) => sum + (Number(item.amountUSD) || Number(item.amount) || 0), 0);
+                                const limit = Number((loggedClient as any)?.creditLimit || 50);
+                                return Math.max(0, limit - totalPending).toFixed(2);
+                              })()}
+                            </p>
                             <div className="absolute bottom-0 left-0 w-full h-1.5 bg-emerald-500"></div>
                           </div>
                           <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl relative overflow-hidden shadow-md">
                             <p className="text-[10px] font-bold text-zinc-400 uppercase mb-1">Línea Comida</p>
-                            <p className="text-lg font-black text-white">${Number((loggedClient as any)?.foodCreditLimit || (loggedClient as any)?.creditLimit || 0).toFixed(2)}</p>
+                            <p className="text-lg font-black text-white">
+                              ${(() => {
+                                // Food line is usually a specific limit, using foodCreditLimit or default fallback
+                                const foodLimit = Number((loggedClient as any)?.foodCreditLimit || 20); 
+                                return foodLimit.toFixed(2);
+                              })()}
+                            </p>
                             <div className="absolute bottom-0 left-0 w-full h-1.5 bg-amber-500"></div>
                           </div>
                         </div>
@@ -759,15 +827,10 @@ export default function MobilePortalsView({
 
                   {clientActiveTab === 'pagos' && (
                     <PaymentsTab
-                      currentDebt={Number((loggedClient as any)?.outstandingDebt || 0)}
                       bcvRate={36.5}
-                      debtList={Number((loggedClient as any)?.outstandingDebt || 0) > 0 ? [{ id: 'd-1', concept: 'Fiar en Tienda', currentInstallment: 1, totalInstallments: 1, dueDate: 'Vencida', amountUSD: Number((loggedClient as any)?.outstandingDebt || 0) }] : []}
-                      paymentHistory={[]}
                       clientData={loggedClient}
-                      onReportPayment={(payload) => {
-                        alert('Pago procesado simulado. En ambiente real, esto se enviaría al dashboard de caja.');
-                        setClientActiveTab('inicio');
-                      }}
+                      onNavigateTab={setClientActiveTab}
+                      onAddNotification={onAddNotification}
                     />
                   )}
 
@@ -1287,6 +1350,75 @@ export default function MobilePortalsView({
           </div>
         )}
       </div>
+      )}
+      {/* Real-Time Sync: Cashea-style Approval Lock */}
+      {pendingCreditRequest && (
+        <div className="fixed inset-0 z-[1000] flex flex-col bg-slate-950 text-slate-100 overflow-hidden animate-in slide-in-from-bottom-full duration-300">
+          <div className="flex-1 flex flex-col p-6 items-center justify-center text-center relative">
+            <div className="absolute inset-0 bg-emerald-900/20 animate-pulse pointer-events-none" />
+            <div className="w-24 h-24 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-6 relative z-10 mx-auto">
+              <Store className="w-12 h-12 text-amber-500" />
+            </div>
+            <h2 className="text-3xl font-black mb-2 relative z-10 uppercase tracking-widest text-emerald-400">Aprobar Compra</h2>
+            <p className="text-slate-400 mb-8 relative z-10">La tienda física solicita tu aprobación para finalizar esta compra a crédito.</p>
+
+            <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-2xl p-6 mb-8 relative z-10 mx-auto">
+              <div className="text-4xl font-black text-white mb-6">
+                ${(pendingCreditRequest.totalUSD || pendingCreditRequest.amount || 0).toFixed(2)}
+              </div>
+              
+              <div className="space-y-3 text-sm font-mono text-left">
+                <div className="flex justify-between border-b border-slate-800 pb-2">
+                  <span className="text-slate-500">Inicial Requerida (20%)</span>
+                  <span className="text-white">${(pendingCreditRequest.downPayment || pendingCreditRequest.kaluCreditData?.inicial || 0).toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between border-b border-slate-800 pb-2">
+                  <span className="text-slate-500">Monto a Financiar</span>
+                  <span className="text-white">${(pendingCreditRequest.financedAmount || pendingCreditRequest.kaluCreditData?.aFinanciar || 0).toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between border-b border-slate-800 pb-2">
+                  <span className="text-slate-500">Plan de Cuotas</span>
+                  <span className="text-amber-400 font-bold">{pendingCreditRequest.installmentsCount || 4} x ${(pendingCreditRequest.financedAmount ? (pendingCreditRequest.financedAmount/(pendingCreditRequest.installmentsCount || 4)) : pendingCreditRequest.kaluCreditData?.cuotas || 0).toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between pt-2">
+                  <span className="text-slate-500">Factura #</span>
+                  <span className="text-slate-300">{pendingCreditRequest.invoiceNumber}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="w-full max-w-sm space-y-3 relative z-10 mx-auto">
+              <button
+                onClick={async () => {
+                  try {
+                    await updateDoc(doc(db, 'transactions', pendingCreditRequest.id), { status: 'approved' });
+                    setPendingCreditRequest(null);
+                    onAddNotification('¡Compra aprobada con éxito!', 'success');
+                  } catch (e) {
+                    console.error(e);
+                  }
+                }}
+                className="w-full py-4 bg-emerald-500 text-slate-950 font-black text-lg uppercase tracking-wider rounded-xl hover:bg-emerald-400 active:scale-95 transition-all shadow-lg shadow-emerald-500/20"
+              >
+                Aprobar y Comprar
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    await updateDoc(doc(db, 'transactions', pendingCreditRequest.id), { status: 'rejected' });
+                    setPendingCreditRequest(null);
+                    onAddNotification('Has rechazado la solicitud de crédito.', 'info');
+                  } catch (e) {
+                    console.error(e);
+                  }
+                }}
+                className="w-full py-4 bg-slate-900 border border-slate-800 text-rose-500 font-black text-lg uppercase tracking-wider rounded-xl hover:bg-rose-500/10 active:scale-95 transition-all"
+              >
+                Rechazar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

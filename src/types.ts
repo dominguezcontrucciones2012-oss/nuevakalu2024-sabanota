@@ -12,7 +12,19 @@ export interface Transaction {
   invoiceNumber: string;
   amount: number;
   isIncome: boolean;
-  status: 'Completado' | 'Pendiente';
+  status: 'Completado' | 'Pendiente' | 'pending_approval' | 'approved' | 'rejected' | 'pending_verification';
+  clientId?: string;
+  installmentIds?: string[];
+  kaluCreditData?: {
+    inicial: number;
+    aFinanciar: number;
+    cuotas: number;
+  };
+  clientCi?: string;
+  totalUSD?: number;
+  downPayment?: number;
+  financedAmount?: number;
+  installmentsCount?: number;
   paymentMethod?: string;
   notes?: string;
   items?: any[];
@@ -29,6 +41,17 @@ export interface Transaction {
   changeBs?: number;
   bcvRateAtSettlement?: number;
   isVoided?: boolean;
+}
+
+export interface DebtInstallment {
+  id: string;
+  clientId: string;
+  transactionId: string;
+  amount: number;
+  dueDate: string;
+  status: 'pending' | 'paid' | 'overdue' | 'in_review';
+  paidAt?: string;
+  timestamp?: any;
 }
 
 export interface UserIdentity {
@@ -144,6 +167,9 @@ export interface ClientProfile {
   name: string;
   cedula?: string;
   rfc?: string;
+  ci?: string;
+  ciRif?: string;
+  idNumber?: string;
   phone: string;
   email: string;
   address?: string;
