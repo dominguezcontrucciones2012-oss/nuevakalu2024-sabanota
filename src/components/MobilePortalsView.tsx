@@ -50,52 +50,7 @@ interface MobilePortalsViewProps {
   isolatedId?: string;
 }
 
-interface CatalogProduct {
-  id: string;
-  name: string;
-  category: 'Repuestos' | 'Comidas' | 'Quesos';
-  price: number;
-  unit: string;
-  stock: number;
-}
-
-// Simulated large product catalog containing motorcycle parts (repuestos de moto), comida, and quesos
-const MOBILE_CATALOG: CatalogProduct[] = [
-  // Repuestos de Moto (Motorcycle Parts)
-  { id: 'rep-1', name: 'Llanta de Moto Deportiva Trasera 18" Premium', category: 'Repuestos', price: 1250, unit: 'pza', stock: 12 },
-  { id: 'rep-2', name: 'Kit de Arrastre Reforzado Italika/Yamaha FT150', category: 'Repuestos', price: 680, unit: 'kit', stock: 8 },
-  { id: 'rep-3', name: 'Cadena de Tracción Reforzada Dorada #428', category: 'Repuestos', price: 290, unit: 'pza', stock: 15 },
-  { id: 'rep-4', name: 'Aceite de Motor Motul 4T 20W50 Original (1L)', category: 'Repuestos', price: 185, unit: 'L', stock: 32 },
-  { id: 'rep-5', name: 'Bujía de Iridio NGK de Alto Rendimiento', category: 'Repuestos', price: 140, unit: 'pza', stock: 50 },
-  { id: 'rep-6', name: 'Juego de Balatas de Freno Traseras/Delanteras', category: 'Repuestos', price: 120, unit: 'juego', stock: 18 },
-  { id: 'rep-7', name: 'Espejos Retrovisores Universales Fibra de Carbono', category: 'Repuestos', price: 210, unit: 'par', stock: 10 },
-  { id: 'rep-8', name: 'Cámara para Llanta de Moto Rin 17/18" Reforzada', category: 'Repuestos', price: 130, unit: 'pza', stock: 24 },
-  { id: 'rep-9', name: 'Batería de Gel LTH 12V Sellada Libre Manto.', category: 'Repuestos', price: 590, unit: 'pza', stock: 6 },
-  { id: 'rep-10', name: 'Foco LED Principal de Alta Intensidad H4', category: 'Repuestos', price: 175, unit: 'pza', stock: 15 },
-  { id: 'rep-11', name: 'Puños de Goma Deportivos Antideslizantes', category: 'Repuestos', price: 95, unit: 'par', stock: 30 },
-  { id: 'rep-12', name: 'Manija de Freno / Embrague Universal de Aluminio', category: 'Repuestos', price: 145, unit: 'pza', stock: 11 },
-
-  // Comidas y Víveres (Meals & Supplies)
-  { id: 'com-1', name: 'Plato Almuerzo Corrido Completo (Guisado del día)', category: 'Comidas', price: 95, unit: 'platillo', stock: 40 },
-  { id: 'com-2', name: 'Desayuno de Rancho Completo (Huevos + Tortillas + Café)', category: 'Comidas', price: 85, unit: 'platillo', stock: 25 },
-  { id: 'com-3', name: 'Saco de Maíz Blanco Desgranado Premium (50kg)', category: 'Comidas', price: 480, unit: 'saco', stock: 15 },
-  { id: 'com-4', name: 'Bulto de Alimento Balanceado Vacas Lecheras (40kg)', category: 'Comidas', price: 620, unit: 'bulto', stock: 20 },
-  { id: 'com-5', name: 'Kilo de Tortillas de Maíz Nixtamalizado Calientes', category: 'Comidas', price: 24, unit: 'kg', stock: 100 },
-  { id: 'com-6', name: 'Café Molido Gourmet de la Región (500g)', category: 'Comidas', price: 130, unit: 'bolsa', stock: 16 },
-  { id: 'com-7', name: 'Refresco Familiar Coca-Cola Original (1.5L)', category: 'Comidas', price: 32, unit: 'pza', stock: 60 },
-  { id: 'com-8', name: 'Aceite de Cocina Comestible Aurrera (1L)', category: 'Comidas', price: 42, unit: 'pza', stock: 80 },
-  { id: 'com-9', name: 'Frijol Negro de rancho seleccionado', category: 'Comidas', price: 38, unit: 'kg', stock: 120 },
-  { id: 'com-10', name: 'Arroz Súper Extra grano entero', category: 'Comidas', price: 26, unit: 'kg', stock: 150 },
-  { id: 'com-11', name: 'Litro de Leche Entera Pasteurizada Kalu', category: 'Comidas', price: 22, unit: 'L', stock: 90 },
-
-  // Quesos y Lácteos (Cheddar/Manchego/Quesillo)
-  { id: 'que-1', name: 'Queso Manchego de Oveja Curado', category: 'Quesos', price: 340, unit: 'kg', stock: 15 },
-  { id: 'que-2', name: 'Queso Cotija Añejo Genuino', category: 'Quesos', price: 290, unit: 'kg', stock: 12 },
-  { id: 'que-3', name: 'Quesillo de Hebra Oaxaca Especial', category: 'Quesos', price: 210, unit: 'kg', stock: 20 },
-  { id: 'que-4', name: 'Queso Fresco de Rancho Molido', category: 'Quesos', price: 140, unit: 'kg', stock: 30 },
-  { id: 'que-5', name: 'Crema Ácida Genuina de Rancho (Litro)', category: 'Quesos', price: 95, unit: 'L', stock: 25 },
-  { id: 'que-6', name: 'Queso Panela para Asar tierno', category: 'Quesos', price: 165, unit: 'kg', stock: 14 }
-];
+// Removed products, using products from Firebase real-time
 
 export default function MobilePortalsView({
   products,
@@ -326,13 +281,13 @@ export default function MobilePortalsView({
 
   // Client Cart updates
   const handleClientCartAdd = (pId: string) => {
-    const prod = MOBILE_CATALOG.find(p => p.id === pId);
+    const prod = products.find(p => p.id === pId);
     if (!prod) return;
     setClientCart((prev) => {
       const existing = prev.find(item => item.productId === pId);
-      const inc = prod.category === 'Quesos' ? 0.5 : 1;
+      const inc = (prod.category as string) === 'Quesos' ? 0.5 : 1;
       if (existing) {
-        if (existing.quantity + inc > prod.stock) {
+        if (existing.quantity + inc > Number(prod.stockKg || (prod as any).stock || 0)) {
           onAddNotification('Límite de stock disponible en bodega superado.', 'warning');
           return prev;
         }
@@ -346,7 +301,7 @@ export default function MobilePortalsView({
     setClientCart((prev) => {
       const existing = prev.find(item => item.productId === pId);
       if (existing) {
-        const dec = MOBILE_CATALOG.find(p => p.id === pId)?.category === 'Quesos' ? 0.5 : 1;
+        const dec = (products.find(p => p.id === pId)?.category as string) === 'Quesos' ? 0.5 : 1;
         if (existing.quantity <= dec) {
           return prev.filter(item => item.productId !== pId);
         }
@@ -358,13 +313,13 @@ export default function MobilePortalsView({
 
   // Supplier Cart updates
   const handleSupplierCartAdd = (pId: string) => {
-    const prod = MOBILE_CATALOG.find(p => p.id === pId);
+    const prod = products.find(p => p.id === pId);
     if (!prod) return;
     setSupplierCart((prev) => {
       const existing = prev.find(item => item.productId === pId);
-      const inc = prod.category === 'Quesos' ? 0.5 : 1;
+      const inc = (prod.category as string) === 'Quesos' ? 0.5 : 1;
       if (existing) {
-        if (existing.quantity + inc > prod.stock) {
+        if (existing.quantity + inc > Number(prod.stockKg || (prod as any).stock || 0)) {
           onAddNotification('Límite de stock disponible superado.', 'warning');
           return prev;
         }
@@ -378,7 +333,7 @@ export default function MobilePortalsView({
     setSupplierCart((prev) => {
       const existing = prev.find(item => item.productId === pId);
       if (existing) {
-        const dec = MOBILE_CATALOG.find(p => p.id === pId)?.category === 'Quesos' ? 0.5 : 1;
+        const dec = (products.find(p => p.id === pId)?.category as string) === 'Quesos' ? 0.5 : 1;
         if (existing.quantity <= dec) {
           return prev.filter(item => item.productId !== pId);
         }
@@ -398,13 +353,13 @@ export default function MobilePortalsView({
     }
 
     const orderItems = clientCart.map(cartItem => {
-      const prod = MOBILE_CATALOG.find(p => p.id === cartItem.productId)!;
+      const prod = products.find(p => p.id === cartItem.productId)!;
       return {
         productId: prod.id,
         name: prod.name,
         quantity: cartItem.quantity,
-        price: prod.price,
-        subtotal: prod.price * cartItem.quantity
+        price: prod.sellingPrice || (prod as any).price || 0,
+        subtotal: (prod.sellingPrice || (prod as any).price || 0) * cartItem.quantity
       };
     });
 
@@ -442,13 +397,13 @@ export default function MobilePortalsView({
     }
 
     const orderItems = supplierCart.map(cartItem => {
-      const prod = MOBILE_CATALOG.find(p => p.id === cartItem.productId)!;
+      const prod = products.find(p => p.id === cartItem.productId)!;
       return {
         productId: prod.id,
         name: prod.name,
         quantity: cartItem.quantity,
-        price: prod.price,
-        subtotal: prod.price * cartItem.quantity
+        price: prod.sellingPrice || (prod as any).price || 0,
+        subtotal: (prod.sellingPrice || (prod as any).price || 0) * cartItem.quantity
       };
     });
 
@@ -473,15 +428,15 @@ export default function MobilePortalsView({
   };
 
   // Filtering Products for Client Portal
-  const filteredClientProducts = MOBILE_CATALOG.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(clientSearch.toLowerCase());
+  const filteredClientProducts = products.filter(p => {
+    const matchesSearch = p.name?.toLowerCase().includes(clientSearch.toLowerCase());
     const matchesCat = clientCategory === 'Todos' || p.category === clientCategory;
     return matchesSearch && matchesCat;
   });
 
   // Filtering Products for Supplier Portal
-  const filteredSupplierProducts = MOBILE_CATALOG.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(supplierSearch.toLowerCase());
+  const filteredSupplierProducts = products.filter(p => {
+    const matchesSearch = p.name?.toLowerCase().includes(supplierSearch.toLowerCase());
     const matchesCat = supplierCategory === 'Todos' || p.category === supplierCategory;
     return matchesSearch && matchesCat;
   });
@@ -581,9 +536,14 @@ export default function MobilePortalsView({
                     </div>
                   </form>
 
-                  <div className="text-center text-[8px] text-zinc-500 space-y-1">
-                    <p>🔒 Conexión Protegida y Encriptada</p>
-                    <p>Kalu CRM S.A. de C.V.</p>
+                  <div className="text-center text-[8px] text-zinc-500 space-y-3 mt-4">
+                    <div>
+                      <p>🔒 Conexión Protegida y Encriptada</p>
+                      <p>Kalu CRM S.A. de C.V.</p>
+                    </div>
+                    <a href="/?admin=true" className="inline-block text-zinc-600 hover:text-amber-500 transition-colors uppercase font-bold tracking-widest border border-zinc-800 rounded px-3 py-1.5 bg-zinc-900/50">
+                      Acceso Administrativo / Cajero
+                    </a>
                   </div>
                 </div>
               ) : (
@@ -814,7 +774,7 @@ export default function MobilePortalsView({
                   })()}
 
                   {clientActiveTab === 'tienda' && (
-                    <StoreTab onNavigateTab={setClientActiveTab} />
+                    <StoreTab products={products} onNavigateTab={setClientActiveTab} />
                   )}
 
                   {clientActiveTab === 'qr' && (
@@ -1078,15 +1038,15 @@ export default function MobilePortalsView({
                             <div>
                               <div className="flex items-center gap-1">
                                 <span className={`px-1 py-0.2 rounded text-[7px] font-mono uppercase ${
-                                  p.category === 'Repuestos' ? 'bg-sky-500/20 text-sky-400 font-bold' :
-                                  p.category === 'Comidas' ? 'bg-amber-500/20 text-amber-400 font-bold' : 'bg-emerald-500/20 text-emerald-400 font-bold'
+                                  (p.category as string) === 'Repuestos' ? 'bg-sky-500/20 text-sky-400 font-bold' :
+                                  (p.category as string) === 'Comidas' ? 'bg-amber-500/20 text-amber-400 font-bold' : 'bg-emerald-500/20 text-emerald-400 font-bold'
                                 }`}>
                                   {p.category}
                                 </span>
                                 <p className="font-bold text-slate-200 text-[10.5px] max-w-[150px] truncate leading-tight">{p.name}</p>
                               </div>
                               <p className="text-[10px] text-emerald-400 font-mono mt-0.5">
-                                ${Number(p.price || 0).toFixed(2)} <span className="text-slate-500 text-[8px]">/{p.unit}</span>
+                                ${Number(p.sellingPrice || 0).toFixed(2)} <span className="text-slate-500 text-[8px]">/{p.unit}</span>
                               </p>
                             </div>
 
@@ -1123,7 +1083,7 @@ export default function MobilePortalsView({
                       <div className="flex justify-between items-center text-[11px]">
                         <span className="text-[8px] uppercase font-mono tracking-wider text-slate-400">Total Insumos:</span>
                         <span className="font-mono font-bold text-emerald-400">
-                          ${Number(supplierCart.reduce((sum, item) => sum + (MOBILE_CATALOG.find(p => p.id === item.productId)?.price || 0) * item.quantity, 0)).toFixed(2)} M.N.
+                          ${Number(supplierCart.reduce((sum, item) => sum + (products.find(p => p.id === item.productId)?.sellingPrice || 0) * item.quantity, 0)).toFixed(2)} M.N.
                         </span>
                       </div>
 

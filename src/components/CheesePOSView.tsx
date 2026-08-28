@@ -244,9 +244,9 @@ export default function CheesePOSView({
   }, [cart, settings?.taxRate]);
 
   const handleAddToCart = (product: CheeseProduct, qty: number = 1.0) => {
-    const stock = parseNum(product.stockKg);
+    const stock = parseNum(product.stockKg || (product as any).stock || 0);
     if (stock <= 0) {
-      onAddNotification(`El producto ${product.name} está agotado temporalmente.`, 'warning');
+      onAddNotification(`Stock insuficiente o existencia en cero de ${product.name}`, 'warning');
       return;
     }
 
@@ -255,7 +255,7 @@ export default function CheesePOSView({
     const currentQty = existing ? parseNum(existing.quantityKg) : 0;
     const addQty = parseNum(qty);
     const newQty = parseNum((currentQty + addQty).toFixed(2));
-    const pPrice = parseNum(product.sellingPrice);
+    const pPrice = parseNum(product.sellingPrice || (product as any).price || 0);
 
     if (newQty > availableStock) {
       onAddNotification(`Stock insuficiente. Solo quedan ${availableStock} kg de ${product.name}.`, 'warning');
@@ -914,8 +914,9 @@ export default function CheesePOSView({
                     }
                   })
                   .map((p) => {
-                    const isSoldOut = p.stockKg <= 0;
-                    const isLowStock = p.stockKg > 0 && p.stockKg <= p.alertThreshold;
+                    const safeStock = Number(p.stockKg || (p as any).stock || 0);
+                    const isSoldOut = safeStock <= 0;
+                    const isLowStock = safeStock > 0 && safeStock <= p.alertThreshold;
                     const isSelected = selectedProductId === p.id;
                     return (
                       <div
@@ -949,7 +950,7 @@ export default function CheesePOSView({
                             {p.name}
                           </h3>
                           <p className="font-mono text-xs text-amber-500 font-bold pt-1">
-                            ${p.sellingPrice.toFixed(2)} <span className="text-[10px] text-editorial-text-muted font-normal font-sans">/ {getUnitLabel(p).toLowerCase()}</span>
+                            ${Number(p.sellingPrice || (p as any).price || 0).toFixed(2)} <span className="text-[10px] text-editorial-text-muted font-normal font-sans">/ {getUnitLabel(p).toLowerCase()}</span>
                           </p>
                         </div>
 

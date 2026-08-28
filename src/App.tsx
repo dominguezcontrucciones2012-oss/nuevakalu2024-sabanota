@@ -1565,10 +1565,13 @@ export default function App() {
   const urlParams = new URLSearchParams(window.location.search);
   const portalParam = urlParams.get('portal');
   const portalId = urlParams.get('id');
+  const adminParam = urlParams.get('admin');
 
-  if (portalParam && (portalParam === 'cliente' || portalParam === 'productor' || portalParam === 'proveedor' || portalParam === 'contador')) {
-    // If it's a client or supplier but there is no ID, we show it anyway (so they can search)
-    // For accountant it doesn't need an ID.
+  // Show ERP if admin is explicitly requested, or if already authenticated and no portal was explicitly requested
+  const showErp = adminParam === 'true' || (isAuthenticated && !portalParam);
+
+  if (!showErp) {
+    const effectiveType = (portalParam === 'productor' || portalParam === 'proveedor' || portalParam === 'contador') ? portalParam : 'cliente';
     return (
       <div className="min-h-screen bg-black text-white">
         <MobilePortalsView
@@ -1580,7 +1583,7 @@ export default function App() {
           onDeliverMobileOrder={handleDeliverMobileOrder}
           onCancelMobileOrder={handleCancelMobileOrder}
           onAddNotification={addNotification}
-          isolatedType={portalParam as any}
+          isolatedType={effectiveType as any}
           isolatedId={portalId || undefined}
         />
       </div>

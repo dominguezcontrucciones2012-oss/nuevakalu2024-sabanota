@@ -16,8 +16,10 @@ import {
 } from 'lucide-react';
 import { exportToJson, importFromJson, createSnapshot, restoreSnapshot } from '../services/backupService';
 
-import { db } from '../services/firebase';
-import { doc, setDoc, updateDoc, deleteDoc, getDocs, collection, serverTimestamp } from 'firebase/firestore';
+import { db, storage } from '../services/firebase';
+import { doc, setDoc, updateDoc, deleteDoc, getDocs, collection, serverTimestamp, onSnapshot, writeBatch } from 'firebase/firestore';
+import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
+import { Shift, ShiftItem, saveShift, loadShifts, deleteShift } from '../services/shiftManager';
 
 interface SettingsAdminViewProps {
   settings: BusinessSettings;
@@ -35,8 +37,6 @@ export default function SettingsAdminView({
   onResetAccounting
 }: SettingsAdminViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<'config' | 'users' | 'backup' | 'maintenance'>('config');
-
-  // General Settings Form States
   const [businessName, setBusinessName] = useState(settings.businessName);
   const [taxRate, setTaxRate] = useState(settings.taxRate === 16 || settings.taxRate === undefined ? 5 : settings.taxRate);
   const [exchangeRate, setExchangeRate] = useState(settings.exchangeRate || 45.00);
@@ -74,6 +74,198 @@ export default function SettingsAdminView({
   // Maintenance States
   const [maintLogs, setMaintLogs] = useState<string[]>([]);
   const [isWiping, setIsWiping] = useState(false);
+
+  // Shift Manager States
+  const [localShifts, setLocalShifts] = useState<Shift[]>([]);
+  const [selectedShiftId, setSelectedShiftId] = useState<string>('');
+  
+  const [shiftBannerTitle, setShiftBannerTitle] = useState('');
+  const [shiftBannerDesc, setShiftBannerDesc] = useState('');
+  const [shiftBannerFile, setShiftBannerFile] = useState<File | null>(null);
+  
+  const [isPublishingShift, setIsPublishingShift] = useState(false);
+  const [activeBanners, setActiveBanners] = useState<any[]>([]);
+
+  // Shift Modal States
+  const [showShiftModal, setShowShiftModal] = useState(false);
+  const [newShiftName, setNewShiftName] = useState('');
+  
+  // Publish Confirmation & Progress States
+  const [confirmPublishShift, setConfirmPublishShift] = useState<Shift | null>(null);
+  const [uploadStatus, setUploadStatus] = useState('');
+  const [uploadPercent, setUploadPercent] = useState(0);
+
+  useEffect(() => {
+    // Cargar turnos locales al abrir la pestaña
+    if (activeSubTab === 'maintenance') {
+      loadShifts().then(setLocalShifts).catch(console.error);
+
+      // Escuchar banners activos de la nube
+      const unsub = onSnapshot(collection(db, 'banners'), (snap) => {
+        const arr: any[] = [];
+        snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
+        setActiveBanners(arr);
+      });
+      return () => unsub();
+    }
+  }, [activeSubTab]);
+
+  const handleCreateShift = () => {
+    setShowShiftModal(true);
+    setNewShiftName('');
+  };
+
+  const confirmCreateShift = async () => {
+    if (!newShiftName.trim()) {
+      return onAddNotification('El nombre no puede estar vacío.', 'warning');
+    }
+    const newShift: Shift = {
+      id: `shift_${Date.now()}`,
+      name: newShiftName.trim(),
+      items: []
+    };
+    await saveShift(newShift);
+    setLocalShifts(await loadShifts());
+    setSelectedShiftId(newShift.id);
+    setShowShiftModal(false);
+    onAddNotification('Turno creado localmente.', 'success');
+  };
+
+  const handleDeleteLocalShift = async (id: string) => {
+    if (window.confirm('¿Eliminar este turno localmente?')) {
+      await deleteShift(id);
+      setLocalShifts(await loadShifts());
+      if (selectedShiftId === id) setSelectedShiftId('');
+    }
+  };
+
+  const handleAddFileToShift = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedShiftId) return onAddNotification('Seleccione un turno primero.', 'warning');
+    if (!shiftBannerFile) return onAddNotification('Seleccione un archivo de imagen o video.', 'warning');
+    if (!shiftBannerTitle) return onAddNotification('Escriba un título.', 'warning');
+
+    const s = localShifts.find(x => x.id === selectedShiftId);
+    if (!s) return;
+    if (s.items.length >= 3) {
+      return onAddNotification('Máximo 3 elementos por turno.', 'warning');
+    }
+
+    const newItem: ShiftItem = {
+      id: `item_${Date.now()}`,
+      title: shiftBannerTitle,
+      desc: shiftBannerDesc,
+      fileBlob: shiftBannerFile,
+      fileName: shiftBannerFile.name,
+      type: shiftBannerFile.type
+    };
+
+    const updatedShift = { ...s, items: [...s.items, newItem] };
+    await saveShift(updatedShift);
+    setLocalShifts(await loadShifts());
+    
+    setShiftBannerTitle('');
+    setShiftBannerDesc('');
+    setShiftBannerFile(null);
+    onAddNotification('Archivo agregado al turno local.', 'success');
+  };
+
+  const handleRemoveFileFromShift = async (shiftId: string, itemId: string) => {
+    const s = localShifts.find(x => x.id === shiftId);
+    if (!s) return;
+    const updatedShift = { ...s, items: s.items.filter(x => x.id !== itemId) };
+    await saveShift(updatedShift);
+    setLocalShifts(await loadShifts());
+  };
+
+  const handlePublishShift = async (shift: Shift) => {
+    if (shift.items.length === 0) {
+      return onAddNotification('El turno está vacío. Agregue archivos.', 'warning');
+    }
+
+    setIsPublishingShift(true);
+    setUploadStatus('Preparando limpieza de nube...');
+    setUploadPercent(0);
+    try {
+      setMaintLogs(prev => [...prev, `[Banners] Iniciando publicación del turno: ${shift.name}`]);
+      
+      const timeoutPromise = (ms: number, msg: string) => 
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(msg)), ms));
+
+      // 1. Delete existing cloud banners from Firestore and Storage
+      setMaintLogs(prev => [...prev, `[Banners] Purgando banners anteriores de la nube...`]);
+      const currentSnap = await getDocs(collection(db, 'banners'));
+      for (const d of currentSnap.docs) {
+        const data = d.data();
+        if (data.storagePath) {
+          try {
+            await deleteObject(ref(storage, data.storagePath));
+            setMaintLogs(prev => [...prev, `[Banners] Archivo purgado: ${data.storagePath}`]);
+          } catch (e: any) {
+            setMaintLogs(prev => [...prev, `[Banners] Ignorando purga (no encontrado): ${data.storagePath}`]);
+          }
+        }
+        try {
+          await deleteDoc(d.ref);
+        } catch(e) {}
+      }
+
+      // 2. Upload new files and create Firestore docs
+      setMaintLogs(prev => [...prev, `[Banners] Subiendo ${shift.items.length} archivos nuevos a Firebase Storage...`]);
+      for (let i = 0; i < shift.items.length; i++) {
+        const item = shift.items[i];
+        const storagePath = `banners/shift_${Date.now()}_${item.fileName}`;
+        const fileRef = ref(storage, storagePath);
+        
+        const uploadTask = uploadBytesResumable(fileRef, item.fileBlob);
+        
+        let initialLogEmitted = false;
+
+        const uploadPromise = new Promise((resolve, reject) => {
+          uploadTask.on('state_changed', 
+            (snap) => {
+              if (!initialLogEmitted) {
+                setMaintLogs(prev => [...prev, `[Banners] Conexión establecida. Iniciando subida de ${item.fileName}...`]);
+                initialLogEmitted = true;
+              }
+              const progress = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+              setUploadPercent(progress);
+              setUploadStatus(`Subiendo archivo ${i+1} de ${shift.items.length}: ${item.fileName} (${progress}%)`);
+            },
+            (error) => reject(error),
+            () => resolve(null)
+          );
+        });
+
+        await uploadPromise;
+        
+        setUploadStatus(`Obteniendo enlace seguro ${i+1}/${shift.items.length}...`);
+        const downloadUrl = await getDownloadURL(fileRef);
+
+        await setDoc(doc(collection(db, 'banners')), {
+          title: item.title,
+          desc: item.desc,
+          url: downloadUrl,
+          storagePath: storagePath,
+          type: item.type,
+          active: true,
+          createdAt: serverTimestamp()
+        });
+      }
+
+      setMaintLogs(prev => [...prev, `[Banners] Turno publicado exitosamente.`]);
+      onAddNotification(`Turno ${shift.name} publicado.`, 'success');
+      setConfirmPublishShift(null);
+    } catch (err: any) {
+      onAddNotification('Error publicando turno: ' + err.message, 'warning');
+      setMaintLogs(prev => [...prev, `[Banners] Error crítico: ${err.message}`]);
+    } finally {
+      setIsPublishingShift(false);
+      setUploadStatus('');
+      setUploadPercent(0);
+    }
+  };
+
 
   const handleWipeContabilidad = async () => {
     if (!window.confirm("¡ADVERTENCIA CRÍTICA!\n\n¿Estás seguro de que quieres borrar TODAS las ventas, transacciones y limpiar los saldos de clientes y proveedores?\n\nEsta acción NO se puede deshacer y borrará la contabilidad de la base de datos en la nube.")) {
@@ -806,6 +998,102 @@ export default function SettingsAdminView({
               </div>
             </div>
 
+            <div className="bg-editorial-bg border border-editorial-border rounded p-5 space-y-5">
+              <div className="flex items-center justify-between border-b border-editorial-border pb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded bg-emerald-500/10 text-emerald-500 flex items-center justify-center">
+                    <Upload className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="font-serif text-md font-bold text-editorial-text-primary">Gestor de Banners PWA (Por Turnos)</h4>
+                    <p className="text-[11px] text-editorial-text-muted">Carga videos locales (IndexedDB) y publícalos a Firebase.</p>
+                  </div>
+                </div>
+                <button onClick={handleCreateShift} className="px-3 py-1.5 bg-emerald-600/20 text-emerald-400 hover:bg-emerald-500/30 font-bold text-[10px] uppercase rounded border border-emerald-500/30 transition-colors">
+                  + Crear Turno
+                </button>
+              </div>
+
+              {localShifts.length > 0 ? (
+                <div className="space-y-4">
+                  <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+                    {localShifts.map(s => (
+                      <button
+                        key={s.id}
+                        onClick={() => setSelectedShiftId(s.id)}
+                        className={`px-4 py-2 shrink-0 rounded border text-xs font-bold uppercase transition-all ${selectedShiftId === s.id ? 'bg-editorial-card border-emerald-500 text-emerald-400' : 'bg-editorial-bg border-editorial-border text-editorial-text-muted hover:border-emerald-500/40'}`}
+                      >
+                        {s.name} ({s.items.length}/3)
+                      </button>
+                    ))}
+                  </div>
+
+                  {selectedShiftId && (
+                    <div className="bg-editorial-card border border-editorial-border rounded p-4 space-y-4">
+                      {/* Formulario de Items */}
+                      <form onSubmit={handleAddFileToShift} className="space-y-4 bg-slate-900/50 p-4 border border-slate-800 rounded">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold text-editorial-text-muted uppercase tracking-wider">Título del Anuncio</label>
+                            <input type="text" value={shiftBannerTitle} onChange={e => setShiftBannerTitle(e.target.value)} required className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs text-white focus:border-emerald-500 outline-none" placeholder="Promoción..." />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold text-editorial-text-muted uppercase tracking-wider">Archivo Físico (Local)</label>
+                            <input type="file" accept="image/*,video/*" onChange={e => setShiftBannerFile(e.target.files?.[0] || null)} required className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-[11px] text-slate-400 file:mr-3 file:py-1 file:px-2 file:rounded file:border-0 file:text-[10px] file:font-bold file:bg-emerald-600 file:text-white hover:file:bg-emerald-500 cursor-pointer" />
+                          </div>
+                        </div>
+                        <div className="flex gap-3 items-end">
+                          <div className="flex-1 space-y-1.5">
+                            <label className="text-[10px] font-bold text-editorial-text-muted uppercase tracking-wider">Descripción Breve</label>
+                            <input type="text" value={shiftBannerDesc} onChange={e => setShiftBannerDesc(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs text-white focus:border-emerald-500 outline-none" placeholder="Opcional..." />
+                          </div>
+                          <button type="submit" className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase rounded transition-colors whitespace-nowrap">
+                            Agregar al Turno
+                          </button>
+                        </div>
+                      </form>
+
+                      {/* Lista de Items del Turno Actual */}
+                      <div className="space-y-2">
+                        {localShifts.find(x => x.id === selectedShiftId)?.items.map(item => (
+                          <div key={item.id} className="flex items-center justify-between p-3 rounded border border-slate-800 bg-slate-900">
+                            <div>
+                              <p className="font-bold text-xs text-slate-200">{item.title}</p>
+                              <p className="text-[10px] text-slate-500">{item.type.includes('video') ? '🎥 Video' : '🖼️ Imagen'} • {item.fileName} ({(item.fileBlob.size / 1024 / 1024).toFixed(1)} MB)</p>
+                            </div>
+                            <button onClick={() => handleRemoveFileFromShift(selectedShiftId, item.id)} className="px-2 py-1 text-[10px] font-bold uppercase rounded border border-rose-500/40 text-rose-500 hover:bg-rose-500/10">Eliminar</button>
+                          </div>
+                        ))}
+                      </div>
+
+
+
+                      {/* Botoneras de Acción de Turno */}
+                      <div className="flex justify-between border-t border-editorial-border pt-4 mt-4">
+                        <button onClick={() => handleDeleteLocalShift(selectedShiftId)} className="text-rose-500 text-xs font-bold uppercase hover:underline">
+                          Eliminar Turno Local
+                        </button>
+                        <button 
+                          onClick={() => {
+                            const s = localShifts.find(x => x.id === selectedShiftId);
+                            if (s) setConfirmPublishShift(s);
+                          }} 
+                          disabled={isPublishingShift}
+                          className="px-6 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase rounded shadow-[0_0_15px_rgba(245,158,11,0.3)] disabled:opacity-50"
+                        >
+                          {isPublishingShift ? 'Sincronizando...' : '🚀 Publicar Turno en Nube'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center py-8 bg-slate-900/50 border border-slate-800 border-dashed rounded text-editorial-text-muted">
+                  No hay turnos locales configurados. Crea uno para empezar.
+                </div>
+              )}
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <button
                 onClick={() => runMaintenanceTask('db')}
@@ -889,6 +1177,102 @@ export default function SettingsAdminView({
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal para Crear Turno */}
+      {showShiftModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm bg-black/80">
+          <div className="bg-editorial-bg border-2 border-emerald-500 rounded-lg shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="bg-editorial-card p-5 border-b border-editorial-border">
+              <h3 className="font-serif font-bold text-lg text-emerald-400">Crear Nuevo Turno</h3>
+              <p className="text-xs text-editorial-text-muted mt-1">Organice sus banners y videos locales</p>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-editorial-text-muted uppercase tracking-wider">Nombre del Turno</label>
+                <input 
+                  type="text" 
+                  value={newShiftName} 
+                  onChange={e => setNewShiftName(e.target.value)} 
+                  autoFocus
+                  onKeyDown={e => e.key === 'Enter' && confirmCreateShift()}
+                  placeholder="Ej: Promo Fin de Semana..." 
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none" 
+                />
+              </div>
+            </div>
+            <div className="bg-editorial-card p-4 border-t border-editorial-border flex gap-3 justify-end">
+              <button 
+                onClick={() => setShowShiftModal(false)}
+                className="px-4 py-2 text-xs font-bold uppercase text-editorial-text-muted hover:text-white transition-colors"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={confirmCreateShift}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold uppercase rounded transition-colors shadow-lg"
+              >
+                Crear Turno
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal para Confirmar Publicación */}
+      {confirmPublishShift && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm bg-black/80">
+          <div className="bg-editorial-bg border-2 border-amber-500 rounded-lg shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="bg-editorial-card p-5 border-b border-editorial-border">
+              <h3 className="font-serif font-bold text-lg text-amber-500">
+                {isPublishingShift ? 'Sincronizando Turno con la Nube...' : '¿Confirmar Publicación?'}
+              </h3>
+              <p className="text-xs text-editorial-text-muted mt-1">Sincronización en la nube</p>
+            </div>
+            
+            {isPublishingShift ? (
+              <div className="p-5 space-y-4">
+                <div className="flex justify-between text-xs font-bold text-slate-300">
+                  <span>{uploadStatus}</span>
+                  <span className="text-emerald-400">{uploadPercent}%</span>
+                </div>
+                <div className="w-full bg-black/60 rounded-full h-3 overflow-hidden border border-emerald-500/30">
+                  <div 
+                    className="bg-emerald-500 h-full transition-all duration-300 ease-out" 
+                    style={{ width: `${uploadPercent}%` }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="p-5 space-y-4">
+                <p className="text-sm text-slate-300">
+                  Está a punto de publicar el turno <strong className="text-white">{confirmPublishShift.name}</strong>.
+                </p>
+                <div className="bg-rose-500/10 border border-rose-500/30 p-3 rounded">
+                  <p className="text-xs text-rose-400">
+                    ⚠️ Esta acción borrará inmediatamente todos los banners actuales de Firebase Storage para liberar espacio.
+                  </p>
+                </div>
+              </div>
+            )}
+            <div className="bg-editorial-card p-4 border-t border-editorial-border flex gap-3 justify-end">
+              <button 
+                onClick={() => !isPublishingShift && setConfirmPublishShift(null)}
+                disabled={isPublishingShift}
+                className="px-4 py-2 text-xs font-bold uppercase text-editorial-text-muted hover:text-white transition-colors disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={() => handlePublishShift(confirmPublishShift)}
+                disabled={isPublishingShift}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase rounded transition-colors shadow-lg disabled:opacity-50"
+              >
+                {isPublishingShift ? 'Publicando...' : 'Confirmar Publicación'}
+              </button>
             </div>
           </div>
         </div>
