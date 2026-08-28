@@ -20,7 +20,7 @@ export default function PaymentsTab({
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedDebt, setSelectedDebt] = useState<DebtInstallment | null>(null);
   const [selectedBank, setSelectedBank] = useState<'0102' | '0134'>('0102');
-  const [paymentType, setPaymentType] = useState<'completo' | 'parcial'>('completo');
+  const [paymentType, setPaymentType] = useState<'cuota' | 'venta_completa' | 'parcial'>('cuota');
   
   // Real-time Data
   const [debtList, setDebtList] = useState<DebtInstallment[]>([]);
@@ -84,9 +84,10 @@ export default function PaymentsTab({
 
   const openPaymentModal = (debt: DebtInstallment) => {
     setSelectedDebt(debt);
-    const amountBs = Number(debt.amount * bcvRate).toFixed(2);
+    const safeSingleUSD = Number((debt as any).amountUSD) || Number(debt.amount) || 0;
+    const amountBs = (safeSingleUSD * bcvRate).toFixed(2);
     setPaymentAmountBs(amountBs);
-    setPaymentType('completo');
+    setPaymentType('cuota');
     setReference('');
     setImageFile(null);
     setImagePreview('');
@@ -107,6 +108,14 @@ export default function PaymentsTab({
 
   const submitPayment = async () => {
     if (!selectedDebt || !clientData?.id) return;
+
+    const saleInstallments = debtList.filter(i => (i.saleId === selectedDebt.saleId || (i as any).transactionId === (selectedDebt as any).transactionId) && i.status !== 'paid');
+    const isFullSalePayment = paymentType === 'venta_completa';
+    
+    const installmentIds = isFullSalePayment ? saleInstallments.map(i => i.id) : [selectedDebt.id];
+    const notesText = isFullSalePayment 
+      ? `Liquidación de Venta Completa - Ref: ${reference}`
+      : `Abono a Cuota ${selectedDebt.id} - Ref: ${reference}`;
     
     const payload: Partial<Transaction> = {
       category: 'ingresos_cobranza',
@@ -116,8 +125,8 @@ export default function PaymentsTab({
       paymentMethod: 'Pago Móvil',
       status: 'pending_verification',
       clientId: clientData.id,
-      installmentIds: [selectedDebt.id],
-      notes: `Abono a Cuota ${selectedDebt.id} - Ref: ${reference}`,
+      installmentIds,
+      notes: notesText,
       date: new Date().toISOString(),
       timestamp: serverTimestamp()
     };
@@ -126,9 +135,10 @@ export default function PaymentsTab({
        await addDoc(collection(db, 'transactions'), payload);
        
        // Update installment status
-       await updateDoc(doc(db, 'installments', selectedDebt.id), {
-          status: 'in_review'
-       });
+       const updatePromises = installmentIds.map(id => 
+          updateDoc(doc(db, 'installments', id), { status: 'in_review' })
+       );
+       await Promise.all(updatePromises);
 
        if (onAddNotification) onAddNotification('Pago reportado y en revisión por el cajero.', 'success');
        setShowPaymentModal(false);
@@ -236,7 +246,12 @@ export default function PaymentsTab({
       </div>
 
       {/* Immersive Payment Modal */}
-      {showPaymentModal && selectedDebt && (
+      {showPaymentModal && selectedDebt && (() => {
+        const saleInstallments = debtList.filter(i => (i.saleId === selectedDebt.saleId || (i as any).transactionId === (selectedDebt as any).transactionId) && i.status !== 'paid');
+        const saleTotalUSD = saleInstallments.reduce((acc, curr) => acc + (Number((curr as any).amountUSD) || Number(curr.amount) || 0), 0);
+        const safeSingleUSD = Number((selectedDebt as any).amountUSD) || Number(selectedDebt.amount) || 0;
+        
+        return (
         <div className="fixed inset-0 z-[100] bg-slate-950 flex flex-col animate-in slide-in-from-bottom duration-300 overflow-y-auto">
           {/* Header */}
           <div className="sticky top-0 z-50 bg-slate-950/80 backdrop-blur-md border-b border-slate-800 p-4 flex justify-between items-center">
@@ -305,30 +320,36 @@ export default function PaymentsTab({
             {/* Step 3: Amount Type */}
             <div className="space-y-3">
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">3. Monto del Pago</label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="flex flex-col gap-2">
                 <button 
                   onClick={() => {
-                    setPaymentType('completo');
-                    const amountBs = Number(selectedDebt.amountUSD * bcvRate).toFixed(2);
+                    setPaymentType('cuota');
+                    const safeRate = Number(bcvRate) || 36.50;
+                    const amountBs = (safeSingleUSD * safeRate).toFixed(2);
                     setPaymentAmountBs(amountBs);
                     handleCopy(amountBs, setCopiedAmount);
                   }}
-                  className={`py-2 px-3 rounded-xl text-[10px] font-bold uppercase transition-all ${
-                    paymentType === 'completo' ? 'bg-emerald-500 text-slate-950' : 'bg-slate-900 text-slate-400 border border-slate-800'
+                  className={`py-3 px-3 rounded-xl text-xs font-bold transition-all flex justify-between items-center ${
+                    paymentType === 'cuota' ? 'bg-emerald-500 text-slate-950 shadow-md' : 'bg-slate-900 text-slate-400 border border-slate-800 hover:border-slate-700'
                   }`}
                 >
-                  Pagar Completo (Bs. {Number(selectedDebt.amountUSD * bcvRate).toFixed(2)})
+                  <span>PAGAR CUOTA</span>
+                  <span className="font-black">Bs. {(safeSingleUSD * (Number(bcvRate) || 36.50)).toFixed(2)}</span>
                 </button>
                 <button 
                   onClick={() => {
-                    setPaymentType('parcial');
-                    setPaymentAmountBs('');
+                    setPaymentType('venta_completa');
+                    const safeRate = Number(bcvRate) || 36.50;
+                    const amountBs = (saleTotalUSD * safeRate).toFixed(2);
+                    setPaymentAmountBs(amountBs);
+                    handleCopy(amountBs, setCopiedAmount);
                   }}
-                  className={`py-2 px-3 rounded-xl text-[10px] font-bold uppercase transition-all ${
-                    paymentType === 'parcial' ? 'bg-emerald-500 text-slate-950' : 'bg-slate-900 text-slate-400 border border-slate-800'
+                  className={`py-3 px-3 rounded-xl text-xs font-bold transition-all flex justify-between items-center ${
+                    paymentType === 'venta_completa' ? 'bg-emerald-500 text-slate-950 shadow-md' : 'bg-slate-900 text-slate-400 border border-slate-800 hover:border-slate-700'
                   }`}
                 >
-                  Abonar Otra Cantidad
+                  <span>PAGAR VENTA COMPLETA</span>
+                  <span className="font-black">Bs. {(saleTotalUSD * (Number(bcvRate) || 36.50)).toFixed(2)}</span>
                 </button>
               </div>
 
@@ -337,7 +358,7 @@ export default function PaymentsTab({
                 <input
                   type="number"
                   placeholder="0.00"
-                  disabled={paymentType === 'completo'}
+                  disabled={paymentType === 'cuota' || paymentType === 'venta_completa'}
                   value={paymentAmountBs}
                   onChange={(e) => setPaymentAmountBs(e.target.value)}
                   className="w-full bg-slate-900 border-2 border-slate-800 rounded-2xl py-4 pl-12 pr-12 text-2xl font-black text-white focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-80"
@@ -401,8 +422,8 @@ export default function PaymentsTab({
             </button>
           </div>
         </div>
-      )}
-
+        );
+      })()}
     </div>
   );
 }
