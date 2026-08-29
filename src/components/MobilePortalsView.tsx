@@ -1054,6 +1054,7 @@ export default function MobilePortalsView({
                                     ${Number(p.sellingPrice || 0).toFixed(2)} <span className="text-slate-500 text-[8px]">/{p.unit}</span>
                                   </p>
                                 </div>
+                              </div>
                             </div>
 
                             <div className="flex items-center gap-1 shrink-0">
