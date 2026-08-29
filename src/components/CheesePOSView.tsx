@@ -2,9 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOrder, Transaction } from '../types';
 import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X, Scan, Store } from 'lucide-react';
 import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '../utils';
-import { collection, addDoc, getDocs, query, orderBy, doc, serverTimestamp, onSnapshot, deleteDoc } from 'firebase/firestore';
-import { guardianUpdateDoc as updateDoc } from '../utils/firebaseGuardian';
-import { db } from '../services/firebase';
+
+import { fetchCollection, addLocalDoc, updateLocalDoc, deleteLocalDoc, onCollectionSnapshot } from '../services/localApi';
 
 interface CheesePOSViewProps {
   exchangeRate: number;
@@ -225,9 +224,13 @@ export default function CheesePOSView({
   useEffect(() => {
     const fetchClosings = async () => {
       try {
-        const q = query(collection(db, 'cashClosings'), orderBy('timestamp', 'desc'));
-        const querySnapshot = await getDocs(q);
-        const data = querySnapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
+        const data = await fetchCollection('cashClosings');
+        // Sort descending by timestamp locally
+        data.sort((a: any, b: any) => {
+          const tA = new Date(a.timestamp?.seconds ? a.timestamp.seconds * 1000 : a.timestamp).getTime();
+          const tB = new Date(b.timestamp?.seconds ? b.timestamp.seconds * 1000 : b.timestamp).getTime();
+          return tB - tA;
+        });
         setClosingsHistory(data);
       } catch (error) {
         console.error('Error cargando historial de cierres:', error);
@@ -259,7 +262,7 @@ export default function CheesePOSView({
     const pPrice = parseNum(product.sellingPrice || (product as any).price || 0);
 
     if (newQty > availableStock) {
-      onAddNotification(`Stock insuficiente. Solo quedan ${availableStock} kg de ${product.name}.`, 'warning');
+      onAddNotification(`Stock insuficiente. Solo quedan ${availableStock} ${getUnitLabel(product).toLowerCase()} de ${product.name}.`, 'warning');
       return;
     }
 
@@ -303,7 +306,7 @@ export default function CheesePOSView({
 
     const stock = parseNum(product.stockKg);
     if (newQty > stock) {
-      onAddNotification(`Stock insuficiente. Máximo ${stock} kg disponibles.`, 'warning');
+      onAddNotification(`Stock insuficiente. Máximo ${stock} ${getUnitLabel(product).toLowerCase()} disponibles.`, 'warning');
       return;
     }
 
@@ -407,7 +410,7 @@ export default function CheesePOSView({
         paymentMethod: 'Mundo Kalu',
         date: new Date().toISOString(),
         invoiceNumber: `KALU-${Date.now().toString().slice(-6)}`,
-        timestamp: serverTimestamp(),
+        timestamp: new Date().toISOString(),
         kaluCreditData: {
           inicial: kaluInitial,
           aFinanciar: kaluDebt,
@@ -417,33 +420,39 @@ export default function CheesePOSView({
 
       try {
         setIsWaitingForApproval(true);
-        const docRef = await addDoc(collection(db, 'transactions'), pendingTx);
+        const now = new Date().toISOString();
+        const pendingTx = {
+          ...txPayload,
+          status: 'pending_approval',
+          timestamp: now
+        };
+        const docRef = await addLocalDoc('transactions', pendingTx);
         setPendingApprovalId(docRef.id);
         
-        // Setup listener
-        const unsubscribe = onSnapshot(doc(db, 'transactions', docRef.id), (snap) => {
-          if (snap.exists()) {
-            const data = snap.data();
-            if (data.status === 'approved') {
+        // Setup listener via WebSocket for real-time approval
+        const unsubscribe = onCollectionSnapshot('transactions', (data) => {
+          const updatedDoc = data.find(d => String(d.id) === String(docRef.id));
+          if (updatedDoc) {
+            if (updatedDoc.status === 'approved') {
                unsubscribe();
                setIsWaitingForApproval(false);
                setPendingApprovalId(null);
 
                // FASE 1: GENERACIÓN DE CUOTAS
-               if (data.kaluCreditData && client) {
+               if (updatedDoc.kaluCreditData && client) {
                   const fallbackCuotas = getKaluInstallmentsCount(kaluCreditType, client.loyaltyPoints || 0);
-                  const numC = data.installmentsCount || fallbackCuotas;
+                  const numC = updatedDoc.installmentsCount || fallbackCuotas;
                   const promises = [];
                   for (let i = 1; i <= numC; i++) {
                      const dueDate = new Date();
                      dueDate.setDate(dueDate.getDate() + (i * 15));
-                     promises.push(addDoc(collection(db, 'installments'), {
+                     promises.push(addLocalDoc('installments', {
                         clientId: client.id,
                         transactionId: docRef.id,
-                        amount: data.kaluCreditData.cuotas,
+                        amount: updatedDoc.kaluCreditData.cuotas,
                         dueDate: dueDate.toISOString(),
                         status: 'pending',
-                        timestamp: serverTimestamp()
+                        timestamp: new Date().toISOString()
                      }));
                   }
                   Promise.all(promises).catch(console.error);
@@ -452,14 +461,14 @@ export default function CheesePOSView({
                onAddNotification('¡Crédito aprobado por el cliente! Facturando...', 'success');
                // Set trigger for auto-checkout
                setKaluAutoCheckoutTrigger(true);
-            } else if (data.status === 'rejected') {
+            } else if (updatedDoc.status === 'rejected') {
                unsubscribe();
                setIsWaitingForApproval(false);
                setPendingApprovalId(null);
                onAddNotification('El cliente rechazó la aprobación del crédito.', 'warning');
                
                // Clean up the rejected request & remove the added payment
-               deleteDoc(doc(db, 'transactions', docRef.id)).catch(console.error);
+               deleteLocalDoc('transactions', docRef.id).catch(console.error);
                setAddedPayments(prev => prev.filter(p => p.id !== newPayment.id));
             }
           }
@@ -561,7 +570,7 @@ export default function CheesePOSView({
     const receipt = {
       id: `REC-${Date.now().toString().slice(-6)}`,
       date: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-      timestamp: serverTimestamp(),
+      timestamp: new Date().toISOString(),
       clientName: customerName,
       items: [...cart],
       subtotal,
@@ -722,7 +731,7 @@ export default function CheesePOSView({
       const report = {
         id: `CLO-${Date.now().toString().slice(-4)}`,
         date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-        timestamp: serverTimestamp(),
+        timestamp: new Date().toISOString(),
         startingCashUsd,
         startingCashBs,
         salesCashUsd,
@@ -754,7 +763,7 @@ export default function CheesePOSView({
         status: (diffUsd === 0 && diffBs === 0) ? 'Balance Perfecto' : (diffUsd > 0 || diffBs > 0) ? 'Sobrante' : 'Faltante',
         };
       
-      await addDoc(collection(db, 'cashClosings'), report);
+      await addLocalDoc('cashClosings', report);
 
       // Actualizar Bóveda Central (única fuente de verdad) en Firebase
       const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
@@ -767,8 +776,9 @@ export default function CheesePOSView({
 
       if (onUpdateSettings) {
         onUpdateSettings({ centralVaultBalance: updatedVault });
-      } else {
-        await updateDoc(doc(db, 'settings', 'general'), {
+      }
+      if (settings) {
+        await updateLocalDoc('settings', 'general', {
           centralVaultBalance: updatedVault
         });
       }
@@ -928,40 +938,43 @@ export default function CheesePOSView({
                             setQtyInput('0');
                           }
                         }}
-                        className={`bg-editorial-card border border-editorial-border rounded p-5 flex flex-col justify-between transition-all duration-300 relative group overflow-hidden ${
+                        className={`bg-editorial-card border border-editorial-border rounded p-5 flex flex-col transition-all duration-300 relative group overflow-hidden ${
                           isSoldOut ? 'opacity-60 border-rose-500/20' : 'hover:border-amber-500/40 cursor-pointer'
-                        } ${isSelected ? 'ring-2 ring-amber-500' : ''}`}
+                        } ${isSelected ? 'ring-2 ring-amber-500' : 'min-h-[160px]'}`}
                       >
-                        <div className="space-y-1">
-                          {p.imageUrl && (
-                            <div className="w-full h-20 mb-2 rounded overflow-hidden bg-editorial-bg border border-editorial-border/50">
-                              <img src={p.imageUrl} alt={p.name} className="w-full h-full object-cover mix-blend-luminosity hover:mix-blend-normal transition-all duration-300" />
+                        {p.imageUrl && (
+                          <>
+                            <div className="absolute inset-0 z-0">
+                              <img src={p.imageUrl} alt={p.name} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
                             </div>
-                          )}
-                          <div className="flex justify-between items-start">
-                            <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">
-                              {p.category} • {(p.origin || '').split(' ')[0]}
-                            </span>
+                            <div className="absolute inset-0 z-0 bg-gradient-to-t from-black/90 via-black/50 to-black/30 transition-colors duration-300"></div>
+                          </>
+                        )}
+                        <div className={`space-y-1 relative z-10 flex-1 flex flex-col justify-end`}>
+                          <div className="flex justify-between items-start mb-auto">
                             {isSoldOut ? (
-                              <span className="text-[8px] font-mono font-extrabold bg-rose-950/20 text-rose-400 border border-rose-800/40 px-2 py-0.5 rounded uppercase">
+                              <span className="text-[8px] font-mono font-extrabold bg-rose-950/80 text-rose-400 border border-rose-800/40 px-2 py-0.5 rounded uppercase backdrop-blur-sm shadow-md">
                                 Agotado
                               </span>
                             ) : isLowStock ? (
-                              <span className="text-[8px] font-mono font-extrabold bg-amber-950/20 text-amber-400 border border-amber-800/40 px-2 py-0.5 rounded uppercase animate-pulse">
+                              <span className="text-[8px] font-mono font-extrabold bg-amber-950/80 text-amber-400 border border-amber-800/40 px-2 py-0.5 rounded uppercase animate-pulse backdrop-blur-sm shadow-md">
                                 Bajo Stock
                               </span>
-                            ) : null}
+                            ) : <div/>}
+                            <span className={`text-[9px] font-mono tracking-widest uppercase ml-auto ${p.imageUrl ? 'text-white/80 drop-shadow-md' : 'text-editorial-text-muted'}`}>
+                              {p.category} • {(p.origin || '').split(' ')[0]}
+                            </span>
                           </div>
-                          <h3 className="font-serif text-lg font-bold text-editorial-text-primary leading-tight pt-1">
+                          <h3 className={`font-serif text-lg font-bold leading-tight pt-3 ${p.imageUrl ? 'text-white drop-shadow-lg' : 'text-editorial-text-primary'}`}>
                             {p.name}
                           </h3>
-                          <p className="font-mono text-xs text-amber-500 font-bold pt-1">
-                            ${Number(p.sellingPrice || (p as any).price || 0).toFixed(2)} <span className="text-[10px] text-editorial-text-muted font-normal font-sans">/ {getUnitLabel(p).toLowerCase()}</span>
+                          <p className={`font-mono text-xs font-bold pt-1 ${p.imageUrl ? 'text-amber-400 drop-shadow-md' : 'text-amber-500'}`}>
+                            ${Number(p.sellingPrice || (p as any).price || 0).toFixed(2)} <span className={`text-[10px] font-normal font-sans ${p.imageUrl ? 'text-white/60' : 'text-editorial-text-muted'}`}>/ {getUnitLabel(p).toLowerCase()}</span>
                           </p>
                         </div>
 
                         {isSelected ? (
-                          <div className="mt-4 pt-3 border-t border-editorial-border/60 space-y-3">
+                          <div className="mt-4 pt-3 border-t border-editorial-border/60 space-y-3 relative z-10">
                             <div className="flex items-center gap-2">
                               <input
                                 type="number"
@@ -980,10 +993,10 @@ export default function CheesePOSView({
                                     }
                                   }
                                 }}
-                                className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-sm text-editorial-text-primary font-mono focus:outline-none focus:border-amber-500"
+                                className="w-full h-10 px-3 bg-editorial-bg/90 border border-editorial-border rounded text-sm text-editorial-text-primary font-mono focus:outline-none focus:border-amber-500 backdrop-blur-md"
                                 placeholder="Cant."
                               />
-                              <span className="text-xs text-editorial-text-muted">{getUnitLabel(p)}</span>
+                              <span className={`text-xs ${p.imageUrl ? 'text-white/80' : 'text-editorial-text-muted'}`}>{getUnitLabel(p)}</span>
                             </div>
                             <div className="flex gap-2">
                               <button
@@ -997,7 +1010,7 @@ export default function CheesePOSView({
                                     searchInputRef.current?.focus();
                                   }
                                 }}
-                                className="flex-1 py-1.5 bg-amber-500 text-white text-xs font-bold rounded cursor-pointer"
+                                className="flex-1 py-1.5 bg-amber-500 text-white text-xs font-bold rounded cursor-pointer shadow-lg"
                               >
                                 Sí
                               </button>
@@ -1006,16 +1019,16 @@ export default function CheesePOSView({
                                   e.stopPropagation();
                                   setSelectedProductId(null);
                                 }}
-                                className="flex-1 py-1.5 border border-editorial-border text-editorial-text-muted text-xs font-bold rounded hover:bg-editorial-bg cursor-pointer"
+                                className="flex-1 py-1.5 border border-editorial-border/50 bg-black/40 text-white/90 text-xs font-bold rounded hover:bg-black/60 cursor-pointer backdrop-blur-md"
                               >
                                 Cancelar
                               </button>
                             </div>
                           </div>
                         ) : (
-                          <div className="mt-4 pt-3 border-t border-editorial-border/60 flex items-center justify-between">
-                            <span className="font-mono text-[10px] text-editorial-text-muted">
-                              Stock: <span className="font-sans font-bold text-editorial-text-primary">{p.stockKg.toFixed(1)} {getUnitLabel(p)}</span>
+                          <div className="mt-4 pt-3 border-t border-editorial-border/60 flex items-center justify-between relative z-10">
+                            <span className={`font-mono text-[10px] ${p.imageUrl ? 'text-white/70' : 'text-editorial-text-muted'}`}>
+                              Stock: <span className={`font-sans font-bold ${p.imageUrl ? 'text-white' : 'text-editorial-text-primary'}`}>{p.stockKg.toFixed(1)} {getUnitLabel(p)}</span>
                             </span>
                           </div>
                         )}
@@ -1647,7 +1660,7 @@ export default function CheesePOSView({
                       <td className="py-3.5 px-4 text-editorial-text-muted">{s.date}</td>
                       <td className="py-3.5 px-4 font-medium">{s.clientName || s.entity || 'Cliente General'}</td>
                       <td className="py-3.5 px-4 text-editorial-text-muted max-w-[200px] truncate">
-                        {s.items ? s.items.map((it: any) => `${it.name} (${it.quantityKg || it.quantity || 1}kg)`).join(', ') : (s.notes || 'Varios Artículos')}
+                        {s.items ? s.items.map((it: any) => `${it.name} (${it.quantityKg || it.quantity || 1} ${it.unit ? getUnitLabel(it).toLowerCase() : 'kg'})`).join(', ') : (s.notes || 'Varios Artículos')}
                       </td>
                       <td className="py-3.5 px-4">
                         <span className="px-2 py-0.5 rounded text-[10px] font-mono border border-editorial-border bg-editorial-bg">
@@ -2506,7 +2519,7 @@ export default function CheesePOSView({
               <button
                 onClick={() => {
                   if (pendingApprovalId) {
-                    deleteDoc(doc(db, 'transactions', pendingApprovalId)).catch(console.error);
+                    deleteLocalDoc('transactions', pendingApprovalId).catch(console.error);
                   }
                   setIsWaitingForApproval(false);
                   setPendingApprovalId(null);
@@ -2521,7 +2534,7 @@ export default function CheesePOSView({
               {pendingApprovalId && (
                 <button
                   onClick={() => {
-                     updateDoc(doc(db, 'transactions', pendingApprovalId), { status: 'approved' }).catch(console.error);
+                     updateLocalDoc('transactions', pendingApprovalId, { status: 'approved' }).catch(console.error);
                   }}
                   className="w-full py-3 bg-amber-500 text-editorial-bg font-serif font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-amber-400 transition-colors flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(245,158,11,0.4)]"
                   title="Sólo para pruebas locales"
@@ -2579,7 +2592,7 @@ export default function CheesePOSView({
                           const newBarcodes = [...new Set([...(p.barcodes || []), unknownBarcode])];
                           if (p.barcode && !newBarcodes.includes(p.barcode)) newBarcodes.push(p.barcode);
                           
-                          await updateDoc(doc(db, 'products', p.id), {
+                          await updateLocalDoc('products', p.id, {
                             barcodes: newBarcodes
                           });
                           

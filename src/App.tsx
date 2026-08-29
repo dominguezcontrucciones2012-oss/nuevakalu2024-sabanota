@@ -56,10 +56,9 @@ import ContadorIAView from './components/ContadorIAView';
 import CollectionsView from './components/contador/CollectionsView';
 
 import { CheckCircle2, Info, AlertTriangle, X } from 'lucide-react';
-import { db } from './services/firebase';
-import { collection, onSnapshot, query, orderBy, limit, doc, getDocs, where, increment } from 'firebase/firestore';
+import { onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc, fetchCollection } from './services/localApi';
 import { fetchLocalProducts, updateLocalProduct, addLocalProduct, deleteLocalProduct } from './services/productApi';
-import { guardianSetDoc as setDoc, guardianUpdateDoc as updateDoc, guardianAddDoc as addDoc, guardianDeleteDoc as deleteDoc } from './utils/firebaseGuardian';
+import { guardianSetDoc as setDoc, guardianUpdateDoc as updateDoc, guardianAddDoc as addDoc, guardianDeleteDoc as deleteDoc, db, doc, collection, increment } from './utils/firebaseGuardian';
 
 interface ToastNotification {
   id: string;
@@ -155,60 +154,98 @@ export default function App() {
   }, []);
 
 
-  // Real-time Firebase Listeners
+  // Real-time Firebase Listeners -> Local Listeners
   useEffect(() => {
     fetchLocalProducts().then(data => {
       if (data && data.length) setCheeseProducts(data);
     }).catch(e => console.error("Error loading local products:", e));
 
-    const unsubTransactions = onSnapshot(query(collection(db, 'transactions'), limit(1000)), (snapshot) => {
-      if (!snapshot.empty) {
-        const txs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
-        // Sort descending by ID so newest is first
+    const unsubTransactions = onCollectionSnapshot('transactions', (data) => {
+      if (data && data.length > 0) {
+        const txs = data as Transaction[];
         txs.sort((a, b) => {
           if (a.id > b.id) return -1;
           if (a.id < b.id) return 1;
           return 0;
         });
         setTransactions(txs);
+      } else {
+        const saved = localStorage.getItem('kalu_sales_history');
+        if (saved) {
+           const parsed = JSON.parse(saved);
+           if (parsed.length > 0) {
+              setTransactions(parsed);
+              parsed.forEach((t: any) => addLocalDoc('transactions', t).catch(console.error));
+           }
+        }
       }
     });
 
-    const unsubClients = onSnapshot(query(collection(db, 'clients'), limit(1000)), (snapshot) => {
-      if (!snapshot.empty) setClients(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ClientProfile)));
+    const unsubClients = onCollectionSnapshot('clients', (data) => {
+      if (data && data.length > 0) {
+         setClients(data as ClientProfile[]);
+      } else {
+         const saved = localStorage.getItem('kalu_clients');
+         if (saved) {
+            const localData = JSON.parse(saved);
+            if (localData && localData.length > 0) {
+               setClients(localData);
+               localData.forEach((c: any) => addLocalDoc('clients', c).catch(console.error));
+            } else {
+               setClients(INITIAL_CLIENTS);
+            }
+         } else {
+            setClients(INITIAL_CLIENTS);
+         }
+      }
     });
 
-    const unsubCheeseTrips = onSnapshot(query(collection(db, 'cheeseTrips'), orderBy('createdAt', 'desc'), limit(100)), (snapshot) => {
-      if (!snapshot.empty) setCheeseTrips(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CheeseTrip)));
+    const unsubCheeseTrips = onCollectionSnapshot('cheeseTrips', (data) => {
+      const trips = data as CheeseTrip[];
+      trips.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setCheeseTrips(trips);
     });
 
-    const unsubSuppliers = onSnapshot(query(collection(db, 'suppliers'), limit(1000)), (snapshot) => {
-      if (!snapshot.empty) setSuppliers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SupplierProfile)));
+    const unsubSuppliers = onCollectionSnapshot('suppliers', (data) => {
+      if (data && data.length > 0) {
+         setSuppliers(data as SupplierProfile[]);
+      } else {
+         const saved = localStorage.getItem('kalu_suppliers');
+         if (saved) {
+            const localData = JSON.parse(saved);
+            if (localData && localData.length > 0) {
+               setSuppliers(localData);
+               localData.forEach((s: any) => addLocalDoc('suppliers', s).catch(console.error));
+            } else {
+               setSuppliers(INITIAL_SUPPLIERS);
+            }
+         } else {
+            setSuppliers(INITIAL_SUPPLIERS);
+         }
+      }
     });
 
-    const unsubSettings = onSnapshot(doc(db, 'settings', 'general'), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        let newSettings = { ...DEFAULT_SETTINGS, ...data } as BusinessSettings;
+    const unsubSettings = onCollectionSnapshot('settings', (data) => {
+      const generalDoc = data.find((d: any) => d.id === 'general');
+      if (generalDoc) {
+        let newSettings = { ...DEFAULT_SETTINGS, ...generalDoc } as BusinessSettings;
         
         // MIGRATION LOGIC: If centralVaultBalance is empty but we have sabanotaInitials
-        if (!data.centralVaultBalance && data.sabanotaInitials) {
-          const exchangeRate = data.exchangeRate || 45;
+        if (!generalDoc.centralVaultBalance && generalDoc.sabanotaInitials) {
+          const exchangeRate = generalDoc.exchangeRate || 45;
           newSettings.centralVaultBalance = {
-            usd: Number(data.sabanotaInitials.drawerUsd) || 0,
-            bs: Number(data.sabanotaInitials.drawerBs) || 0,
-            bankBs: Number(data.sabanotaInitials.bankBalanceBs) || 0,
-            bankUsd: Number(data.sabanotaInitials.bankBalanceUsd) || (Number(data.sabanotaInitials.bankBalanceBs || 0) / exchangeRate)
+            usd: Number(generalDoc.sabanotaInitials.drawerUsd) || 0,
+            bs: Number(generalDoc.sabanotaInitials.drawerBs) || 0,
+            bankBs: Number(generalDoc.sabanotaInitials.bankBalanceBs) || 0,
+            bankUsd: Number(generalDoc.sabanotaInitials.bankBalanceUsd) || (Number(generalDoc.sabanotaInitials.bankBalanceBs || 0) / exchangeRate)
           };
         }
         setSettings(newSettings);
       }
     });
 
-    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
-      if (!snapshot.empty) {
-        setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as UserIdentity)));
-      }
+    const unsubUsers = onCollectionSnapshot('users', (data) => {
+      setUsers(data as UserIdentity[]);
     });
 
     return () => {

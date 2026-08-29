@@ -1,3 +1,4 @@
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../services/localApi';
 import React, { useState, useEffect } from 'react';
 import { BusinessSettings, UserIdentity } from '../types';
 import {
@@ -16,9 +17,9 @@ import {
 } from 'lucide-react';
 import { exportToJson, importFromJson, createSnapshot, restoreSnapshot } from '../services/backupService';
 
-import { db, storage } from '../services/firebase';
-import { doc, setDoc, updateDoc, deleteDoc, getDocs, collection, serverTimestamp, onSnapshot, writeBatch } from 'firebase/firestore';
-import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
+
+
+
 import { Shift, ShiftItem, saveShift, loadShifts, deleteShift } from '../services/shiftManager';
 
 interface SettingsAdminViewProps {
@@ -102,7 +103,7 @@ export default function SettingsAdminView({
       loadShifts().then(setLocalShifts).catch(console.error);
 
       // Escuchar banners activos de la nube
-      const unsub = onSnapshot(collection(db, 'banners'), (snap) => {
+      const unsub = onCollectionSnapshot('banners', (snap) => {
         const arr: any[] = [];
         snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
         setActiveBanners(arr);
@@ -195,7 +196,7 @@ export default function SettingsAdminView({
 
       // 1. Delete existing cloud banners from Firestore and Storage
       setMaintLogs(prev => [...prev, `[Banners] Purgando banners anteriores de la nube en paralelo...`]);
-      const currentSnap = await getDocs(collection(db, 'banners'));
+      const currentSnap = await fetchCollection('banners');
       
       const deletePromises = currentSnap.docs.map(async (d) => {
         const data = d.data();
@@ -234,14 +235,14 @@ export default function SettingsAdminView({
           
           setUploadStatus(`Guardando referencia en base de datos ${i+1}/${shift.items.length}...`);
           
-          await setDoc(doc(collection(db, 'banners')), {
+          await addLocalDoc('banners', {
             title: item.title,
             desc: item.desc,
             url: downloadUrl,
             storagePath: downloadUrl,
             type: item.type,
             active: true,
-            createdAt: serverTimestamp()
+            createdAt: new Date().toISOString()
           });
           
           setUploadPercent(Math.round(((i + 1) / shift.items.length) * 100));
@@ -276,20 +277,20 @@ export default function SettingsAdminView({
     
     try {
       setMaintLogs(prev => [...prev, 'Borrando transacciones (historial)...']);
-      const txs = await getDocs(collection(db, 'transactions'));
+      const txs = await fetchCollection('transactions');
       for (const d of txs.docs) {
         await deleteDoc(d.ref);
       }
       setMaintLogs(prev => [...prev, `Borradas ${txs.docs.length} transacciones.`]);
 
       setMaintLogs(prev => [...prev, 'Reseteando saldos de proveedores...']);
-      const sups = await getDocs(collection(db, 'suppliers'));
+      const sups = await fetchCollection('suppliers');
       for (const d of sups.docs) {
         await updateDoc(d.ref, { balanceOwed: 0, storeDebt: 0 });
       }
 
       setMaintLogs(prev => [...prev, 'Reseteando deudas de clientes...']);
-      const clis = await getDocs(collection(db, 'clients'));
+      const clis = await fetchCollection('clients');
       for (const d of clis.docs) {
         await updateDoc(d.ref, { outstandingDebt: 0, loyaltyPoints: 0 });
       }
@@ -421,7 +422,7 @@ export default function SettingsAdminView({
         const newBkp = {
           id: `BKP-${Date.now()}`,
           date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-        timestamp: serverTimestamp(),
+        timestamp: new Date().toISOString(),
           file: `kalu_respaldo_${new Date().toISOString().split('T')[0]}.json`,
           size: '---',
           status: 'Descargado Localmente'

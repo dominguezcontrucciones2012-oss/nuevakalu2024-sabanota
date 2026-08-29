@@ -1,4 +1,22 @@
-import { getDocs, getDoc, setDoc, updateDoc, addDoc, DocumentReference, CollectionReference, Query, UpdateData, WithFieldValue, DocumentData } from 'firebase/firestore';
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../services/localApi';
+
+export const db = {};
+export const collection = (dbInstance: any, path: string) => ({ path });
+export const doc = (dbOrCollection: any, path: string, id?: string) => {
+  if (id) return { path: `${path}/${id}` };
+  return { path: dbOrCollection.path ? `${dbOrCollection.path}/${path}` : path };
+};
+export const increment = (val: number) => ({ type: 'increment', _operand: val });
+
+export type Query<T = any> = any;
+export type CollectionReference<T = any> = any;
+export type DocumentReference<T = any> = any;
+export type WithFieldValue<T = any> = any;
+export type UpdateData<T = any> = any;
+export const getDocs = async (query: any) => ({ docs: [] });
+export const getDoc = async (docRef: any) => ({ exists: () => false, data: () => ({}) });
+
+
 
 class FirebaseGuardian {
   private requestTimestamps: number[] = [];
@@ -60,9 +78,17 @@ class FirebaseGuardian {
     }
     this.recordRequest();
     if (options) {
-      return await setDoc(docRef, data, options);
+      const parts = docRef.path.split('/');
+    if (parts.length >= 2) {
+       return await updateLocalDoc(parts[0], parts[1], data);
     }
-    return await setDoc(docRef, data);
+    return await addLocalDoc(docRef.path, data);
+    }
+    const parts = docRef.path.split('/');
+    if (parts.length >= 2) {
+       return await updateLocalDoc(parts[0], parts[1], data);
+    }
+    return await addLocalDoc(docRef.path, data);
   }
 
   // @ts-ignore
@@ -88,7 +114,10 @@ class FirebaseGuardian {
     }
     this.recordRequest();
     // @ts-ignore
-    return await updateDoc(docRef, data);
+    const parts = docRef.path.split('/');
+    if (parts.length >= 2) {
+       return await updateLocalDoc(parts[0], parts[1], data);
+    }
   }
 
   public async guardianAddDoc<T>(collectionRef: CollectionReference<T>, data: WithFieldValue<T>) {
@@ -101,7 +130,7 @@ class FirebaseGuardian {
       return res.json();
     }
     this.recordRequest();
-    return await addDoc(collectionRef, data);
+    return await addLocalDoc(collectionRef.path, data);
   }
 
   public async guardianDeleteDoc<T>(docRef: DocumentReference<T>) {
@@ -113,7 +142,10 @@ class FirebaseGuardian {
       return res.json();
     }
     this.recordRequest();
-    return await deleteDoc(docRef);
+    const parts = docRef.path.split('/');
+    if (parts.length >= 2) {
+       return await deleteLocalDoc(parts[0], parts[1]);
+    }
   }
 }
 

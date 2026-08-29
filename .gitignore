@@ -13,3 +13,6 @@ coverage/
 .env.*.local
 *.key
 *.pem
+
+uploads/
+scratch/

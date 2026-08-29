@@ -1,7 +1,8 @@
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
 import React, { useState, useEffect, useRef } from 'react';
-import { collection, doc, getDocs, query, where, onSnapshot, increment, limit, getDoc } from 'firebase/firestore';
+
 import { guardianAddDoc as addDoc, guardianUpdateDoc as updateDoc } from '../../utils/firebaseGuardian';
-import { db } from '../../services/firebase';
+
 import { askGeminiWithImage, askGemini } from '../../services/gemini';
 import { INITIAL_CHEESE_PRODUCTS } from '../../data';
 import { Save, ArrowLeft, Search, Package, Trash2, Camera, Mic, Loader2, Snowflake, CheckSquare, Square, FileText, Receipt } from 'lucide-react';
@@ -264,7 +265,7 @@ export default function InvoiceUploadView({
     if (items.length === 0) return;
     setIsSaving(true);
     try {
-      await addDoc(collection(db, 'daily_drafts'), {
+      await addLocalDoc('daily_drafts', {
         type: 'invoice_draft',
         items,
         supplierId,
@@ -289,7 +290,7 @@ export default function InvoiceUploadView({
       const totalInvoiceCost = items.reduce((sum, item) => sum + item.subtotal, 0);
 
       // 1. Guardar factura en compras
-      await addDoc(collection(db, 'purchases'), {
+      await addLocalDoc('purchases', {
         supplierId,
         isCredit,
         items,
@@ -318,7 +319,7 @@ export default function InvoiceUploadView({
             });
           } catch (e) {
             console.warn("Item no hallado, se creará.");
-            await addDoc(collection(db, 'products'), {
+            await addLocalDoc('products', {
               name: item.name,
               stockKg: item.quantity,
               purchasePrice: item.costPrice,
@@ -328,7 +329,7 @@ export default function InvoiceUploadView({
           }
         } else {
           // Crear nuevo producto en inventario
-          await addDoc(collection(db, 'products'), {
+          await addLocalDoc('products', {
             name: item.name,
             stockKg: item.quantity,
             purchasePrice: item.costPrice,
@@ -339,7 +340,7 @@ export default function InvoiceUploadView({
 
         // Add Kardex Movement
         try {
-          await addDoc(collection(db, 'kardex'), {
+          await addLocalDoc('kardex', {
             productId: item.productId || 'NEW',
             productName: item.name,
             type: 'ENTRADA',

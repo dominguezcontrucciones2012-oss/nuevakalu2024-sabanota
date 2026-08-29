@@ -1,6 +1,7 @@
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
 import React, { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, updateDoc, doc, addDoc, increment, serverTimestamp } from 'firebase/firestore';
-import { db } from '../../services/firebase';
+
+
 import { Receipt, CheckCircle, XCircle, Clock, Bot, ShieldCheck } from 'lucide-react';
 
 interface PWAPayment {
@@ -47,7 +48,7 @@ export default function CollectionsView({
     try {
       await updateDoc(doc(db, 'pwa_payments', payment.id), {
         status: 'approved',
-        approvedAt: serverTimestamp()
+        approvedAt: new Date().toISOString()
       });
 
       if (payment.type === 'cliente') {
@@ -65,7 +66,7 @@ export default function CollectionsView({
         entity: payment.entityName,
         category: 'ingresos_cobranza',
         date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-        timestamp: serverTimestamp(),
+        timestamp: new Date().toISOString(),
         invoiceNumber: `PWA-${payment.reference}`,
         amount: payment.amount,
         isIncome: true,
@@ -86,7 +87,7 @@ export default function CollectionsView({
     try {
       await updateDoc(doc(db, 'pwa_payments', payment.id), {
         status: 'rejected',
-        rejectedAt: serverTimestamp()
+        rejectedAt: new Date().toISOString()
       });
       onAddNotification?.('Pago rechazado', 'info');
     } catch (e) {

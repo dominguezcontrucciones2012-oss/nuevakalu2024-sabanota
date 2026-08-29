@@ -4,16 +4,31 @@ import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import http from 'http';
+import { Server } from 'socket.io';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: '*', methods: ['GET', 'POST', 'PATCH', 'DELETE'] }
+});
+
 app.use(cors());
 app.use(express.json());
 
+io.on('connection', (socket) => {
+  console.log('A client connected via WebSocket:', socket.id);
+  socket.on('disconnect', () => {
+    console.log('Client disconnected:', socket.id);
+  });
+});
+
+
 // Configurar la carpeta de destino física (puede ser /var/www/app/uploads en producción)
-const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, 'public', 'uploads');
+const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
@@ -36,6 +51,8 @@ const upload = multer({ storage: storage });
 
 // Servir la carpeta de subidas de forma estática
 app.use('/uploads', express.static(uploadDir));
+const protectedMediaDir = path.join(__dirname, 'protected_media');
+app.use('/protected_media', express.static(protectedMediaDir));
 
 const productsDbFile = path.join(uploadDir, 'products_db.json');
 
@@ -138,7 +155,77 @@ app.post('/api/upload', upload.array('files', 10), (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`Backend server (Uploader) running on port ${PORT}`);
-  console.log(`Saving uploaded files to: ${uploadDir}`);
+
+// --- GENERIC COLLECTIONS API ---
+
+const getCollectionFilePath = (name) => path.join(uploadDir, `${name}_db.json`);
+
+const readCollection = (name) => {
+  const filePath = getCollectionFilePath(name);
+  if (fs.existsSync(filePath)) {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  }
+  return [];
+};
+
+const writeCollection = (name, data) => {
+  fs.writeFileSync(getCollectionFilePath(name), JSON.stringify(data, null, 2));
+  io.emit('collection_updated', name); // Broadcast event
+};
+
+app.get('/api/collections/:name', (req, res) => {
+  try {
+    const data = readCollection(req.params.name);
+    res.json(data);
+  } catch (error) {
+    console.error(`Error reading ${req.params.name}:`, error);
+    res.status(500).json({ error: 'Error reading collection' });
+  }
+});
+
+app.post('/api/collections/:name', (req, res) => {
+  try {
+    const data = readCollection(req.params.name);
+    const newDoc = { id: req.body.id || Date.now().toString(), ...req.body };
+    data.push(newDoc);
+    writeCollection(req.params.name, data);
+    res.json({ success: true, doc: newDoc });
+  } catch (error) {
+    console.error(`Error writing ${req.params.name}:`, error);
+    res.status(500).json({ error: 'Error writing collection' });
+  }
+});
+
+app.patch('/api/collections/:name/:id', (req, res) => {
+  try {
+    const data = readCollection(req.params.name);
+    const index = data.findIndex(d => String(d.id) === String(req.params.id));
+    if (index !== -1) {
+      data[index] = { ...data[index], ...req.body };
+      writeCollection(req.params.name, data);
+      res.json({ success: true, doc: data[index] });
+    } else {
+      res.status(404).json({ error: 'Document not found' });
+    }
+  } catch (error) {
+    console.error(`Error updating ${req.params.name}:`, error);
+    res.status(500).json({ error: 'Error updating collection' });
+  }
+});
+
+app.delete('/api/collections/:name/:id', (req, res) => {
+  try {
+    const data = readCollection(req.params.name);
+    const filtered = data.filter(d => String(d.id) !== String(req.params.id));
+    writeCollection(req.params.name, filtered);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`Error deleting ${req.params.name}:`, error);
+    res.status(500).json({ error: 'Error deleting document' });
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`Backend server (Uploader & WS) running on port ${PORT}`);
+  console.log(`Saving databases and files to: ${uploadDir}`);
 });

@@ -1,5 +1,4 @@
-import { collection, getDocs, writeBatch, doc, setDoc, getDoc } from 'firebase/firestore';
-import { db } from './firebase';
+import { fetchCollection } from './localApi';
 
 const OPERATIONAL_COLLECTIONS = ['products', 'clients', 'suppliers', 'transactions', 'kardex'];
 
@@ -10,9 +9,6 @@ export interface BackupData {
   };
 }
 
-/**
- * Reads all operational collections and builds a BackupData object.
- */
 export async function fetchOperationalData(): Promise<BackupData> {
   const data: BackupData = {
     timestamp: new Date().toISOString(),
@@ -20,91 +16,25 @@ export async function fetchOperationalData(): Promise<BackupData> {
   };
 
   for (const colName of OPERATIONAL_COLLECTIONS) {
-    const snapshot = await getDocs(collection(db, colName));
-    const docs = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
-    data.collections[colName] = docs;
+    const colData = await fetchCollection(colName);
+    data.collections[colName] = colData;
   }
 
   return data;
 }
 
-/**
- * Restores the database from a BackupData object using a WriteBatch.
- * This function clears existing operational collections before inserting.
- */
 export async function restoreFromData(data: BackupData): Promise<void> {
-  let batch = writeBatch(db);
-  let operationCount = 0;
-
-  const commitBatchIfNeeded = async () => {
-    if (operationCount >= 450) {
-      await batch.commit();
-      batch = writeBatch(db);
-      operationCount = 0;
-    }
-  };
-
-  // 1. Delete all current documents in operational collections
-  for (const colName of OPERATIONAL_COLLECTIONS) {
-    const snapshot = await getDocs(collection(db, colName));
-    for (const docSnap of snapshot.docs) {
-      batch.delete(docSnap.ref);
-      operationCount++;
-      await commitBatchIfNeeded();
-    }
-  }
-
-  // 2. Insert documents from the backup data
-  for (const colName of OPERATIONAL_COLLECTIONS) {
-    const docs = data.collections[colName] || [];
-    for (const docData of docs) {
-      const { id, ...rest } = docData;
-      if (!id) continue;
-      const ref = doc(db, colName, id);
-      batch.set(ref, docData);
-      operationCount++;
-      await commitBatchIfNeeded();
-    }
-  }
-
-  // Commit any remaining operations
-  if (operationCount > 0) {
-    await batch.commit();
-  }
+  throw new Error('Restore not supported in local mode directly yet. Please replace the .json files manually.');
 }
 
-/**
- * Creates a Snapshot point in Firestore at snapshots/RESTORE_POINT
- */
 export async function createSnapshot(): Promise<void> {
-  const data = await fetchOperationalData();
-  const snapshotRef = doc(db, 'snapshots', 'RESTORE_POINT');
-  await setDoc(snapshotRef, { 
-    payload: JSON.stringify(data),
-    updatedAt: new Date().toISOString()
-  });
+  throw new Error('Snapshots not supported in local mode.');
 }
 
-/**
- * Restores from the snapshot point in Firestore.
- */
 export async function restoreSnapshot(): Promise<void> {
-  const snapshotRef = doc(db, 'snapshots', 'RESTORE_POINT');
-  const snap = await getDoc(snapshotRef);
-  if (!snap.exists()) {
-    throw new Error('No existe un punto de restauración guardado.');
-  }
-  
-  const payloadStr = snap.data().payload;
-  if (!payloadStr) throw new Error('El punto de restauración está vacío.');
-
-  const data: BackupData = JSON.parse(payloadStr);
-  await restoreFromData(data);
+  throw new Error('Snapshots not supported in local mode.');
 }
 
-/**
- * Triggers a browser download of the BackupData as a JSON file.
- */
 export async function exportToJson(): Promise<void> {
   const data = await fetchOperationalData();
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -119,9 +49,6 @@ export async function exportToJson(): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-/**
- * Reads a JSON file from the browser and restores the DB.
- */
 export async function importFromJson(file: File): Promise<void> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -140,49 +67,7 @@ export async function importFromJson(file: File): Promise<void> {
     reader.readAsText(file);
   });
 }
-/**
- * Resets all accounting data to zero. (Botón de pánico)
- */
+
 export async function resetAccountingData(): Promise<void> {
-  let batch = writeBatch(db);
-  let operationCount = 0;
-
-  const commitBatchIfNeeded = async () => {
-    if (operationCount >= 450) {
-      await batch.commit();
-      batch = writeBatch(db);
-      operationCount = 0;
-    }
-  };
-
-  // 1. Delete all transactions and sales (and bills)
-  const collectionsToWipe = ['transactions', 'sales', 'bills'];
-  for (const colName of collectionsToWipe) {
-    const snapshot = await getDocs(collection(db, colName));
-    for (const docSnap of snapshot.docs) {
-      batch.delete(docSnap.ref);
-      operationCount++;
-      await commitBatchIfNeeded();
-    }
-  }
-
-  // 2. Reset client debts
-  const clientsSnap = await getDocs(collection(db, 'clients'));
-  for (const docSnap of clientsSnap.docs) {
-    batch.update(docSnap.ref, { outstandingDebt: 0 });
-    operationCount++;
-    await commitBatchIfNeeded();
-  }
-
-  // 3. Reset supplier debts
-  const suppliersSnap = await getDocs(collection(db, 'suppliers'));
-  for (const docSnap of suppliersSnap.docs) {
-    batch.update(docSnap.ref, { balanceOwed: 0, storeDebt: 0 });
-    operationCount++;
-    await commitBatchIfNeeded();
-  }
-
-  if (operationCount > 0) {
-    await batch.commit();
-  }
+  throw new Error('Reset not supported in local mode automatically.');
 }

@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ClientProfile, Transaction, DebtInstallment } from '../types';
 import { Users, Search, Plus, CreditCard, Award, BadgeAlert, Coins, Phone, Mail, FileCheck, Eye, Clock, X, CheckCircle, XCircle } from 'lucide-react';
-import { collection, query, where, onSnapshot, doc, updateDoc, getDoc } from 'firebase/firestore';
-import { db } from '../services/firebase';
+import { fetchCollection, onCollectionSnapshot, updateLocalDoc } from '../services/localApi';
 
 interface ClientsCreditViewProps {
   clients: ClientProfile[];
@@ -33,23 +32,15 @@ export default function ClientsCreditView({
 
   useEffect(() => {
     // Escuchar Pagos por Conciliar (Mundo Kalu)
-    const qPayments = query(
-      collection(db, 'transactions'),
-      where('category', '==', 'ingresos_cobranza'),
-      where('status', '==', 'pending_verification')
-    );
-    const unsubPayments = onSnapshot(qPayments, (snap) => {
-      const arr: Transaction[] = [];
-      snap.forEach(d => arr.push({ id: d.id, ...d.data() } as Transaction));
+    const unsubPayments = onCollectionSnapshot('transactions', (data) => {
+      const arr = data.filter((d: any) => d.category === 'ingresos_cobranza' && d.status === 'pending_verification') as Transaction[];
       arr.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
       setPendingPayments(arr);
     });
 
     // Escuchar Cuotas Históricas
-    const qInstallments = query(collection(db, 'installments'));
-    const unsubInstallments = onSnapshot(qInstallments, (snap) => {
-      const arr: DebtInstallment[] = [];
-      snap.forEach(d => arr.push({ id: d.id, ...d.data() } as DebtInstallment));
+    const unsubInstallments = onCollectionSnapshot('installments', (data) => {
+      const arr = data as DebtInstallment[];
       arr.sort((a, b) => new Date(b.dueDate).getTime() - new Date(a.dueDate).getTime());
       setAllInstallments(arr);
     });
@@ -180,12 +171,11 @@ export default function ClientsCreditView({
     setIsProcessingApproval(true);
     try {
       // 1. Update Transaction
-      await updateDoc(doc(db, 'transactions', tx.id), { status: 'approved' });
+      await updateLocalDoc('transactions', tx.id, { status: 'approved' });
       
-      // 2. Update Installments
-      if (tx.installmentIds && tx.installmentIds.length > 0) {
-        for (const iId of tx.installmentIds) {
-          await updateDoc(doc(db, 'installments', iId), {
+      if (tx.kaluCreditData?.installmentIds) {
+        for (const iId of tx.kaluCreditData.installmentIds) {
+          await updateLocalDoc('installments', iId, {
             status: 'paid',
             paidAt: new Date().toISOString()
           });

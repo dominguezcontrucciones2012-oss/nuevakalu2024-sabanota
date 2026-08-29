@@ -33,13 +33,23 @@ interface SidebarProps {
   userRole?: string;
   userName?: string;
   isOpen?: boolean;
+  onToggle?: () => void;
   exchangeRate?: number;
   lastRateSync?: string;
   onSyncRate?: (rate: number, syncDate: string) => void;
 }
 
-export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, userRole = 'cajero', userName = 'Invitado', isOpen = true, exchangeRate = 0, lastRateSync, onSyncRate }: SidebarProps) {
+export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, userRole = 'cajero', userName = 'Invitado', isOpen = true, onToggle, exchangeRate = 0, lastRateSync, onSyncRate }: SidebarProps) {
   const [isSyncingRate, setIsSyncingRate] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  import('react').then(React => {
+    React.useEffect(() => {
+      const handleResize = () => setIsMobile(window.innerWidth < 768);
+      window.addEventListener('resize', handleResize);
+      return () => window.removeEventListener('resize', handleResize);
+    }, []);
+  });
 
   const getInitials = (name: string) => {
     return name.substring(0, 2).toUpperCase();
@@ -149,21 +159,35 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
     : allMenuItems;
 
   return (
-    <aside className={`transition-all duration-300 ease-in-out border-r border-editorial-border bg-editorial-bg flex flex-col py-8 min-h-screen sticky top-0 shrink-0 h-screen select-none overflow-y-auto overflow-x-hidden ${
-      isOpen ? 'w-80 px-8 opacity-100' : 'w-0 px-0 opacity-0 border-r-0'
+    <>
+    {isOpen && isMobile && (
+      <div 
+        className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden animate-in fade-in duration-300"
+        onClick={onToggle}
+      />
+    )}
+    <aside className={`transition-all duration-300 ease-in-out border-r border-editorial-border bg-editorial-bg flex flex-col py-8 min-h-screen fixed md:sticky top-0 left-0 z-50 shrink-0 h-screen select-none overflow-y-auto overflow-x-hidden ${
+      isOpen ? 'w-80 px-8 opacity-100 translate-x-0' : 'w-0 px-0 opacity-0 border-r-0 -translate-x-full md:translate-x-0'
     }`}>
       {/* Top Branding Section */}
       <div className="flex flex-col gap-8 shrink-0">
-        <div className="flex items-center gap-4">
-          <div className="w-6 h-6 rounded-full bg-amber-500 animate-pulse" />
-          <div>
-            <h1 className="font-serif text-3xl font-bold tracking-tighter leading-none text-editorial-text-primary">
-              KALU
-            </h1>
-            <span className="text-[10px] tracking-[0.25em] font-mono text-editorial-text-muted uppercase">
-              Control de Quesos
-            </span>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className="w-6 h-6 rounded-full bg-amber-500 animate-pulse" />
+            <div>
+              <h1 className="font-serif text-3xl font-bold tracking-tighter leading-none text-editorial-text-primary">
+                KALU
+              </h1>
+              <span className="text-[10px] tracking-[0.25em] font-mono text-editorial-text-muted uppercase">
+                Control de Quesos
+              </span>
+            </div>
           </div>
+          {onToggle && (
+            <button onClick={onToggle} className="md:hidden p-2 text-editorial-text-muted hover:text-white">
+              <span className="text-xl">X</span>
+            </button>
+          )}
         </div>
 
         <div className="h-px bg-editorial-border w-full" />
@@ -278,5 +302,6 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
         </div>
       </div>
     </aside>
+    </>
   );
 }

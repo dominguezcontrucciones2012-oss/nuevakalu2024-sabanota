@@ -6,9 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import { ViewType } from '../types';
 import { Bell, RefreshCw, Cpu, Activity, Menu, Smartphone, HardDrive, Radio, Loader2 } from 'lucide-react';
-import { doc, onSnapshot, disableNetwork, enableNetwork } from 'firebase/firestore';
-import { db } from '../services/firebase';
-
+import { onCollectionSnapshot } from '../services/localApi';
 interface HeaderProps {
   currentView: ViewType;
   onSimulateSale: () => void;
@@ -25,34 +23,25 @@ export default function Header({ currentView, onSimulateSale, notificationCount,
 
   const handleSetLocalMode = async () => {
     setIsSwitchingNetwork(true);
-    try {
-      await disableNetwork(db);
+    setTimeout(() => {
       setIsOnlineMode(false);
-    } catch (error) {
-      console.error("Error disabling network:", error);
-    } finally {
       setIsSwitchingNetwork(false);
-    }
+    }, 500);
   };
 
   const handleSetOnlineMode = async () => {
     setIsSwitchingNetwork(true);
-    try {
-      await enableNetwork(db);
+    setTimeout(() => {
       setIsOnlineMode(true);
-    } catch (error) {
-      console.error("Error enabling network:", error);
-    } finally {
       setIsSwitchingNetwork(false);
-    }
+    }, 500);
   };
 
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, 'stores', 'kaluqueso'), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        const gatewayStatusData = data.gateway_status;
-
+    const unsub = onCollectionSnapshot('stores', (data) => {
+      const docSnap = data.find((d: any) => d.id === 'kaluqueso');
+      if (docSnap) {
+        const gatewayStatusData = docSnap.gateway_status;
         if (gatewayStatusData) {
           const pingField = gatewayStatusData.last_ping || gatewayStatusData.lastSeen;
           if (pingField) {
@@ -128,24 +117,24 @@ export default function Header({ currentView, onSimulateSale, notificationCount,
       </div>
 
       {/* Right Area: Exchange Rate, Network Controls & Gateway Status */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2 md:gap-4 flex-wrap justify-end">
         {exchangeRate > 0 && (
-          <div className="flex items-center gap-2 bg-amber-500/10 px-3 py-2 rounded border border-amber-500/30 w-fit animate-in fade-in duration-500">
-            <span className="text-xs font-bold text-amber-500 tracking-widest font-mono">
-              TASA BCV: Bs. {exchangeRate.toFixed(2)} / $
+          <div className="flex items-center gap-2 bg-amber-500/10 px-2 md:px-3 py-1.5 md:py-2 rounded border border-amber-500/30 w-fit animate-in fade-in duration-500">
+            <span className="text-[10px] md:text-xs font-bold text-amber-500 tracking-widest font-mono">
+              <span className="hidden md:inline">TASA BCV: </span>Bs. {exchangeRate.toFixed(2)}
             </span>
           </div>
         )}
         
         {/* Network Toggle Controls */}
-        <div className="flex bg-editorial-card border border-editorial-border rounded overflow-hidden h-[34px]">
+        <div className="flex bg-editorial-card border border-editorial-border rounded overflow-hidden h-[28px] md:h-[34px]">
           <button
             onClick={handleSetLocalMode}
             disabled={isSwitchingNetwork}
-            className={`flex items-center gap-2 px-3 transition-all ${!isOnlineMode ? 'bg-editorial-bg border-b-2 border-amber-500' : 'hover:bg-editorial-bg/50 opacity-50'}`}
+            className={`flex items-center gap-1 md:gap-2 px-2 md:px-3 transition-all ${!isOnlineMode ? 'bg-editorial-bg border-b-2 border-amber-500' : 'hover:bg-editorial-bg/50 opacity-50'}`}
           >
-            {isSwitchingNetwork && !isOnlineMode ? <Loader2 className="w-3.5 h-3.5 text-amber-500 animate-spin" /> : <HardDrive className={`w-3.5 h-3.5 ${!isOnlineMode ? 'text-amber-500' : 'text-editorial-text-muted'}`} />}
-            <span className={`text-[10px] font-bold uppercase tracking-wider ${!isOnlineMode ? 'text-amber-500' : 'text-editorial-text-muted'}`}>Local</span>
+            {isSwitchingNetwork && !isOnlineMode ? <Loader2 className="w-3 h-3 md:w-3.5 md:h-3.5 text-amber-500 animate-spin" /> : <HardDrive className={`w-3 h-3 md:w-3.5 md:h-3.5 ${!isOnlineMode ? 'text-amber-500' : 'text-editorial-text-muted'}`} />}
+            <span className={`text-[9px] md:text-[10px] font-bold uppercase tracking-wider ${!isOnlineMode ? 'text-amber-500' : 'text-editorial-text-muted'}`}>Local</span>
           </button>
           
           <div className="w-px bg-editorial-border" />
@@ -153,16 +142,16 @@ export default function Header({ currentView, onSimulateSale, notificationCount,
           <button
             onClick={handleSetOnlineMode}
             disabled={isSwitchingNetwork}
-            className={`flex items-center gap-2 px-3 transition-all ${isOnlineMode ? 'bg-black border-b-2 border-emerald-500' : 'hover:bg-editorial-bg/50 opacity-50'}`}
+            className={`flex items-center gap-1 md:gap-2 px-2 md:px-3 transition-all ${isOnlineMode ? 'bg-black border-b-2 border-emerald-500' : 'hover:bg-editorial-bg/50 opacity-50'}`}
           >
-            {isSwitchingNetwork && isOnlineMode ? <Loader2 className="w-3.5 h-3.5 text-emerald-500 animate-spin" /> : <Radio className={`w-3.5 h-3.5 ${isOnlineMode ? 'text-emerald-500' : 'text-editorial-text-muted'}`} />}
-            <span className={`text-[10px] font-bold uppercase tracking-wider ${isOnlineMode ? 'text-emerald-500' : 'text-editorial-text-muted'}`}>En Vivo</span>
+            {isSwitchingNetwork && isOnlineMode ? <Loader2 className="w-3 h-3 md:w-3.5 md:h-3.5 text-emerald-500 animate-spin" /> : <Radio className={`w-3 h-3 md:w-3.5 md:h-3.5 ${isOnlineMode ? 'text-emerald-500' : 'text-editorial-text-muted'}`} />}
+            <span className={`text-[9px] md:text-[10px] font-bold uppercase tracking-wider ${isOnlineMode ? 'text-emerald-500' : 'text-editorial-text-muted'}`}>En Vivo</span>
           </button>
         </div>
 
-        <div className="flex items-center gap-2 bg-black/40 p-2 rounded border border-white/10 w-fit h-[34px]">
-          <div className={`w-3 h-3 rounded-full ${gatewayStatus.isOnline ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.8)] animate-pulse' : 'bg-red-500 opacity-50'}`} />
-          <span className="text-xs font-bold text-white/80 uppercase tracking-wider leading-none">Gateway Android: {gatewayStatus.isOnline ? 'ONLINE' : 'OFFLINE'}</span>
+        <div className="flex items-center gap-1 md:gap-2 bg-black/40 p-1.5 md:p-2 rounded border border-white/10 w-fit h-[28px] md:h-[34px]">
+          <div className={`w-2 h-2 md:w-3 md:h-3 rounded-full ${gatewayStatus.isOnline ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.8)] animate-pulse' : 'bg-red-500 opacity-50'}`} />
+          <span className="text-[9px] md:text-xs font-bold text-white/80 uppercase tracking-wider leading-none"><span className="hidden md:inline">Gateway: </span>{gatewayStatus.isOnline ? 'ON' : 'OFF'}</span>
         </div>
       </div>
     </header>

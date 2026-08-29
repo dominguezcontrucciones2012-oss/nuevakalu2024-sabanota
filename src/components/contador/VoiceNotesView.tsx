@@ -1,6 +1,7 @@
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
 import React, { useState, useEffect, useRef } from 'react';
-import { collection, addDoc, query, where, getDocs, orderBy } from 'firebase/firestore';
-import { db } from '../../services/firebase';
+
+
 import { Mic, Square, ArrowLeft, Save, Loader2, Play, CheckCircle2 } from 'lucide-react';
 
 interface VoiceNotesViewProps {

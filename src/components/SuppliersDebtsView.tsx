@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, limit, onSnapshot, getDocs, orderBy, serverTimestamp } from 'firebase/firestore';
-import { db } from '../services/firebase';
+import { fetchCollection, onCollectionSnapshot } from '../services/localApi';
 import { SupplierProfile, AccountBill, Transaction, CheeseProduct } from '../types';
 import { Truck, Store, Phone, Plus, BadgeAlert, FileCheck, CheckCircle, ExternalLink, Calendar, Eye, Wallet, CreditCard, Inbox, X, Search, Trash2 } from 'lucide-react';
 import { parseSafeDecimal } from '../utils';
@@ -190,29 +189,22 @@ export default function SuppliersDebtsView({
       
       // We do not use the date filter automatically on open. We just fetch the last 15.
       if (showAllTime || !historialStartDate || !historialEndDate) {
-        // Query last 50
-        const q = query(
-          collection(db, 'transactions'),
-          where('entity', '==', s.name),
-          limit(50)
-        );
-        const unsub = onSnapshot(q, (snapshot) => {
-          const txs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
-          txs.sort((a, b) => {
+        const unsub = onCollectionSnapshot('transactions', (data) => {
+          const allTxs = data.filter((d: any) => d.entity === s.name) as Transaction[];
+          allTxs.sort((a, b) => {
             const getMs = (tx: any) => {
               if (tx.timestamp && typeof tx.timestamp.toMillis === 'function') return tx.timestamp.toMillis();
               if (tx.timestamp && typeof tx.timestamp === 'number') return tx.timestamp;
-              // fallback a extraer el timestamp del ID
               const parts = tx.id.split('-');
               for (const part of parts) {
                 if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
               }
-              // último fallback a la cadena
               return new Date(tx.date || 0).getTime();
             };
-            return getMs(b) - getMs(a); // descendente (más reciente arriba)
+            return getMs(b) - getMs(a);
           });
-          setLocalTransactions(txs);
+          // Limit to 50 locally
+          setLocalTransactions(allTxs.slice(0, 50));
           setIsLoadingHistorial(false);
         });
         return () => unsub();
@@ -220,18 +212,11 @@ export default function SuppliersDebtsView({
         // Range query mode
         const fetchRange = async () => {
           setIsLoadingHistorial(true);
-          // Convert local dates to ms boundaries
           const startMs = new Date(historialStartDate + 'T00:00:00').getTime();
           const endMs = new Date(historialEndDate + 'T23:59:59.999').getTime();
           
-          const q = query(
-            collection(db, 'transactions'),
-            where('entity', '==', s.name),
-            limit(1000)
-          );
-          
-          const snapshot = await getDocs(q);
-          const allTxs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
+          const data = await fetchCollection('transactions');
+          const allTxs = data.filter((d: any) => d.entity === s.name) as Transaction[];
           const filtered = allTxs.filter(tx => {
             // Check by new ID pattern (TX-17000000 or similar)
             const idParts = tx.id.split('-');

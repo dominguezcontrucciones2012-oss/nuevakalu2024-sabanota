@@ -1,8 +1,7 @@
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../services/localApi';
 import React, { useState, useEffect } from 'react';
 import { CreditCard, Check, Copy, ArrowRight, Banknote, X, CheckCircle, Clock, XCircle, Image as ImageIcon } from 'lucide-react';
 import { ClientProfile, DebtInstallment, Transaction } from '../types';
-import { collection, query, where, onSnapshot, doc, updateDoc, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../services/firebase';
 
 interface PaymentsTabProps {
   bcvRate: number;
@@ -29,28 +28,16 @@ export default function PaymentsTab({
   useEffect(() => {
     if (!clientData?.id) return;
     // 1. Escuchar Cuotas Pendientes
-    const qDebts = query(
-      collection(db, 'installments'),
-      where('clientId', '==', clientData.id),
-      where('status', '==', 'pending')
-    );
-    const unsubDebts = onSnapshot(qDebts, (snap) => {
-      const debts: DebtInstallment[] = [];
-      snap.forEach(doc => debts.push({ id: doc.id, ...doc.data() } as DebtInstallment));
+    const unsubDebts = onCollectionSnapshot('installments', (data) => {
+      const debts = data.filter((d: any) => d.clientId === clientData.id && d.status === 'pending') as DebtInstallment[];
       // Sort by due date
       debts.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
       setDebtList(debts);
     });
 
     // 2. Escuchar Historial de Pagos
-    const qPayments = query(
-      collection(db, 'transactions'),
-      where('clientId', '==', clientData.id),
-      where('category', '==', 'ingresos_cobranza')
-    );
-    const unsubPayments = onSnapshot(qPayments, (snap) => {
-      const payments: Transaction[] = [];
-      snap.forEach(doc => payments.push({ id: doc.id, ...doc.data() } as Transaction));
+    const unsubPayments = onCollectionSnapshot('transactions', (data) => {
+      const payments = data.filter((d: any) => d.clientId === clientData.id && d.category === 'ingresos_cobranza') as Transaction[];
       // Sort desc
       payments.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       setPaymentHistory(payments);
@@ -128,15 +115,15 @@ export default function PaymentsTab({
       installmentIds,
       notes: notesText,
       date: new Date().toISOString(),
-      timestamp: serverTimestamp()
+      timestamp: new Date().toISOString()
     };
     
     try {
-       await addDoc(collection(db, 'transactions'), payload);
+       await addLocalDoc('transactions', payload);
        
        // Update installment status
        const updatePromises = installmentIds.map(id => 
-          updateDoc(doc(db, 'installments', id), { status: 'in_review' })
+          updateLocalDoc('installments', id, { status: 'in_review' })
        );
        await Promise.all(updatePromises);
 

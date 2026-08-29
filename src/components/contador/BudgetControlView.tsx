@@ -1,6 +1,7 @@
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
 import React, { useState, useEffect } from 'react';
-import { collection, addDoc, onSnapshot, query, orderBy, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../../services/firebase';
+
+
 import { ArrowLeft, Wallet, Truck, Plus, Save, Banknote, Landmark, CircleDollarSign, Loader2, Calendar } from 'lucide-react';
 import { CentralVaultBalance, Transaction } from '../../types';
 
@@ -202,14 +203,14 @@ function AddDebtModal({ onClose }: { onClose: () => void }) {
     if (!concept || !totalAmount) return;
     setSaving(true);
     try {
-      await addDoc(collection(db, 'business_debts'), {
+      await addLocalDoc('business_debts', {
         concept,
         category,
         totalAmount: Number(totalAmount),
         pendingBalance: Number(totalAmount),
         payments: [],
         status: 'active',
-        createdAt: serverTimestamp()
+        createdAt: new Date().toISOString()
       });
       onClose();
     } catch (e) {
@@ -452,11 +453,11 @@ function AddTripWeekModal({ onClose }: { onClose: () => void }) {
     if (!title) return;
     setSaving(true);
     try {
-      await addDoc(collection(db, 'vehicle_trips'), {
+      await addLocalDoc('vehicle_trips', {
         title,
         entries: [],
         totalExpenses: 0,
-        createdAt: serverTimestamp()
+        createdAt: new Date().toISOString()
       });
       onClose();
     } catch (e) {

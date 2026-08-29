@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, orderBy, limit, getDocs, where, startAfter, QueryDocumentSnapshot, DocumentData, serverTimestamp } from 'firebase/firestore';
-import { db } from '../services/firebase';
 import { KardexMovement } from '../types';
+import { fetchCollection, onCollectionSnapshot } from '../services/localApi';
 import { Search, Filter, BookOpen, ArrowUpRight, ArrowDownRight, AlertTriangle, Edit3, RefreshCw, DownloadCloud } from 'lucide-react';
 
 const CACHE_KEY = 'kalu_kardex_cache';
@@ -11,53 +10,11 @@ export default function KardexView() {
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
-  const [lastDoc, setLastDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
-  const [hasMore, setHasMore] = useState(true);
 
   useEffect(() => {
-    loadKardex();
-  }, []);
-
-  const loadKardex = async () => {
-    setLoading(true);
-    try {
-      let cachedData: KardexMovement[] = [];
-      try {
-        const cachedString = localStorage.getItem(CACHE_KEY);
-        if (cachedString) {
-          cachedData = JSON.parse(cachedString);
-        }
-      } catch (e) {
-        console.error("Error reading cache", e);
-      }
-
-      const kardexRef = collection(db, 'kardex');
-      let newMovements: KardexMovement[] = [];
-
-      if (cachedData.length > 0) {
-        // Incremental fetch
-        const latestDate = cachedData[0].date;
-        const q = query(kardexRef, where('date', '>', latestDate), orderBy('date', 'desc'));
-        const querySnapshot = await getDocs(q);
-        newMovements = querySnapshot.docs.map(doc => ({ ...(doc.data() as any), id: doc.id } as KardexMovement));
-      } else {
-        // Initial fetch
-        const q = query(kardexRef, orderBy('date', 'desc'), limit(15));
-        const querySnapshot = await getDocs(q);
-        newMovements = querySnapshot.docs.map(doc => ({ ...(doc.data() as any), id: doc.id } as KardexMovement));
-        if (querySnapshot.docs.length > 0) {
-          setLastDoc(querySnapshot.docs[querySnapshot.docs.length - 1]);
-        }
-        if (querySnapshot.docs.length < 15) setHasMore(false);
-      }
-
-      const combinedData = [...newMovements, ...cachedData];
-      
-      // Remove duplicates just in case
-      const uniqueData = combinedData.filter((v, i, a) => a.findIndex(t => (t.id === v.id)) === i);
-      
+    const unsubscribe = onCollectionSnapshot('kardex', (data) => {
       // Sort descending by date
-      uniqueData.sort((a, b) => {
+      data.sort((a, b) => {
         const getMs = (item: any) => {
           if (item.timestamp && typeof item.timestamp.toMillis === 'function') return item.timestamp.toMillis();
           if (item.timestamp && typeof item.timestamp === 'number') return item.timestamp;
@@ -71,71 +28,19 @@ export default function KardexView() {
         };
         return getMs(b) - getMs(a);
       });
-
-      setMovements(uniqueData);
-      localStorage.setItem(CACHE_KEY, JSON.stringify(uniqueData));
-      
-    } catch (error) {
-      console.error("Error loading Kardex:", error);
-    } finally {
+      setMovements(data);
       setLoading(false);
-    }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const loadKardex = async () => {
+    // Handled by snapshot now
   };
 
   const loadOlder = async () => {
-    if (!hasMore) return;
-    setLoading(true);
-    try {
-      const kardexRef = collection(db, 'kardex');
-      let q;
-
-      if (lastDoc) {
-        q = query(kardexRef, orderBy('date', 'desc'), startAfter(lastDoc), limit(25));
-      } else if (movements.length > 0) {
-        // Fallback if we have cache but no lastDoc
-        const oldestDate = movements[movements.length - 1].date;
-        q = query(kardexRef, where('date', '<', oldestDate), orderBy('date', 'desc'), limit(25));
-      } else {
-        q = query(kardexRef, orderBy('date', 'desc'), limit(25));
-      }
-
-      const querySnapshot = await getDocs(q);
-      const olderMovements = querySnapshot.docs.map(doc => ({ ...(doc.data() as any), id: doc.id } as KardexMovement));
-
-      if (querySnapshot.docs.length > 0) {
-        setLastDoc(querySnapshot.docs[querySnapshot.docs.length - 1]);
-      }
-      
-      if (querySnapshot.docs.length < 25) {
-        setHasMore(false);
-      }
-
-      if (olderMovements.length > 0) {
-        const combinedData = [...movements, ...olderMovements];
-        const uniqueData = combinedData.filter((v, i, a) => a.findIndex(t => (t.id === v.id)) === i);
-        uniqueData.sort((a, b) => {
-          const getMs = (item: any) => {
-            if (item.timestamp && typeof item.timestamp.toMillis === 'function') return item.timestamp.toMillis();
-            if (item.timestamp && typeof item.timestamp === 'number') return item.timestamp;
-            if (item.id) {
-              const parts = item.id.split('-');
-              for (const part of parts) {
-                if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
-              }
-            }
-            return new Date(item.date).getTime() || 0;
-          };
-          return getMs(b) - getMs(a);
-        });
-        setMovements(uniqueData);
-        localStorage.setItem(CACHE_KEY, JSON.stringify(uniqueData));
-      }
-
-    } catch (error) {
-      console.error("Error loading older Kardex records:", error);
-    } finally {
-      setLoading(false);
-    }
+    // Handled by snapshot now
   };
 
   const filteredMovements = movements.filter(m => {
@@ -284,19 +189,7 @@ export default function KardexView() {
           </tbody>
         </table>
         
-        {/* Load More Button */}
-        {hasMore && filteredMovements.length > 0 && (
-          <div className="p-4 flex justify-center border-t border-editorial-border/30 bg-editorial-surface">
-            <button
-              onClick={loadOlder}
-              disabled={loading}
-              className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/20 px-6 py-2 text-xs font-bold uppercase tracking-widest transition-colors flex items-center gap-2"
-            >
-              <DownloadCloud className={`w-4 h-4 ${loading ? 'animate-bounce' : ''}`} />
-              {loading ? 'Consultando en Servidor...' : 'Buscar movimientos antiguos en la nube'}
-            </button>
-          </div>
-        )}
+        {/* Pagination/Load Older is now handled entirely by local realtime sync */}
       </div>
     </div>
   );

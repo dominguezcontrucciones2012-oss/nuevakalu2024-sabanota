@@ -23,7 +23,8 @@ import {
   Clock,
   CheckCircle,
   Search,
-  X
+  X,
+  Camera
 } from 'lucide-react';
 
 interface CheeseInventoryViewProps {
@@ -171,11 +172,66 @@ export default function CheeseInventoryView({
     }
   };
 
+  const compressImage = (file: File): Promise<File> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = event => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX_WIDTH = 800;
+          const MAX_HEIGHT = 800;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height *= MAX_WIDTH / width;
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width *= MAX_HEIGHT / height;
+              height = MAX_HEIGHT;
+            }
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          canvas.toBlob(
+            blob => {
+              if (blob) {
+                resolve(new File([blob], file.name, { type: 'image/jpeg' }));
+              } else {
+                reject(new Error('Fallo al procesar imagen'));
+              }
+            },
+            'image/jpeg',
+            0.7
+          );
+        };
+        img.onerror = () => reject(new Error('Error cargando imagen'));
+      };
+      reader.onerror = () => reject(new Error('Error leyendo archivo'));
+    });
+  };
+
   const handleUploadImageForProduct = async (prodId: string, file: File) => {
     try {
+      onAddNotification('Procesando foto (optimizando tamaño)...', 'info');
+      
+      const compressedFile = await compressImage(file);
+      
       const formData = new FormData();
-      formData.append('files', file);
+      formData.append('files', compressedFile);
+      
+      onAddNotification('Subiendo foto al servidor local...', 'info');
+      
       const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      
       if (res.ok) {
         const data = await res.json();
         if (data.urls && data.urls.length > 0) {
@@ -184,11 +240,13 @@ export default function CheeseInventoryView({
             setEditingProduct(prev => prev ? { ...prev, imageUrl: url } : prev);
           }
           await onUpdateProduct(prodId, { imageUrl: url });
-          onAddNotification('Imagen actualizada', 'success');
+          onAddNotification('¡Foto guardada con éxito!', 'success');
         }
+      } else {
+        onAddNotification(`Error del servidor al subir: ${res.status}`, 'warning');
       }
-    } catch (err) {
-      onAddNotification('Fallo al subir imagen', 'warning');
+    } catch (err: any) {
+      onAddNotification(`Fallo al subir imagen: ${err.message}`, 'warning');
     }
   };
 
@@ -729,6 +787,18 @@ export default function CheeseInventoryView({
                             </div>
                           ) : (
                             <div key="view-actions" className="flex justify-center gap-1.5">
+                              <label className="p-1 border border-editorial-border bg-editorial-bg text-editorial-text-primary rounded hover:bg-amber-500 hover:border-amber-500 hover:text-white cursor-pointer transition-colors relative" title="Tomar Foto">
+                                <Camera className="w-3.5 h-3.5" />
+                                <input 
+                                  type="file" 
+                                  accept="image/*" 
+                                  capture="environment"
+                                  className="hidden" 
+                                  onChange={e => {
+                                    if (e.target.files?.[0]) handleUploadImageForProduct(p.id, e.target.files[0]);
+                                  }} 
+                                />
+                              </label>
                               <button
                                 onClick={() => {
                                   console.log('Producto a editar:', p);

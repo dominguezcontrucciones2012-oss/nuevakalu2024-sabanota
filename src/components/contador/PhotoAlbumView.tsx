@@ -1,7 +1,8 @@
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
 import React, { useState, useEffect, useRef } from 'react';
-import { collection, addDoc, query, where, getDocs } from 'firebase/firestore';
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '../../services/firebase';
+
+
+
 import { askGemini } from '../../services/gemini';
 import { Camera, Image as ImageIcon, ArrowLeft, UploadCloud, Loader2, Calendar, CheckCircle, Sparkles } from 'lucide-react';
 

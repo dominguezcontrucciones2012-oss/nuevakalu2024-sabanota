@@ -7,8 +7,7 @@ interface StoreTabProps {
   onNavigateTab?: (tab: 'inicio' | 'tienda' | 'qr' | 'pagos' | 'perfil') => void;
 }
 
-import { db } from '../services/firebase';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { onCollectionSnapshot } from '../services/localApi';
 
 const STORE_BANNERS = [
   { id: 'b1', title: 'Queso Llanero Especial - Calidad Garantizada', image: 'bg-emerald-900', desc: 'Disfruta del mejor sabor criollo directo del productor. Calidad Kalu.' },
@@ -82,10 +81,8 @@ export default function StoreTab({ products = [] }: StoreTabProps) {
   const [liveBanners, setLiveBanners] = useState<any[]>([]);
 
   useEffect(() => {
-    const q = query(collection(db, 'banners'), where('active', '==', true));
-    const unsub = onSnapshot(q, snap => {
-      const arr: any[] = [];
-      snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
+    const unsub = onCollectionSnapshot('banners', snap => {
+      const arr = snap.filter((d: any) => d.active === true);
       setLiveBanners(arr);
     });
     return () => unsub();

@@ -1,6 +1,7 @@
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../services/localApi';
 import React, { useState } from 'react';
-import { collection, query, onSnapshot, addDoc, serverTimestamp, where, doc, updateDoc } from 'firebase/firestore';
-import { db } from '../services/firebase';
+
+
 import {
   Smartphone,
   ShoppingBag,
@@ -136,30 +137,19 @@ export default function MobilePortalsView({
     }
     
     // Listener de peticiones pendientes
-    const q = query(
-       collection(db, 'transactions'),
-       where('clientId', '==', loggedClient.id),
-       where('status', '==', 'pending_approval')
-    );
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-       if (!snapshot.empty) {
-          const docData = snapshot.docs[0];
-          setPendingCreditRequest({ id: docData.id, ...docData.data() });
-       } else {
-          setPendingCreditRequest(null);
-       }
+    const unsubscribe = onCollectionSnapshot('transactions', (data) => {
+        const txs = data.filter((d: any) => d.clientId === loggedClient.id && d.status === 'pending_approval');
+        if (txs.length > 0) {
+           setPendingCreditRequest(txs[0]);
+        } else {
+           setPendingCreditRequest(null);
+        }
     });
 
     // Listener de cuotas (deuda real)
-    const qInst = query(
-       collection(db, 'installments'),
-       where('clientId', '==', loggedClient.id),
-       where('status', '==', 'pending')
-    );
-    const unsubInst = onSnapshot(qInst, (snap) => {
-       const inst: any[] = [];
-       snap.forEach(doc => inst.push({ id: doc.id, ...doc.data() }));
-       setActiveInstallments(inst);
+    const unsubInst = onCollectionSnapshot('installments', (data) => {
+        const inst = data.filter((d: any) => d.clientId === loggedClient.id && d.status === 'pending');
+        setActiveInstallments(inst);
     });
 
     return () => {
@@ -230,13 +220,16 @@ export default function MobilePortalsView({
       }
       
       if (clientPinInput === expectedPin) {
+        alert('¡Login correcto! Entrando al portal...');
         setLoggedClient(found);
         setClientCart([]);
         onAddNotification(`¡Sesión iniciada como Cliente: ${found.name}!`, 'success');
       } else {
+         alert('El PIN ingresado es incorrecto. Esperado: ' + expectedPin + ' / Ingresado: ' + clientPinInput);
          onAddNotification('El PIN ingresado es incorrecto.', 'warning');
       }
     } else {
+      alert('No se encontró ningún cliente registrado con la cédula/celular: ' + phoneClean);
       onAddNotification('No se encontró ningún cliente registrado con esos datos.', 'warning');
     }
   };
@@ -373,11 +366,11 @@ export default function MobilePortalsView({
       totalAmount,
       paymentMethod: clientPayment,
       status: 'pendiente',
-      createdAt: serverTimestamp()
+      createdAt: new Date().toISOString()
     };
 
     try {
-      await addDoc(collection(db, 'pwa_remote_orders'), newOrder);
+      await addLocalDoc('pwa_remote_orders', newOrder);
       setClientCart([]);
       setShowClientCartModal(false);
       onAddNotification('Pedido enviado al cajero con éxito', 'success');
@@ -415,7 +408,7 @@ export default function MobilePortalsView({
       entityId: loggedSupplier.id,
       entityName: loggedSupplier.name,
       date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
-        timestamp: serverTimestamp(),
+        timestamp: new Date().toISOString(),
       items: orderItems,
       total,
       paymentMethod: supplierPayment,
@@ -1358,7 +1351,7 @@ export default function MobilePortalsView({
               <button
                 onClick={async () => {
                   try {
-                    await updateDoc(doc(db, 'transactions', pendingCreditRequest.id), { status: 'approved' });
+                    await updateLocalDoc('transactions', pendingCreditRequest.id, { status: 'approved' });
                     setPendingCreditRequest(null);
                     onAddNotification('¡Compra aprobada con éxito!', 'success');
                   } catch (e) {
@@ -1372,7 +1365,7 @@ export default function MobilePortalsView({
               <button
                 onClick={async () => {
                   try {
-                    await updateDoc(doc(db, 'transactions', pendingCreditRequest.id), { status: 'rejected' });
+                    await updateLocalDoc('transactions', pendingCreditRequest.id, { status: 'rejected' });
                     setPendingCreditRequest(null);
                     onAddNotification('Has rechazado la solicitud de crédito.', 'info');
                   } catch (e) {
