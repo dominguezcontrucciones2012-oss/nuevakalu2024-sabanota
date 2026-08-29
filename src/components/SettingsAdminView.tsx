@@ -94,6 +94,7 @@ export default function SettingsAdminView({
   const [confirmPublishShift, setConfirmPublishShift] = useState<Shift | null>(null);
   const [uploadStatus, setUploadStatus] = useState('');
   const [uploadPercent, setUploadPercent] = useState(0);
+  const [activeUploadTask, setActiveUploadTask] = useState<any>(null);
 
   useEffect(() => {
     // Cargar turnos locales al abrir la pestaña
@@ -193,64 +194,61 @@ export default function SettingsAdminView({
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error(msg)), ms));
 
       // 1. Delete existing cloud banners from Firestore and Storage
-      setMaintLogs(prev => [...prev, `[Banners] Purgando banners anteriores de la nube...`]);
+      setMaintLogs(prev => [...prev, `[Banners] Purgando banners anteriores de la nube en paralelo...`]);
       const currentSnap = await getDocs(collection(db, 'banners'));
-      for (const d of currentSnap.docs) {
+      
+      const deletePromises = currentSnap.docs.map(async (d) => {
         const data = d.data();
-        if (data.storagePath) {
-          try {
-            await deleteObject(ref(storage, data.storagePath));
-            setMaintLogs(prev => [...prev, `[Banners] Archivo purgado: ${data.storagePath}`]);
-          } catch (e: any) {
-            setMaintLogs(prev => [...prev, `[Banners] Ignorando purga (no encontrado): ${data.storagePath}`]);
-          }
+        if (data.storagePath && !data.storagePath.startsWith('/uploads')) {
+          try { await deleteObject(ref(storage, data.storagePath)); } catch (e) { /* ignorar si ya no existe */ }
         }
-        try {
-          await deleteDoc(d.ref);
-        } catch(e) {}
-      }
+        try { await deleteDoc(d.ref); } catch (e) { /* ignorar */ }
+      });
+      await Promise.allSettled(deletePromises);
 
       // 2. Upload new files and create Firestore docs
-      setMaintLogs(prev => [...prev, `[Banners] Subiendo ${shift.items.length} archivos nuevos a Firebase Storage...`]);
+      setMaintLogs(prev => [...prev, `[Banners] Subiendo ${shift.items.length} archivos nuevos al servidor local/VPS...`]);
       for (let i = 0; i < shift.items.length; i++) {
         const item = shift.items[i];
-        const storagePath = `banners/shift_${Date.now()}_${item.fileName}`;
-        const fileRef = ref(storage, storagePath);
         
-        const uploadTask = uploadBytesResumable(fileRef, item.fileBlob);
+        const mimeType = item.type || (item.fileName.endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
+        const cleanBlob = new Blob([item.fileBlob], { type: mimeType });
         
-        let initialLogEmitted = false;
-
-        const uploadPromise = new Promise((resolve, reject) => {
-          uploadTask.on('state_changed', 
-            (snap) => {
-              if (!initialLogEmitted) {
-                setMaintLogs(prev => [...prev, `[Banners] Conexión establecida. Iniciando subida de ${item.fileName}...`]);
-                initialLogEmitted = true;
-              }
-              const progress = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
-              setUploadPercent(progress);
-              setUploadStatus(`Subiendo archivo ${i+1} de ${shift.items.length}: ${item.fileName} (${progress}%)`);
-            },
-            (error) => reject(error),
-            () => resolve(null)
-          );
-        });
-
-        await uploadPromise;
+        setUploadStatus(`Subiendo archivo ${i+1} de ${shift.items.length}: ${item.fileName}...`);
         
-        setUploadStatus(`Obteniendo enlace seguro ${i+1}/${shift.items.length}...`);
-        const downloadUrl = await getDownloadURL(fileRef);
-
-        await setDoc(doc(collection(db, 'banners')), {
-          title: item.title,
-          desc: item.desc,
-          url: downloadUrl,
-          storagePath: storagePath,
-          type: item.type,
-          active: true,
-          createdAt: serverTimestamp()
-        });
+        const formData = new FormData();
+        formData.append('files', cleanBlob, item.fileName);
+        
+        try {
+          const response = await fetch('/api/upload', {
+            method: 'POST',
+            body: formData
+          });
+          
+          if (!response.ok) {
+            throw new Error(`Error HTTP: ${response.status}`);
+          }
+          
+          const result = await response.json();
+          const downloadUrl = result.urls[0];
+          
+          setUploadStatus(`Guardando referencia en base de datos ${i+1}/${shift.items.length}...`);
+          
+          await setDoc(doc(collection(db, 'banners')), {
+            title: item.title,
+            desc: item.desc,
+            url: downloadUrl,
+            storagePath: downloadUrl,
+            type: item.type,
+            active: true,
+            createdAt: serverTimestamp()
+          });
+          
+          setUploadPercent(Math.round(((i + 1) / shift.items.length) * 100));
+        } catch (error: any) {
+          setMaintLogs(prev => [...prev, `[Banners] Error en subida de ${item.fileName}: ${error.message}`]);
+          throw error;
+        }
       }
 
       setMaintLogs(prev => [...prev, `[Banners] Turno publicado exitosamente.`]);
@@ -263,6 +261,7 @@ export default function SettingsAdminView({
       setIsPublishingShift(false);
       setUploadStatus('');
       setUploadPercent(0);
+      setActiveUploadTask(null);
     }
   };
 
@@ -1260,9 +1259,14 @@ export default function SettingsAdminView({
             )}
             <div className="bg-editorial-card p-4 border-t border-editorial-border flex gap-3 justify-end">
               <button 
-                onClick={() => !isPublishingShift && setConfirmPublishShift(null)}
-                disabled={isPublishingShift}
-                className="px-4 py-2 text-xs font-bold uppercase text-editorial-text-muted hover:text-white transition-colors disabled:opacity-50"
+                onClick={() => {
+                  if (isPublishingShift && activeUploadTask) {
+                    activeUploadTask.cancel();
+                  }
+                  setIsPublishingShift(false);
+                  setConfirmPublishShift(null);
+                }}
+                className="px-4 py-2 text-xs font-bold uppercase text-editorial-text-muted hover:text-white transition-colors"
               >
                 Cancelar
               </button>
