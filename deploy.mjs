@@ -60,6 +60,11 @@ async function deploy() {
       fi
       
       echo "Building the frontend..."
+      curl -fsSL https://deb.nodesource.com/setup_20.x -o nodesource_setup.sh
+      bash nodesource_setup.sh
+      apt-get install -y nodejs
+      
+      rm -rf node_modules package-lock.json
       npm install
       npm run build
       
@@ -73,6 +78,10 @@ async function deploy() {
       docker-compose build
       docker-compose down
       docker-compose up -d
+      
+      # Sync the new uploads (SVGs and products_db.json) into the persistent Docker volume
+      docker cp ../uploads/. mi-web-api:/var/www/app/uploads/
+      docker restart mi-web-api
       
       echo "Deployment finished successfully!"
     `;

@@ -1036,18 +1036,24 @@ export default function MobilePortalsView({
                         return (
                           <div key={p.id} className="bg-slate-800/60 border border-slate-700/40 rounded-lg p-2 flex justify-between items-center transition-all">
                             <div>
-                              <div className="flex items-center gap-1">
-                                <span className={`px-1 py-0.2 rounded text-[7px] font-mono uppercase ${
-                                  (p.category as string) === 'Repuestos' ? 'bg-sky-500/20 text-sky-400 font-bold' :
-                                  (p.category as string) === 'Comidas' ? 'bg-amber-500/20 text-amber-400 font-bold' : 'bg-emerald-500/20 text-emerald-400 font-bold'
-                                }`}>
-                                  {p.category}
-                                </span>
-                                <p className="font-bold text-slate-200 text-[10.5px] max-w-[150px] truncate leading-tight">{p.name}</p>
-                              </div>
-                              <p className="text-[10px] text-emerald-400 font-mono mt-0.5">
-                                ${Number(p.sellingPrice || 0).toFixed(2)} <span className="text-slate-500 text-[8px]">/{p.unit}</span>
-                              </p>
+                              <div className="flex items-center gap-2">
+                                {p.imageUrl && (
+                                  <img src={p.imageUrl} alt={p.name} className="w-8 h-8 rounded object-cover border border-slate-700/50" />
+                                )}
+                                <div>
+                                  <div className="flex items-center gap-1">
+                                    <span className={`px-1 py-0.2 rounded text-[7px] font-mono uppercase ${
+                                      (p.category as string) === 'Repuestos' ? 'bg-sky-500/20 text-sky-400 font-bold' :
+                                      (p.category as string) === 'Comidas' ? 'bg-amber-500/20 text-amber-400 font-bold' : 'bg-emerald-500/20 text-emerald-400 font-bold'
+                                    }`}>
+                                      {p.category}
+                                    </span>
+                                    <p className="font-bold text-slate-200 text-[10.5px] max-w-[150px] truncate leading-tight">{p.name}</p>
+                                  </div>
+                                  <p className="text-[10px] text-emerald-400 font-mono mt-0.5">
+                                    ${Number(p.sellingPrice || 0).toFixed(2)} <span className="text-slate-500 text-[8px]">/{p.unit}</span>
+                                  </p>
+                                </div>
                             </div>
 
                             <div className="flex items-center gap-1 shrink-0">

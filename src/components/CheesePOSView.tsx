@@ -933,6 +933,11 @@ export default function CheesePOSView({
                         } ${isSelected ? 'ring-2 ring-amber-500' : ''}`}
                       >
                         <div className="space-y-1">
+                          {p.imageUrl && (
+                            <div className="w-full h-20 mb-2 rounded overflow-hidden bg-editorial-bg border border-editorial-border/50">
+                              <img src={p.imageUrl} alt={p.name} className="w-full h-full object-cover mix-blend-luminosity hover:mix-blend-normal transition-all duration-300" />
+                            </div>
+                          )}
                           <div className="flex justify-between items-start">
                             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">
                               {p.category} • {(p.origin || '').split(' ')[0]}
