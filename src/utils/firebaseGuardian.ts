@@ -49,6 +49,15 @@ class FirebaseGuardian {
   }
 
   public async guardianSetDoc<T>(docRef: DocumentReference<T>, data: WithFieldValue<T>, options?: any) {
+    if (docRef.path.startsWith('products/')) {
+      const id = docRef.path.split('/')[1];
+      const res = await fetch(`/api/products/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      return res.json();
+    }
     this.recordRequest();
     if (options) {
       return await setDoc(docRef, data, options);
@@ -58,14 +67,53 @@ class FirebaseGuardian {
 
   // @ts-ignore
   public async guardianUpdateDoc<T>(docRef: DocumentReference<T>, data: UpdateData<T>) {
+    if (docRef.path.startsWith('products/')) {
+      const id = docRef.path.split('/')[1];
+      // Manejar increment()
+      let parsedData = { ...data };
+      for (const key of Object.keys(parsedData)) {
+        if (parsedData[key] && typeof parsedData[key] === 'object' && parsedData[key].type === 'increment') {
+           // Si logramos identificar increment, aunque lo ideal es enviarlo como _increment
+           parsedData[key] = parsedData[key]._operand;
+           parsedData[`adjust${key.charAt(0).toUpperCase() + key.slice(1)}`] = parsedData[key];
+           delete parsedData[key];
+        }
+      }
+      const res = await fetch(`/api/products/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(parsedData),
+      });
+      return res.json();
+    }
     this.recordRequest();
     // @ts-ignore
     return await updateDoc(docRef, data);
   }
 
   public async guardianAddDoc<T>(collectionRef: CollectionReference<T>, data: WithFieldValue<T>) {
+    if (collectionRef.path === 'products') {
+      const res = await fetch('/api/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      return res.json();
+    }
     this.recordRequest();
     return await addDoc(collectionRef, data);
+  }
+
+  public async guardianDeleteDoc<T>(docRef: DocumentReference<T>) {
+    if (docRef.path.startsWith('products/')) {
+      const id = docRef.path.split('/')[1];
+      const res = await fetch(`/api/products/${id}`, {
+        method: 'DELETE'
+      });
+      return res.json();
+    }
+    this.recordRequest();
+    return await deleteDoc(docRef);
   }
 }
 
@@ -76,3 +124,4 @@ export const guardianGetDoc = firebaseGuardian.guardianGetDoc.bind(firebaseGuard
 export const guardianSetDoc = firebaseGuardian.guardianSetDoc.bind(firebaseGuardian);
 export const guardianUpdateDoc = firebaseGuardian.guardianUpdateDoc.bind(firebaseGuardian);
 export const guardianAddDoc = firebaseGuardian.guardianAddDoc.bind(firebaseGuardian);
+export const guardianDeleteDoc = firebaseGuardian.guardianDeleteDoc.bind(firebaseGuardian);

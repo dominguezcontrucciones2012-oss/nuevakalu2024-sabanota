@@ -22,6 +22,8 @@ const CATEGORY_COLORS: Record<string, string> = {
   Curado:     'bg-orange-500/15 text-orange-400 border-orange-500/30',
   Azul:       'bg-blue-500/15 text-blue-400 border-blue-500/30',
   Especial:   'bg-purple-500/15 text-purple-400 border-purple-500/30',
+  'Repuestos y Ferretería': 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30',
+  'Víveres y Agro':         'bg-amber-500/15 text-amber-400 border-amber-500/30',
 };
 
 function catStyle(cat: string) {
@@ -40,9 +42,14 @@ const PCard: React.FC<{ item: CheeseProduct }> = ({ item }) => {
           Agotado
         </div>
       )}
-      <div className="h-24 w-full bg-slate-800 flex items-center justify-center relative">
-        <ShoppingCart className="w-7 h-7 text-slate-700" />
-        <span className={`absolute bottom-1.5 left-1.5 text-[8px] font-bold px-1.5 py-0.5 rounded border ${catStyle(item.category)}`}>
+      <div className="h-24 w-full bg-slate-800 flex items-center justify-center relative overflow-hidden">
+        {item.imageUrl ? (
+          <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover opacity-80 mix-blend-luminosity hover:mix-blend-normal transition-all duration-300" />
+        ) : (
+          <ShoppingCart className="w-7 h-7 text-slate-700" />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-slate-900/80 to-transparent pointer-events-none" />
+        <span className={`absolute bottom-1.5 left-1.5 z-10 text-[8px] font-bold px-1.5 py-0.5 rounded border shadow-sm backdrop-blur-sm ${catStyle(item.category)}`}>
           {item.category}
         </span>
       </div>
@@ -335,8 +342,12 @@ export default function StoreTab({ products = [] }: StoreTabProps) {
                       <div className="absolute top-2 left-2 z-10 bg-emerald-500 text-slate-950 font-black text-[10px] px-2 py-0.5 rounded-md">
                         -15%
                       </div>
-                      <div className="h-28 w-full bg-slate-800 flex items-center justify-center">
-                        <ShoppingCart className="w-7 h-7 text-slate-700" />
+                      <div className="h-28 w-full bg-slate-800 flex items-center justify-center relative overflow-hidden">
+                        {item.imageUrl ? (
+                          <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover opacity-80 mix-blend-luminosity hover:mix-blend-normal transition-all duration-300" />
+                        ) : (
+                          <ShoppingCart className="w-7 h-7 text-slate-700" />
+                        )}
                       </div>
                       <div className="p-3 flex-1 flex flex-col justify-between">
                         <h4 className="font-bold text-xs text-slate-200 line-clamp-2 leading-tight mb-1.5">{item.name}</h4>
@@ -377,8 +388,12 @@ export default function StoreTab({ products = [] }: StoreTabProps) {
                   const sp = Number(item.sellingPrice || (item as any).price || 0);
                   return (
                     <div key={`n-${item.id}`} className="min-w-[135px] max-w-[135px] bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden snap-start shrink-0 flex flex-col shadow-sm hover:border-blue-500/30">
-                      <div className="h-24 w-full bg-slate-800 flex items-center justify-center">
-                        <Star className="w-7 h-7 text-slate-700" />
+                      <div className="h-24 w-full bg-slate-800 flex items-center justify-center relative overflow-hidden">
+                        {item.imageUrl ? (
+                          <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover opacity-80 mix-blend-luminosity hover:mix-blend-normal transition-all duration-300" />
+                        ) : (
+                          <Star className="w-7 h-7 text-slate-700" />
+                        )}
                       </div>
                       <div className="p-2.5 flex-1 flex flex-col justify-between">
                         <h4 className="font-bold text-xs text-slate-300 line-clamp-2 leading-tight mb-1.5">{item.name}</h4>

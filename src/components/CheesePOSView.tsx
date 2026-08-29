@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOrder, Transaction } from '../types';
 import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X, Scan, Store } from 'lucide-react';
 import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '../utils';
-import { collection, addDoc, getDocs, query, orderBy, doc, updateDoc, serverTimestamp, onSnapshot, deleteDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, orderBy, doc, serverTimestamp, onSnapshot, deleteDoc } from 'firebase/firestore';
+import { guardianUpdateDoc as updateDoc } from '../utils/firebaseGuardian';
 import { db } from '../services/firebase';
 
 interface CheesePOSViewProps {

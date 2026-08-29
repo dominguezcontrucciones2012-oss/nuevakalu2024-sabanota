@@ -121,6 +121,7 @@ export interface CheeseProduct {
   unit?: 'Kg' | 'Lt' | 'Und';
   barcode?: string;
   barcodes?: string[];
+  imageUrl?: string;
 }
 
 export interface KardexMovement {

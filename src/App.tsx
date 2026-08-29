@@ -57,8 +57,9 @@ import CollectionsView from './components/contador/CollectionsView';
 
 import { CheckCircle2, Info, AlertTriangle, X } from 'lucide-react';
 import { db } from './services/firebase';
-import { doc, increment, collection, onSnapshot, query, deleteDoc, limit, orderBy } from 'firebase/firestore';
-import { guardianSetDoc as setDoc, guardianUpdateDoc as updateDoc } from './utils/firebaseGuardian';
+import { collection, onSnapshot, query, orderBy, limit, doc, getDocs, where, increment } from 'firebase/firestore';
+import { fetchLocalProducts, updateLocalProduct, addLocalProduct, deleteLocalProduct } from './services/productApi';
+import { guardianSetDoc as setDoc, guardianUpdateDoc as updateDoc, guardianAddDoc as addDoc, guardianDeleteDoc as deleteDoc } from './utils/firebaseGuardian';
 
 interface ToastNotification {
   id: string;
@@ -156,9 +157,9 @@ export default function App() {
 
   // Real-time Firebase Listeners
   useEffect(() => {
-    const unsubProducts = onSnapshot(query(collection(db, 'products'), limit(1000)), (snapshot) => {
-      if (!snapshot.empty) setCheeseProducts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CheeseProduct)));
-    });
+    fetchLocalProducts().then(data => {
+      if (data && data.length) setCheeseProducts(data);
+    }).catch(e => console.error("Error loading local products:", e));
 
     const unsubTransactions = onSnapshot(query(collection(db, 'transactions'), limit(1000)), (snapshot) => {
       if (!snapshot.empty) {
@@ -211,7 +212,6 @@ export default function App() {
     });
 
     return () => {
-      unsubProducts();
       unsubTransactions();
       unsubClients();
       unsubSuppliers();

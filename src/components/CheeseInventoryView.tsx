@@ -70,6 +70,7 @@ export default function CheeseInventoryView({
   const [newAlert, setNewAlert] = useState(5);
   const [newOrigin, setNewOrigin] = useState('');
   const [newUnit, setNewUnit] = useState<'Kg' | 'Lt' | 'Und'>('Kg');
+  const [newImageFile, setNewImageFile] = useState<File | null>(null);
   
   const [adjustingBatchId, setAdjustingBatchId] = useState<string | null>(null);
   const [newBatchWeight, setNewBatchWeight] = useState(0);
@@ -94,10 +95,32 @@ export default function CheeseInventoryView({
 
   const csvFileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleCreateProduct = (e: React.FormEvent) => {
+  const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName) return;
-    onAddProduct({
+    
+    let imageUrl = '';
+    if (newImageFile) {
+      try {
+        const formData = new FormData();
+        formData.append('files', newImageFile);
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.urls && data.urls.length > 0) {
+            imageUrl = data.urls[0];
+          }
+        }
+      } catch (err) {
+        console.error('Error uploading image', err);
+        onAddNotification('Error al subir la imagen.', 'warning');
+      }
+    }
+
+    await onAddProduct({
       name: newName,
       category: newCategory,
       stockKg: newStock,
@@ -107,12 +130,14 @@ export default function CheeseInventoryView({
       agingDays: newCategory === 'Curado' ? 90 : newCategory === 'Semicurado' ? 30 : 1,
       origin: newOrigin || 'Nacional',
       unit: newUnit,
-      barcodes: newBarcodes
+      barcodes: newBarcodes,
+      ...(imageUrl ? { imageUrl } : {})
     });
     onAddNotification(`Queso ${newName} registrado en el inventario activo.`, 'success');
     setShowAddForm(false);
     setNewName('');
     setNewBarcodes([]);
+    setNewImageFile(null);
   };
 
   const handleSaveInlineEdit = async (e?: React.MouseEvent) => {
@@ -133,7 +158,8 @@ export default function CheeseInventoryView({
         sellingPrice: parseSafeDecimal(editingProduct.sellingPrice),
         stockKg: parseSafeDecimal(editingProduct.stockKg),
         unit: editingProduct.unit || 'Kg',
-        barcodes: editingProduct.barcodes || []
+        barcodes: editingProduct.barcodes || [],
+        imageUrl: editingProduct.imageUrl
       });
       
       console.log('Edición procesada localmente, cerrando modo edición.');
@@ -142,6 +168,27 @@ export default function CheeseInventoryView({
     } catch (error) {
       console.error('Error al guardar edición inline:', error);
       onAddNotification('Fallo al guardar en la nube. Intente nuevamente.', 'warning');
+    }
+  };
+
+  const handleUploadImageForProduct = async (prodId: string, file: File) => {
+    try {
+      const formData = new FormData();
+      formData.append('files', file);
+      const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.urls && data.urls.length > 0) {
+          const url = data.urls[0];
+          if (editingProduct?.id === prodId) {
+            setEditingProduct(prev => prev ? { ...prev, imageUrl: url } : prev);
+          }
+          await onUpdateProduct(prodId, { imageUrl: url });
+          onAddNotification('Imagen actualizada', 'success');
+        }
+      }
+    } catch (err) {
+      onAddNotification('Fallo al subir imagen', 'warning');
     }
   };
 
@@ -446,6 +493,16 @@ export default function CheeseInventoryView({
                 )}
               </div>
 
+              <div className="space-y-1.5 md:col-span-1">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Foto del Producto</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={e => setNewImageFile(e.target.files?.[0] || null)}
+                  className="w-full h-10 px-3 py-2 bg-editorial-bg border border-editorial-border rounded text-[10px] text-editorial-text-primary file:mr-2 file:py-1 file:px-2 file:border-0 file:rounded file:bg-amber-500 file:text-white cursor-pointer"
+                />
+              </div>
+
               <div className="md:col-span-3 pt-4 border-t border-editorial-border/40 flex justify-end">
                 <button
                   type="submit"
@@ -493,7 +550,32 @@ export default function CheeseInventoryView({
                     return (
                       <tr key={p.id} className="hover:bg-editorial-bg/30 transition-all">
                         <td className="py-4 px-4 max-w-[250px]">
-                          <div className="font-serif text-sm font-extrabold text-editorial-text-primary">{p.name || 'Sin nombre'}</div>
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded overflow-hidden bg-editorial-bg border border-editorial-border shrink-0 flex items-center justify-center relative group">
+                              {(isEditing ? editingProduct.imageUrl : p.imageUrl) ? (
+                                <img src={(isEditing ? editingProduct.imageUrl : p.imageUrl)} alt={p.name} className="w-full h-full object-cover" />
+                              ) : (
+                                <Package className="w-5 h-5 text-editorial-text-muted" />
+                              )}
+                              {isEditing && (
+                                <label className="absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center cursor-pointer transition-colors">
+                                  <Upload className="w-4 h-4 text-white" />
+                                  <input 
+                                    type="file" 
+                                    accept="image/*" 
+                                    className="hidden" 
+                                    onChange={e => {
+                                      if (e.target.files?.[0]) handleUploadImageForProduct(p.id, e.target.files[0]);
+                                    }} 
+                                  />
+                                </label>
+                              )}
+                            </div>
+                            <div>
+                              <div className="font-serif text-sm font-extrabold text-editorial-text-primary">{p.name || 'Sin nombre'}</div>
+                              <span className="font-mono text-[9px] text-editorial-text-muted/60 block">ID: {p.id}</span>
+                            </div>
+                          </div>
                           
                           {/* Barcodes UI */}
                           <div className="mt-2 space-y-1">
@@ -555,8 +637,6 @@ export default function CheeseInventoryView({
                               </div>
                             )}
                           </div>
-                          
-                          <span className="font-mono text-[9px] text-editorial-text-muted/60 mt-1 block">ID: {p.id}</span>
                         </td>
                         <td className="py-4 px-4 font-sans text-editorial-text-muted">{p.category || '-'}</td>
                         <td className="py-4 px-4 font-sans text-editorial-text-muted">{p.origin || '-'}</td>

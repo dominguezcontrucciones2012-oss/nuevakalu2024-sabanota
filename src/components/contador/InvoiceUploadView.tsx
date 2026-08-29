@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { collection, addDoc, doc, updateDoc, getDocs, query, where, onSnapshot, increment, limit, getDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, query, where, onSnapshot, increment, limit, getDoc } from 'firebase/firestore';
+import { guardianAddDoc as addDoc, guardianUpdateDoc as updateDoc } from '../../utils/firebaseGuardian';
 import { db } from '../../services/firebase';
 import { askGeminiWithImage, askGemini } from '../../services/gemini';
 import { INITIAL_CHEESE_PRODUCTS } from '../../data';
