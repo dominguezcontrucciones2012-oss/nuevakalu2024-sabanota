@@ -68,6 +68,10 @@ async function deploy() {
       npm install
       npm run build
       
+      # Copy backend files so Docker builds the API with the latest server.js and dependencies
+      cp server.js vps-deployment/
+      cp package.json vps-deployment/
+      
       # Now run deployment using Docker
       cd vps-deployment
       

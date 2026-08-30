@@ -421,12 +421,12 @@ export default function CheesePOSView({
       try {
         setIsWaitingForApproval(true);
         const now = new Date().toISOString();
-        const pendingTx = {
-          ...txPayload,
+        const finalPendingTx = {
+          ...pendingTx,
           status: 'pending_approval',
           timestamp: now
         };
-        const docRef = await addLocalDoc('transactions', pendingTx);
+        const docRef = await addLocalDoc('transactions', finalPendingTx);
         setPendingApprovalId(docRef.id);
         
         // Setup listener via WebSocket for real-time approval
@@ -517,7 +517,7 @@ export default function CheesePOSView({
     if (addedPayments.length === 1) {
       mainPaymentMethod = addedPayments[0].method;
     } else if (addedPayments.length === 0) {
-      mainPaymentMethod = isCreditSale ? 'Crédito' : 'Efectivo ($)';
+      mainPaymentMethod = isCreditSale ? 'Crédito / Fiado' : 'Efectivo ($)';
     }
 
     const isKaluTransaction = mainPaymentMethod === 'Mundo Kalu';

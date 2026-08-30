@@ -213,6 +213,16 @@ app.patch('/api/collections/:name/:id', (req, res) => {
   }
 });
 
+app.delete('/api/collections/:name', (req, res) => {
+  try {
+    writeCollection(req.params.name, []);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`Error clearing ${req.params.name}:`, error);
+    res.status(500).json({ error: 'Error clearing collection' });
+  }
+});
+
 app.delete('/api/collections/:name/:id', (req, res) => {
   try {
     const data = readCollection(req.params.name);

@@ -69,5 +69,23 @@ export async function importFromJson(file: File): Promise<void> {
 }
 
 export async function resetAccountingData(): Promise<void> {
-  throw new Error('Reset not supported in local mode automatically.');
+  
+  try {
+    const { clearCollection } = await import('./localApi');
+    const collectionsToClear = [
+      'transactions',
+      'invoices',
+      'shift_transactions',
+      'shift_sessions',
+      'expenses',
+      'payments'
+    ];
+    for (const c of collectionsToClear) {
+      await clearCollection(c);
+    }
+  } catch (error) {
+    console.error("Error resetting accounting:", error);
+    throw error;
+  }
+
 }

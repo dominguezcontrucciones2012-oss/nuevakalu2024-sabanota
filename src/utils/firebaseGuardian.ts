@@ -2,9 +2,14 @@ import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, del
 
 export const db = {};
 export const collection = (dbInstance: any, path: string) => ({ path });
-export const doc = (dbOrCollection: any, path: string, id?: string) => {
-  if (id) return { path: `${path}/${id}` };
-  return { path: dbOrCollection.path ? `${dbOrCollection.path}/${path}` : path };
+export const doc = (dbOrCollection: any, path?: string, id?: string) => {
+  if (!path) {
+    const autoId = Date.now().toString() + Math.random().toString(36).substring(2, 7);
+    return { path: dbOrCollection.path ? `${dbOrCollection.path}/${autoId}` : autoId, id: autoId };
+  }
+  if (id) return { path: `${path}/${id}`, id };
+  const derivedId = path.split('/').pop() || path;
+  return { path: dbOrCollection.path ? `${dbOrCollection.path}/${path}` : path, id: derivedId };
 };
 export const increment = (val: number) => ({ type: 'increment', _operand: val });
 

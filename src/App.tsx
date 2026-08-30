@@ -392,7 +392,8 @@ export default function App() {
           if (c.id === clientId) {
             const addedPoints = Math.round(saleTotal * 0.1);
             let updatedClient;
-            if (paymentMethodType === 'credit' || paymentMethodType === 'Libreta de Queso') {
+            const isCreditType = paymentMethodType === 'credit' || paymentMethodType === 'Crédito' || paymentMethodType === 'Crédito / Fiado' || paymentMethodType === 'Libreta de Queso';
+            if (isCreditType) {
               updatedClient = {
                 ...c,
                 outstandingDebt: Number(c.outstandingDebt || 0) + debtAmount,
@@ -415,7 +416,8 @@ export default function App() {
         })
       );
 
-      if ((paymentMethodType === 'credit' || paymentMethodType === 'Libreta de Queso') && debtAmount > 0) {
+      const isCreditTypeForBill = paymentMethodType === 'credit' || paymentMethodType === 'Crédito' || paymentMethodType === 'Crédito / Fiado' || paymentMethodType === 'Libreta de Queso';
+      if (isCreditTypeForBill && debtAmount > 0) {
         const newBill: AccountBill = {
           id: `bill-rcv-${Date.now()}`,
           type: 'receivable',
@@ -519,6 +521,9 @@ export default function App() {
     const newTx: Transaction = {
       id: `TX-${Date.now()}`,
       entity: customerName,
+      clientId: clientId || null,
+      debtAmount: debtAmount,
+      createdAt: Date.now(),
       category: 'ventas',
       date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
       invoiceNumber: `F-${Math.floor(Math.random() * 9000 + 1000)}`,

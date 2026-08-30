@@ -41,6 +41,8 @@ export interface Transaction {
   changeBs?: number;
   bcvRateAtSettlement?: number;
   isVoided?: boolean;
+  debtAmount?: number;
+  createdAt?: number;
 }
 
 export interface DebtInstallment {

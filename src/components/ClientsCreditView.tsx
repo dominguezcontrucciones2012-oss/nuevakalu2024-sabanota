@@ -173,8 +173,8 @@ export default function ClientsCreditView({
       // 1. Update Transaction
       await updateLocalDoc('transactions', tx.id, { status: 'approved' });
       
-      if (tx.kaluCreditData?.installmentIds) {
-        for (const iId of tx.kaluCreditData.installmentIds) {
+      if ((tx.kaluCreditData as any)?.installmentIds) {
+        for (const iId of (tx.kaluCreditData as any).installmentIds) {
           await updateLocalDoc('installments', iId, {
             status: 'paid',
             paidAt: new Date().toISOString()
@@ -202,11 +202,11 @@ export default function ClientsCreditView({
     if (isProcessingApproval) return;
     setIsProcessingApproval(true);
     try {
-      await updateDoc(doc(db, 'transactions', tx.id), { status: 'rejected' });
+      await updateLocalDoc('transactions', tx.id, { status: 'rejected' });
       
-      if (tx.installmentIds && tx.installmentIds.length > 0) {
-        for (const iId of tx.installmentIds) {
-          await updateDoc(doc(db, 'installments', iId), {
+      if ((tx as any).installmentIds && (tx as any).installmentIds.length > 0) {
+        for (const iId of (tx as any).installmentIds) {
+          await updateLocalDoc('installments', iId, {
             status: 'pending'
           });
         }
@@ -695,7 +695,8 @@ export default function ClientsCreditView({
             method: method,
             notes: notes,
             amount: amount,
-            balance: rollingBalance
+            balance: rollingBalance,
+            items: s.items
           };
         });
 
@@ -752,7 +753,18 @@ export default function ClientsCreditView({
                         return (
                           <tr key={t.id} className="hover:bg-white/5 transition-colors group">
                             <td className="py-4 px-4 text-editorial-text-muted text-[10px]">{t.date}</td>
-                            <td className="py-4 px-4 text-editorial-text-muted text-[10px] truncate max-w-[100px]">{t.invoice}</td>
+                            <td className="py-4 px-4 text-editorial-text-muted text-[10px]">
+                              <div className="font-bold truncate max-w-[120px]">{t.invoice}</div>
+                              {t.items && t.items.length > 0 && (
+                                <div className="mt-1.5 space-y-0.5 text-[8.5px] opacity-75 border-l-2 border-amber-500/30 pl-2">
+                                  {t.items.map((i: any, idx: number) => (
+                                    <div key={idx} className="truncate max-w-[150px]" title={i.name}>
+                                      <span className="font-bold">{i.quantityKg || i.quantity || 1}</span> {i.unit === 'UNIDADES' ? 'ud' : (i.unit ? i.unit.toLowerCase() : 'kg')} <span className="opacity-70">x {i.name}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </td>
                             <td className="py-4 px-4">
                               <span className={`inline-block px-2 py-0.5 rounded text-[9px] uppercase border font-extrabold ${isAbono ? 'bg-amber-950/30 border-amber-800 text-amber-400' : 'bg-rose-950/30 border-rose-800 text-rose-400'}`}>
                                 {t.type}
