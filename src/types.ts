@@ -138,6 +138,7 @@ export interface KardexMovement {
   previousStock: number;
   newStock: number;
   unitCost: number;
+  totalValue?: number;
   totalCost: number;
   referenceId?: string;
   notes?: string;

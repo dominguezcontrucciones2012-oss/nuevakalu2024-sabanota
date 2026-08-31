@@ -225,11 +225,45 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }
             
             <button 
               disabled={Number(qrPaymentAmount || 0) <= 0}
-              onClick={() => {
-                alert('Compra a crédito procesada y enviada a la tienda física.');
-                setShowQrPaymentModal(false);
-                setQrPaymentAmount('');
-                onNavigateTab('inicio');
+              onClick={async () => {
+                const amount = Number(qrPaymentAmount || 0);
+                const level = getClientLevelInfo((loggedClient as any)?.loyaltyPoints || 0).level;
+                const inicialPct = level >= 5 ? 0.10 : level >= 3 ? 0.15 : 0.20;
+                const inicial = amount * inicialPct;
+                const aFinanciar = amount - inicial;
+                const cuotas = aFinanciar / 4;
+                
+                const payload = {
+                  id: `PWA-CASHEA-${Date.now()}`,
+                  type: 'credito_cashea',
+                  entityId: loggedClient.id,
+                  entityName: loggedClient.name,
+                  amount: amount,
+                  currency: 'USD',
+                  reference: 'QR-COMPRA',
+                  method: 'Cashea',
+                  status: 'pending',
+                  date: new Date().toISOString(),
+                  timestamp: new Date().toISOString(),
+                  casheaData: {
+                    inicial,
+                    aFinanciar,
+                    cuotas,
+                    tienda: scannedStore
+                  }
+                };
+
+                try {
+                  const { addLocalDoc } = await import('../services/localApi');
+                  await addLocalDoc('pwa_payments', payload);
+                  alert('Solicitud de Crédito QR enviada al Centro de Cobranzas para aprobación.');
+                  setShowQrPaymentModal(false);
+                  setQrPaymentAmount('');
+                  onNavigateTab('inicio');
+                } catch (e) {
+                  console.error(e);
+                  alert('Error al procesar la compra a crédito.');
+                }
               }}
               className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 disabled:text-zinc-500 text-zinc-950 font-black uppercase rounded-2xl text-sm tracking-widest transition-all"
             >

@@ -20,25 +20,71 @@ export const initSocket = () => {
   return socket;
 };
 
-// Generic Collection Hook/Subscriber
+// Generic Collection Hook/Subscriber with Delta Updates
 export const onCollectionSnapshot = (collectionName: string, callback: (data: any[]) => void) => {
   const currentSocket = initSocket();
+  let cachedData: any[] = [];
   
   // Initial fetch
-  fetchCollection(collectionName).then(callback);
+  fetchCollection(collectionName).then(data => {
+    const rawData = Array.isArray(data) ? data : [];
+    // Deduplicate by ID
+    const uniqueMap = new Map();
+    rawData.forEach(item => uniqueMap.set(String(item.id), item));
+    cachedData = Array.from(uniqueMap.values());
+    callback([...cachedData]);
+  });
 
-  // Listen for updates
-  const listener = (updatedCollection: string) => {
+  // Listen for full collection updates (Fallback)
+  const fallbackListener = (updatedCollection: string) => {
     if (updatedCollection === collectionName) {
-      fetchCollection(collectionName).then(callback);
+      fetchCollection(collectionName).then(data => {
+        const rawData = Array.isArray(data) ? data : [];
+        const uniqueMap = new Map();
+        rawData.forEach(item => uniqueMap.set(String(item.id), item));
+        cachedData = Array.from(uniqueMap.values());
+        callback([...cachedData]);
+      });
     }
   };
 
-  currentSocket.on('collection_updated', listener);
+  // Listen for granular delta updates
+  const deltaListener = (payload: { action: string, collection: string, doc: any }) => {
+    if (payload.collection === collectionName) {
+      if (payload.action === 'add') {
+        const index = cachedData.findIndex(d => String(d.id) === String(payload.doc.id));
+        if (index === -1) {
+           // Because backend uses .push() (adds to end), we should append it to maintain order parity.
+           // However, if the caller locally unshifts it (like App.tsx setTransactions([newTx, ...prev])), 
+           // we must match the backend's source of truth which is .push(). 
+           // Wait, App.tsx's onCollectionSnapshot handler reverses transactions and sorts them anyway! 
+           // So we just add it to the array.
+           cachedData = [...cachedData, payload.doc];
+        } else {
+           cachedData[index] = payload.doc;
+        }
+      } else if (payload.action === 'update') {
+        const index = cachedData.findIndex(d => String(d.id) === String(payload.doc.id));
+        if (index !== -1) {
+           cachedData[index] = { ...cachedData[index], ...payload.doc };
+           cachedData = [...cachedData];
+        }
+      } else if (payload.action === 'delete') {
+        cachedData = cachedData.filter(d => String(d.id) !== String(payload.doc.id));
+      } else if (payload.action === 'clear') {
+        cachedData = [];
+      }
+      callback([...cachedData]); // Send new reference to trigger React render
+    }
+  };
+
+  currentSocket.on('collection_updated', fallbackListener);
+  currentSocket.on('collection_delta', deltaListener);
 
   // Return unsubscribe function
   return () => {
-    currentSocket.off('collection_updated', listener);
+    currentSocket.off('collection_updated', fallbackListener);
+    currentSocket.off('collection_delta', deltaListener);
   };
 };
 
@@ -81,6 +127,17 @@ export const updateLocalDoc = async (collectionName: string, id: string, data: a
     console.error(`Error updating doc in ${collectionName}:`, error);
     throw error;
   }
+};
+
+export const batchDeleteLocalDocs = async (collectionName: string, ids: string[]) => {
+  if (isFirebaseMode) return;
+  const res = await fetch(`${API_BASE_URL}/api/collections/${collectionName}/batchDelete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids })
+  });
+  if (!res.ok) throw new Error('Error en batch delete local');
+  return res.json();
 };
 
 export const deleteLocalDoc = async (collectionName: string, id: string) => {

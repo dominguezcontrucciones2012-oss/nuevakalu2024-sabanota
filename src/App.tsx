@@ -365,14 +365,37 @@ export default function App() {
     const amountPaid = paidAmount !== undefined ? paidAmount : saleTotal;
     const debtAmount = Math.max(0, saleTotal - amountPaid);
 
-    // Decrease product stock
+    // Decrease product stock and register Kardex movement
     setCheeseProducts((prevProducts) =>
       prevProducts.map((p) => {
         const item = saleItems.find((si) => si.productId === p.id);
         if (item) {
           const newStock = Math.max(0, p.stockKg - item.quantityKg);
+          
+          // Generate Kardex Movement
+          const kardexRef = doc(collection(db, 'kardex'));
+          const kardexMovement: KardexMovement = {
+            id: kardexRef.id,
+            date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+            timestamp: Date.now(),
+            productId: p.id,
+            productName: p.name,
+            unit: 'Kg',
+            type: 'SALIDA_VENTA',
+            quantity: item.quantityKg,
+            previousStock: p.stockKg,
+            newStock: newStock,
+            unitCost: p.wholesalePrice || p.pricePerKg || 0,
+            totalCost: item.quantityKg * (p.wholesalePrice || p.pricePerKg || 0),
+            totalValue: item.subtotal,
+            referenceId: `POS-${Date.now()}`,
+            notes: 'Venta registrada desde el POS'
+          };
+          
           // Persist to Firebase immediately
           updateDoc(doc(db, 'products', p.id), { stockKg: newStock }).catch(e => console.error("Error updating stock", e));
+          setDoc(kardexRef, kardexMovement).catch(e => console.error("Error saving kardex", e));
+          
           return { ...p, stockKg: newStock };
         }
         return p;
@@ -1166,26 +1189,11 @@ export default function App() {
         }
       }
 
-      // --- NETTING LOGIC FOR ALL PURCHASES ---
-      let netToPayOrCredit = totalCost;
+      // --- CUENTAS POR PAGAR (FIADO) - SIN CRUCES COMERCIALES ---
       let newBalanceOwed = selectedSup.balanceOwed || 0;
-      let newStoreDebt = selectedSup.storeDebt || 0;
+      const newStoreDebt = selectedSup.storeDebt || 0; // Se mantiene intacta
 
-      if (newStoreDebt > 0) {
-        if (netToPayOrCredit >= newStoreDebt) {
-          globalDeductionAmount = newStoreDebt;
-          netToPayOrCredit -= newStoreDebt;
-          newStoreDebt = 0;
-        } else {
-          globalDeductionAmount = netToPayOrCredit;
-          newStoreDebt -= netToPayOrCredit;
-          netToPayOrCredit = 0;
-        }
-      }
-
-      if (purchase.isCredit) {
-        newBalanceOwed += netToPayOrCredit;
-      }
+      newBalanceOwed += totalCost;
 
       setSuppliers((prev) =>
         prev.map((s) => {
@@ -1234,83 +1242,24 @@ export default function App() {
     }));
 
     // Generate transaction for Ledger ('Entrega')
-    if (purchase.isCredit) {
-      const newTx: Transaction = {
-        id: `TX-${Date.now()}`,
-        entity: selectedSup.name,
-        category: 'compras',
-        date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-        invoiceNumber: purchaseTxId,
-        amount: totalCost,
-        isIncome: true, // Mark as income so ledger reads it as sum (+)
-        status: 'Completado',
-        notes: `Recibido ${purchase.items.map(i=>i.quantityKg + 'kg').join(', ')}. Pago CRÉDITO${globalDeductionAmount > 0 ? ` (Deducido $${globalDeductionAmount.toFixed(2)} deuda POS)` : ''}`,
-        items: txItems
-      };
-      setTransactions((prev) => [newTx, ...prev]);
-      try {
-        setDoc(doc(db, 'transactions', newTx.id), newTx);
-      } catch (e) { console.error(e); }
-    } else {
-      // Cash payment: Deduct from Vault immediately
-      let netToPayOrCredit = totalCost;
-      const currentDebt = selectedSup.storeDebt || 0;
-      if (currentDebt > 0) {
-        if (netToPayOrCredit >= currentDebt) {
-           netToPayOrCredit -= currentDebt;
-        } else {
-           netToPayOrCredit = 0;
-        }
-      }
-
-      if (netToPayOrCredit > 0) {
-        const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
-        const updatedVault = { ...currentVault };
-        
-        if (purchase.paymentMethod === 'Efectivo / Caja Chica') {
-          updatedVault.usd -= netToPayOrCredit;
-        } else {
-          updatedVault.bankUsd -= netToPayOrCredit;
-        }
-        handleUpdateSettings({ centralVaultBalance: updatedVault });
-
-        const newTx: Transaction = {
-          id: `TX-${Date.now().toString().slice(-4)}`,
-          entity: selectedSup.name,
-          category: 'compras',
-          date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-          invoiceNumber: purchaseTxId,
-          amount: netToPayOrCredit,
-          isIncome: false,
-          status: 'Completado',
-          paymentMethod: purchase.paymentMethod,
-          notes: `Pago al contado de Queso${globalDeductionAmount > 0 ? ` (Deducido $${globalDeductionAmount.toFixed(2)} deuda POS)` : ''}`,
-          items: txItems
-        };
-        setTransactions((prev) => [newTx, ...prev]);
-        try {
-          setDoc(doc(db, 'transactions', newTx.id), newTx);
-        } catch (e) { console.error(e); }
-      } else if (globalDeductionAmount > 0) {
-        // If it was paid but the netting consumed it entirely, still log the delivery!
-        const newTx: Transaction = {
-          id: `TX-${Date.now()}`,
-          entity: selectedSup.name,
-          category: 'compras',
-          date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-          invoiceNumber: purchaseTxId,
-          amount: totalCost,
-          isIncome: true, // It acts as a credit delivery that was wiped
-          status: 'Completado',
-          notes: `Recibido queso. Cobrado totalmente de deuda POS ($${globalDeductionAmount.toFixed(2)})`,
-          items: txItems
-        };
-        setTransactions((prev) => [newTx, ...prev]);
-        try {
-          setDoc(doc(db, 'transactions', newTx.id), newTx);
-        } catch (e) { console.error(e); }
-      }
-    }
+    // Toda compra comercial va a cuentas por pagar obligatoriamente.
+    const newTx: Transaction = {
+      id: `TX-${Date.now()}`,
+      entity: selectedSup.name,
+      category: 'compras',
+      date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+      invoiceNumber: purchaseTxId,
+      amount: totalCost,
+      isIncome: true, // Mark as income so ledger reads it as sum (+)
+      status: 'Completado',
+      notes: `Recibido ${purchase.items.map(i=>i.quantityKg + 'kg').join(', ')}. Carga a Cuentas por Pagar.`,
+      items: txItems
+    };
+    
+    setTransactions((prev) => [newTx, ...prev]);
+    try {
+      setDoc(doc(db, 'transactions', newTx.id), newTx);
+    } catch (e) { console.error(e); }
 
     // Add activity
     const newAct: ActivityStream = {

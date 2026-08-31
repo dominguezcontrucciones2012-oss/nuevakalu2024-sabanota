@@ -37,15 +37,9 @@ export default function PhotoAlbumView({ onBack }: PhotoAlbumViewProps) {
   const fetchDrafts = async () => {
     setIsLoading(true);
     try {
-      const q = query(
-        collection(db, 'daily_drafts'), 
-        where('date', '==', today)
-      );
-      const querySnapshot = await getDocs(q);
-      const fetchedDrafts = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Draft[];
+      const res = await fetchCollection('daily_drafts');
+      const drafts = await res.json();
+      const fetchedDrafts = drafts.filter((d: any) => d.date === today) as Draft[];
       
       fetchedDrafts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setDrafts(fetchedDrafts);
@@ -64,35 +58,27 @@ export default function PhotoAlbumView({ onBack }: PhotoAlbumViewProps) {
     setUploadProgress(0);
 
     try {
-      const fileName = `${Date.now()}_${file.name}`;
-      const storageRef = ref(storage, `receipts/${today}/${fileName}`);
-      
-      const uploadTask = uploadBytesResumable(storageRef, file);
+      const formData = new FormData();
+      formData.append('files', file);
 
-      uploadTask.on('state_changed', 
-        (snapshot) => {
-          const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-          setUploadProgress(progress);
-        }, 
-        (error) => {
-          console.error("Upload error:", error);
-          setIsUploading(false);
-        }, 
-        async () => {
-          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          
-          const newDraft = {
-            type: 'photo' as const,
-            url: downloadURL,
-            date: today,
-            createdAt: new Date().toISOString()
-          };
-          
-          const docRef = await addDoc(collection(db, 'daily_drafts'), newDraft);
-          setDrafts(prev => [{ id: docRef.id, ...newDraft }, ...prev]);
-          setIsUploading(false);
-        }
-      );
+      const hostname = window.location.hostname;
+      const res = await fetch(`http://${hostname}:3001/api/upload`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      const downloadURL = `http://${hostname}:3001${data.fileUrls[0]}`;
+
+      const newDraft = {
+        type: 'photo' as const,
+        url: downloadURL,
+        date: today,
+        createdAt: new Date().toISOString()
+      };
+      
+      await addLocalDoc('daily_drafts', newDraft);
+      fetchDrafts();
+      setIsUploading(false);
     } catch (error) {
       console.error("Error initiating upload:", error);
       setIsUploading(false);

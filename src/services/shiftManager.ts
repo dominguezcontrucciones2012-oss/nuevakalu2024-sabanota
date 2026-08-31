@@ -1,4 +1,4 @@
-import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from './services/localApi';
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from './localApi';
 export const DB_NAME = 'KaluBannersDB';
 export const STORE_NAME = 'shifts';
 

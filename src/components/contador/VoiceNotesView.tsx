@@ -31,16 +31,9 @@ export default function VoiceNotesView({ onBack }: VoiceNotesViewProps) {
   useEffect(() => {
     const fetchDrafts = async () => {
       try {
-        const q = query(
-          collection(db, 'daily_drafts'), 
-          where('date', '==', today),
-          where('type', '==', 'voice_note')
-        );
-        const querySnapshot = await getDocs(q);
-        const fetchedDrafts = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as Draft[];
+        const res = await fetchCollection('daily_drafts');
+        const drafts = await res.json();
+        const fetchedDrafts = drafts.filter((d: any) => d.date === today && d.type === 'voice_note') as Draft[];
         
         // Ordenar localmente (Firestore requiere index para orderBy compuesto)
         fetchedDrafts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -112,7 +105,8 @@ export default function VoiceNotesView({ onBack }: VoiceNotesViewProps) {
         createdAt: new Date().toISOString()
       };
       
-      const docRef = await addDoc(collection(db, 'daily_drafts'), newDraft);
+      const docData = await addLocalDoc('daily_drafts', newDraft);
+      const docRef = { id: docData.id };
       
       setDrafts(prev => [{ id: docRef.id, ...newDraft as Draft }, ...prev]);
       setTranscript('');

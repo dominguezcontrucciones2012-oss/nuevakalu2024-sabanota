@@ -6,7 +6,7 @@ import { Receipt, CheckCircle, XCircle, Clock, Bot, ShieldCheck } from 'lucide-r
 
 interface PWAPayment {
   id: string;
-  type: 'cliente' | 'productor';
+  type: 'cliente' | 'productor' | 'credito_cashea';
   entityId: string;
   entityName: string;
   amount: number;
@@ -16,6 +16,13 @@ interface PWAPayment {
   status: 'pending' | 'approved' | 'rejected';
   date: string;
   timestamp?: any;
+  installmentIds?: string[];
+  casheaData?: {
+    inicial: number;
+    aFinanciar: number;
+    cuotas: number;
+    tienda: string;
+  };
 }
 
 export default function CollectionsView({
@@ -27,9 +34,8 @@ export default function CollectionsView({
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const q = query(collection(db, 'pwa_payments'));
-    const unsub = onSnapshot(q, snapshot => {
-      const p = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PWAPayment));
+    const unsub = onCollectionSnapshot('pwa_payments', (data) => {
+      const p = data.map(doc => ({ ...doc } as PWAPayment));
       p.sort((a, b) => {
         const getMs = (tx: any) => {
           if (tx.timestamp && typeof tx.timestamp.toMillis === 'function') return tx.timestamp.toMillis();
@@ -41,55 +47,129 @@ export default function CollectionsView({
       setPayments(p);
       setIsLoading(false);
     });
-    return unsub;
+    return () => unsub();
   }, []);
 
   const handleApprovePayment = async (payment: PWAPayment) => {
     try {
-      await updateDoc(doc(db, 'pwa_payments', payment.id), {
+      await updateLocalDoc('pwa_payments', payment.id, {
         status: 'approved',
         approvedAt: new Date().toISOString()
       });
 
-      if (payment.type === 'cliente') {
-        await updateDoc(doc(db, 'clients', payment.entityId), {
-          outstandingDebt: increment(-payment.amount)
-        });
-      } else if (payment.type === 'productor') {
-        await updateDoc(doc(db, 'suppliers', payment.entityId), {
-          storeDebt: increment(-payment.amount)
-        });
+      if (payment.type === 'credito_cashea') {
+        const clientsRes = await fetchCollection('clients');
+        const clients = await clientsRes.json();
+        const c = clients.find((x: any) => x.id === payment.entityId);
+        if (c) {
+          await updateLocalDoc('clients', payment.entityId, {
+            outstandingDebt: (c.outstandingDebt || 0) + payment.amount
+          });
+        }
+        
+        // Create Sale transaction (Debt generation)
+        const saleId = `CASHEA-${Date.now()}`;
+        const newTx = {
+          id: saleId,
+          clientId: payment.entityId,
+          entity: payment.entityName,
+          category: 'ventas',
+          date: new Date().toISOString(),
+          timestamp: new Date().toISOString(),
+          invoiceNumber: `PWA-${payment.reference}`,
+          amount: payment.amount,
+          isIncome: true,
+          status: 'Completado',
+          paymentMethod: 'Cashea',
+          notes: `Crédito QR Aprobado. Inicial recibida: $${payment.casheaData?.inicial.toFixed(2)}`
+        };
+        await addLocalDoc('transactions', newTx);
+        
+        // Create Installments
+        for(let i = 1; i <= 4; i++) {
+          const dueDate = new Date();
+          dueDate.setDate(dueDate.getDate() + (i * 15)); // Quincenal
+          
+          await addLocalDoc('installments', {
+             id: `INST-${saleId}-${i}`,
+             saleId: saleId,
+             clientId: payment.entityId,
+             amountUSD: payment.casheaData?.cuotas || 0,
+             dueDate: dueDate.toISOString(),
+             status: 'pending'
+          });
+        }
+        
+        onAddNotification?.('Crédito QR Aprobado Exitosamente', 'success');
+
+      } else {
+        // Normal Payment (Abono)
+        if (payment.type === 'cliente') {
+          const clientsRes = await fetchCollection('clients');
+          const clients = await clientsRes.json();
+          const c = clients.find((x: any) => x.id === payment.entityId);
+          if (c) {
+            await updateLocalDoc('clients', payment.entityId, {
+              outstandingDebt: (c.outstandingDebt || 0) - payment.amount
+            });
+          }
+          
+          // Mark installments as paid
+          if (payment.installmentIds && payment.installmentIds.length > 0) {
+            await Promise.all(payment.installmentIds.map(id => 
+              updateLocalDoc('installments', id, { status: 'paid', paidAt: new Date().toISOString() })
+            ));
+          }
+        } else if (payment.type === 'productor') {
+          const suppliersRes = await fetchCollection('suppliers');
+          const suppliers = await suppliersRes.json();
+          const s = suppliers.find((x: any) => x.id === payment.entityId);
+          if (s) {
+            await updateLocalDoc('suppliers', payment.entityId, {
+              storeDebt: (s.storeDebt || 0) - payment.amount
+            });
+          }
+        }
+
+        const newTx = {
+          id: `TX-${Date.now()}`,
+          clientId: payment.type === 'cliente' ? payment.entityId : undefined,
+          supplierId: payment.type === 'productor' ? payment.entityId : undefined,
+          entity: payment.entityName,
+          category: 'ingresos_cobranza',
+          date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+          timestamp: new Date().toISOString(),
+          invoiceNumber: `PWA-${payment.reference}`,
+          amount: payment.amount,
+          isIncome: true,
+          status: 'Completado',
+          paymentMethod: payment.method,
+          notes: `Cobranza PWA aprobada. Ref: ${payment.reference}`
+        };
+        await addLocalDoc('transactions', newTx);
+        onAddNotification?.('Pago aprobado y conciliado exitosamente', 'success');
       }
-
-      const newTx = {
-        id: `TX-${Date.now()}`,
-        entity: payment.entityName,
-        category: 'ingresos_cobranza',
-        date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-        timestamp: new Date().toISOString(),
-        invoiceNumber: `PWA-${payment.reference}`,
-        amount: payment.amount,
-        isIncome: true,
-        status: 'Completado',
-        paymentMethod: payment.method,
-        notes: `Cobranza PWA aprobada. Ref: ${payment.reference}`
-      };
-      await addDoc(collection(db, 'transactions'), newTx);
-
-      onAddNotification?.('Pago aprobado y conciliado exitosamente', 'success');
     } catch (e) {
       console.error(e);
-      onAddNotification?.('Error al aprobar pago', 'warning');
+      onAddNotification?.('Error al aprobar', 'warning');
     }
   };
 
   const handleRejectPayment = async (payment: PWAPayment) => {
     try {
-      await updateDoc(doc(db, 'pwa_payments', payment.id), {
+      await updateLocalDoc('pwa_payments', payment.id, {
         status: 'rejected',
         rejectedAt: new Date().toISOString()
       });
-      onAddNotification?.('Pago rechazado', 'info');
+      
+      // If it's a normal payment, reset the installments back to 'pending' from 'in_review'
+      if (payment.type === 'cliente' && payment.installmentIds && payment.installmentIds.length > 0) {
+        await Promise.all(payment.installmentIds.map(id => 
+           updateLocalDoc('installments', id, { status: 'pending' })
+        ));
+      }
+      
+      onAddNotification?.('Solicitud rechazada', 'info');
     } catch (e) {
       console.error(e);
       onAddNotification?.('Error al rechazar', 'warning');
@@ -137,8 +217,10 @@ export default function CollectionsView({
               <div key={p.id} className="bg-neutral-800 border border-neutral-700 rounded-lg p-5 flex items-center justify-between">
                 <div className="flex-1">
                   <div className="flex items-center gap-3 mb-2">
-                    <span className="text-xs font-mono uppercase bg-neutral-700 px-2 py-1 rounded text-neutral-300">
-                      {p.type}
+                    <span className={`text-xs font-mono uppercase px-2 py-1 rounded ${
+                      p.type === 'credito_cashea' ? 'bg-amber-500/20 text-amber-500' : 'bg-neutral-700 text-neutral-300'
+                    }`}>
+                      {p.type === 'credito_cashea' ? 'CRÉDITO QR' : p.type === 'cliente' ? 'PAGO CUOTA' : 'PROVEEDOR'}
                     </span>
                     <span className="font-bold text-lg">{p.entityName}</span>
                     {p.status === 'pending' && <span className="text-[10px] font-mono bg-amber-500/20 text-amber-500 px-2 py-1 rounded">PENDIENTE</span>}

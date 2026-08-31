@@ -196,14 +196,14 @@ export default function SettingsAdminView({
 
       // 1. Delete existing cloud banners from Firestore and Storage
       setMaintLogs(prev => [...prev, `[Banners] Purgando banners anteriores de la nube en paralelo...`]);
-      const currentSnap = await fetchCollection('banners');
+      const res = await fetchCollection('banners');
+      const currentSnap = await res.json();
       
-      const deletePromises = currentSnap.docs.map(async (d) => {
-        const data = d.data();
-        if (data.storagePath && !data.storagePath.startsWith('/uploads')) {
-          try { await deleteObject(ref(storage, data.storagePath)); } catch (e) { /* ignorar si ya no existe */ }
+      const deletePromises = currentSnap.map(async (d: any) => {
+        if (d.storagePath && !d.storagePath.startsWith('/uploads')) {
+          // Ignore external paths
         }
-        try { await deleteDoc(d.ref); } catch (e) { /* ignorar */ }
+        try { await deleteLocalDoc('banners', d.id); } catch (e) { /* ignorar */ }
       });
       await Promise.allSettled(deletePromises);
 
@@ -277,22 +277,25 @@ export default function SettingsAdminView({
     
     try {
       setMaintLogs(prev => [...prev, 'Borrando transacciones (historial)...']);
-      const txs = await fetchCollection('transactions');
-      for (const d of txs.docs) {
-        await deleteDoc(d.ref);
+      const txRes = await fetchCollection('transactions');
+      const txs = await txRes.json();
+      for (const d of txs) {
+        await deleteLocalDoc('transactions', d.id);
       }
-      setMaintLogs(prev => [...prev, `Borradas ${txs.docs.length} transacciones.`]);
+      setMaintLogs(prev => [...prev, `Borradas ${txs.length} transacciones.`]);
 
       setMaintLogs(prev => [...prev, 'Reseteando saldos de proveedores...']);
-      const sups = await fetchCollection('suppliers');
-      for (const d of sups.docs) {
-        await updateDoc(d.ref, { balanceOwed: 0, storeDebt: 0 });
+      const supRes = await fetchCollection('suppliers');
+      const sups = await supRes.json();
+      for (const d of sups) {
+        await updateLocalDoc('suppliers', d.id, { balanceOwed: 0, storeDebt: 0 });
       }
 
       setMaintLogs(prev => [...prev, 'Reseteando deudas de clientes...']);
-      const clis = await fetchCollection('clients');
-      for (const d of clis.docs) {
-        await updateDoc(d.ref, { outstandingDebt: 0, loyaltyPoints: 0 });
+      const cliRes = await fetchCollection('clients');
+      const clis = await cliRes.json();
+      for (const d of clis) {
+        await updateLocalDoc('clients', d.id, { outstandingDebt: 0, loyaltyPoints: 0 });
       }
 
       setMaintLogs(prev => [...prev, '¡PURGA DE CONTABILIDAD COMPLETADA EXITOSAMENTE!']);
@@ -353,7 +356,8 @@ export default function SettingsAdminView({
     
     try {
       const newId = `usr-${Date.now()}`;
-      await setDoc(doc(db, 'users', newId), {
+      await addLocalDoc('users', {
+        id: newId,
         name: newUserName,
         cedula: newUserCedula,
         pin: newUserPin,
@@ -374,7 +378,7 @@ export default function SettingsAdminView({
 
   const handleToggleUserStatus = async (id: string, currentStatus: boolean) => {
     try {
-      await updateDoc(doc(db, 'users', id), { active: !currentStatus });
+      await updateLocalDoc('users', id, { active: !currentStatus });
       onAddNotification(`Estado del usuario actualizado.`, 'success');
     } catch (err: any) {
       onAddNotification('Error actualizando usuario: ' + err.message, 'warning');
@@ -384,7 +388,7 @@ export default function SettingsAdminView({
   const handleDeleteUser = async (id: string) => {
     if (!window.confirm('¿Desea eliminar permanentemente este usuario?')) return;
     try {
-      await deleteDoc(doc(db, 'users', id));
+      await deleteLocalDoc('users', id);
       onAddNotification(`Usuario eliminado del sistema.`, 'info');
     } catch (err: any) {
       onAddNotification('Error eliminando usuario: ' + err.message, 'warning');
@@ -393,7 +397,7 @@ export default function SettingsAdminView({
 
   const handleChangeRole = async (id: string, newRole: string) => {
     try {
-      await updateDoc(doc(db, 'users', id), { role: newRole });
+      await updateLocalDoc('users', id, { role: newRole });
       onAddNotification(`Rol de usuario actualizado a ${newRole}.`, 'success');
     } catch (err: any) {
       onAddNotification('Error actualizando rol: ' + err.message, 'warning');

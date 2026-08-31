@@ -72,9 +72,7 @@ export default function InvoiceUploadView({
 
   // Inicializar Proveedores y Escuchar en Tiempo Real
   useEffect(() => {
-    const q = query(collection(db, 'suppliers'), limit(1000));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const sups = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+    const unsubscribe = onCollectionSnapshot('suppliers', (sups) => {
       setSuppliers(sups);
       setSupplierId(prev => (sups.length > 0 && !prev) ? sups[0].id : prev);
     });
@@ -113,9 +111,9 @@ export default function InvoiceUploadView({
       }
       setIsSearching(true);
       try {
-        const q = query(collection(db, 'inventory'), where('name', '>=', searchTerm), where('name', '<=', searchTerm + '\uf8ff'));
-        const querySnapshot = await getDocs(q);
-        const results = querySnapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as CheeseProduct));
+        const res = await fetchCollection('inventory');
+        const inventory = await res.json();
+        const results = inventory.filter((p: any) => p.name?.toLowerCase().includes(searchTerm.toLowerCase()));
         
         if (results.length === 0) {
           // Fallback a local
@@ -305,17 +303,17 @@ export default function InvoiceUploadView({
 
         if (item.productId && item.productId !== 'NEW') {
           try {
-            const productRef = doc(db, 'products', item.productId);
-            // Fetch previous stock before updating
-            const productSnap = await getDoc(productRef);
-            if (productSnap.exists()) {
-              prevStock = productSnap.data().stockKg || 0;
+            const res = await fetchCollection('products');
+            const products = await res.json();
+            const p = products.find((x: any) => x.id === item.productId);
+            if (p) {
+              prevStock = p.stockKg || 0;
             }
 
-            await updateDoc(productRef, {
+            await updateLocalDoc('products', item.productId, {
                purchasePrice: item.costPrice,
                sellingPrice: item.salePrice,
-               stockKg: increment(item.quantity)
+               stockKg: prevStock + item.quantity
             });
           } catch (e) {
             console.warn("Item no hallado, se creará.");
@@ -363,10 +361,14 @@ export default function InvoiceUploadView({
       // 3. Persistencia de Cuentas por Pagar (CXP) si es Crédito
       if (isCredit && supplierId) {
         try {
-          const supRef = doc(db, 'suppliers', supplierId);
-          await updateDoc(supRef, {
-            balanceOwed: increment(Number(totalInvoiceCost))
-          });
+          const res = await fetchCollection('suppliers');
+          const sups = await res.json();
+          const s = sups.find((x: any) => x.id === supplierId);
+          if (s) {
+            await updateLocalDoc('suppliers', supplierId, {
+              balanceOwed: (s.balanceOwed || 0) + Number(totalInvoiceCost)
+            });
+          }
         } catch (e) {
           console.error("Error al actualizar deuda del proveedor:", e);
         }
@@ -410,7 +412,7 @@ export default function InvoiceUploadView({
             await onSettleTrip(settlingTrip.id, updateData);
           } else {
             // Actualización parcial
-            await updateDoc(doc(db, 'cheeseTrips', settlingTrip.id), updateData);
+            await updateLocalDoc('cheeseTrips', settlingTrip.id, updateData);
           }
         } catch (e) {
           console.error("Error al amortizar viaje:", e);
@@ -472,7 +474,7 @@ export default function InvoiceUploadView({
           await onSettleTrip(settlingTrip.id, updateData);
         }
       } else {
-        await updateDoc(doc(db, 'cheeseTrips', settlingTrip.id), updateData);
+        await updateLocalDoc('cheeseTrips', settlingTrip.id, updateData);
       }
 
       alert("Dinero ingresado a Bóveda y amortizado al viaje.");

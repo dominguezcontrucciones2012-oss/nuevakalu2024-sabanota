@@ -3,7 +3,7 @@ import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOr
 import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X, Scan, Store } from 'lucide-react';
 import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '../utils';
 
-import { fetchCollection, addLocalDoc, updateLocalDoc, deleteLocalDoc, onCollectionSnapshot } from '../services/localApi';
+import { fetchCollection, addLocalDoc, updateLocalDoc, deleteLocalDoc, batchDeleteLocalDocs, onCollectionSnapshot } from '../services/localApi';
 
 interface CheesePOSViewProps {
   exchangeRate: number;
@@ -211,8 +211,16 @@ export default function CheesePOSView({
   const [closingReport, setClosingReport] = useState<any | null>(null);
   const [closingsHistory, setClosingsHistory] = useState<any[]>([]);
   const [selectedAuditClosing, setSelectedAuditClosing] = useState<any | null>(null);
+  const [expandedTickets, setExpandedTickets] = useState<string[]>([]);
+  
   const [isClosingDrawer, setIsClosingDrawer] = useState<boolean>(false);
   const [kaluAutoCheckoutTrigger, setKaluAutoCheckoutTrigger] = useState<boolean>(false);
+
+  // New states for Closing History
+  const [closingPage, setClosingPage] = useState<number>(1);
+  const [closingSearchDate, setClosingSearchDate] = useState<string>('');
+  const [selectedClosings, setSelectedClosings] = useState<string[]>([]);
+  const [isPurgingClosings, setIsPurgingClosings] = useState<boolean>(false);
 
   useEffect(() => {
     if (kaluAutoCheckoutTrigger) {
@@ -222,22 +230,18 @@ export default function CheesePOSView({
   }, [kaluAutoCheckoutTrigger]);
 
   useEffect(() => {
-    const fetchClosings = async () => {
-      try {
-        const data = await fetchCollection('cashClosings');
-        // Sort descending by timestamp locally
-        data.sort((a: any, b: any) => {
-          const tA = new Date(a.timestamp?.seconds ? a.timestamp.seconds * 1000 : a.timestamp).getTime();
-          const tB = new Date(b.timestamp?.seconds ? b.timestamp.seconds * 1000 : b.timestamp).getTime();
-          return tB - tA;
-        });
-        setClosingsHistory(data);
-      } catch (error) {
-        console.error('Error cargando historial de cierres:', error);
-      }
-    };
-    fetchClosings();
-  }, [isClosed]);
+    const unsub = onCollectionSnapshot('cashClosings', (data) => {
+      // Sort descending by timestamp locally
+      data.sort((a: any, b: any) => {
+        const tA = new Date(a.timestamp?.seconds ? a.timestamp.seconds * 1000 : a.timestamp).getTime();
+        const tB = new Date(b.timestamp?.seconds ? b.timestamp.seconds * 1000 : b.timestamp).getTime();
+        return tB - tA;
+      });
+      setClosingsHistory(data);
+    });
+    
+    return () => unsub();
+  }, []);
 
   // Calculate Cart Totals (Regla estricta 2)
   const { subtotal, tax, total } = React.useMemo(() => {
@@ -602,9 +606,102 @@ export default function CheesePOSView({
   // Helper to extract amount from sales  // FILTER VOIDED SALES
   const validSalesHistory = (salesHistory || []).filter(s => !s.isVoided);
 
+  const parseTime = React.useCallback((obj: any) => {
+    if (!obj) return 0;
+    if (obj.timestamp?.seconds) return obj.timestamp.seconds * 1000;
+    if (obj.timestamp) {
+      const time = new Date(obj.timestamp).getTime();
+      if (!isNaN(time)) return time;
+    }
+    if (obj.date) {
+      const time = new Date(obj.date).getTime();
+      if (!isNaN(time)) return time;
+    }
+    if (obj.createdAt) {
+      const time = new Date(obj.createdAt).getTime();
+      if (!isNaN(time)) return time;
+    }
+    return 0;
+  }, []);
+
+  const currentShiftDetails = React.useMemo(() => {
+    const latestClosing = closingsHistory
+      .filter(c => !c.purged)
+      .sort((a, b) => parseTime(b) - parseTime(a))[0];
+      
+    const currentShiftStartTime = latestClosing ? parseTime(latestClosing) : 0;
+    const closingDateStr = latestClosing && !isNaN(currentShiftStartTime) ? new Date(currentShiftStartTime).toISOString().split('T')[0] : '';
+    
+    const currentShiftTransactions = allTransactions.filter(t => {
+      const tTime = parseTime(t);
+      if (tTime > currentShiftStartTime) return true;
+      if (!tTime || isNaN(tTime) || !closingDateStr) return false;
+      const tDateStr = new Date(tTime).toISOString().split('T')[0];
+      // Si fue el mismo dia y la transaccion no esta en el cierre anterior (mayor al cierre)
+      return tDateStr === closingDateStr && tTime > currentShiftStartTime;
+    });
+
+    const currentShiftSales = validSalesHistory.filter(s => {
+      const sTime = parseTime(s);
+      if (sTime > currentShiftStartTime) return true;
+      if (!sTime || isNaN(sTime) || !closingDateStr) return false;
+      const sDateStr = new Date(sTime).toISOString().split('T')[0];
+      return sDateStr === closingDateStr && sTime > currentShiftStartTime;
+    });
+
+    return { currentShiftSales, currentShiftTransactions };
+  }, [closingsHistory, allTransactions, validSalesHistory, parseTime]);
+
+  const { currentShiftSales, currentShiftTransactions } = currentShiftDetails;
+
+  const closingDetails = React.useMemo(() => {
+    if (!selectedAuditClosing || selectedAuditClosing.purged) return { sales: [], incomes: [], expenses: [] };
+
+
+    const closingTime = parseTime(selectedAuditClosing);
+    
+    const previousClosing = closingsHistory
+      .filter(c => {
+        const t = parseTime(c);
+        return t < closingTime;
+      })
+      .sort((a, b) => {
+        const tA = parseTime(a);
+        const tB = parseTime(b);
+        return tB - tA;
+      })[0];
+      
+    const startTime = previousClosing 
+      ? parseTime(previousClosing)
+      : 0;
+      
+    const closingDateStr = closingTime && !isNaN(closingTime) ? new Date(closingTime).toISOString().split('T')[0] : '';
+
+    const txsInShift = allTransactions.filter(t => {
+      const tTime = parseTime(t);
+      if (tTime >= startTime && tTime <= closingTime) return true;
+      if (!tTime || isNaN(tTime) || !closingDateStr) return false;
+      const tDateStr = new Date(tTime).toISOString().split('T')[0];
+      return tDateStr === closingDateStr && tTime <= closingTime;
+    });
+
+    const salesInShift = validSalesHistory.filter(s => {
+       const sTime = parseTime(s);
+       if (sTime >= startTime && sTime <= closingTime) return true;
+       if (!sTime || isNaN(sTime) || !closingDateStr) return false;
+       const sDateStr = new Date(sTime).toISOString().split('T')[0];
+       return sDateStr === closingDateStr && sTime <= closingTime;
+    });
+    
+    const incomes = txsInShift.filter(t => (t.category === 'credito' || t.category === 'ingresos_cobranza') && t.isIncome === true);
+    const expenses = txsInShift.filter(t => t.category === 'gastos' && t.isIncome === false);
+
+    return { sales: salesInShift, incomes, expenses };
+  }, [selectedAuditClosing, closingsHistory, allTransactions, validSalesHistory, parseTime]);
+
   // ARQUEO CALCULATIONS
   const getSalesTotalByMethod = (method: string) => {
-    return validSalesHistory.reduce((sum: number, s: any) => {
+    return currentShiftSales.reduce((sum: number, s: any) => {
       // 1. Si la venta tiene desglose de pagos parciales (Multipago)
       if (s.addedPayments && Array.isArray(s.addedPayments) && s.addedPayments.length > 0) {
         const amountInMethod = s.addedPayments
@@ -661,13 +758,13 @@ export default function CheesePOSView({
   };
 
   const getTransactionsTotalByMethod = (method: string, category: string, isIncome: boolean) => {
-    return allTransactions
-      .filter(t => t.category === category && t.isIncome === isIncome && !t.isVoided && (t.paymentMethod === method || (method === 'Efectivo $' && t.paymentMethod === 'Efectivo')))
+    return currentShiftTransactions
+      .filter(t => (t.category === category || (category === 'credito' && t.category === 'ingresos_cobranza')) && t.isIncome === isIncome && !t.isVoided && (t.paymentMethod === method || (method === 'Efectivo $' && t.paymentMethod === 'Efectivo')))
       .reduce((sum, t) => sum + t.amount, 0);
   };
 
   const getTotalChange = (currency: 'USD' | 'BS' | 'PAGO_MOVIL') => {
-    return validSalesHistory.reduce((sum, s) => {
+    return currentShiftSales.reduce((sum, s) => {
       if (s.changeCurrency === currency) {
         if (currency === 'BS' || currency === 'PAGO_MOVIL') {
            // Si devolvimos el vuelto nominal en Bs en changeBs, úsalo, sino usa la conversión
@@ -710,7 +807,7 @@ export default function CheesePOSView({
   const totalBiopago = salesBiopago + incomeBiopago;
 
   // 6. Ventas a Crédito (Fiado) - Calculado desde las ventas del día actual
-  const totalCreditSales = validSalesHistory.reduce((sum, s) => sum + (Number(s.debtAmount) || 0), 0);
+  const totalCreditSales = currentShiftSales.reduce((sum, s) => sum + (Number(s.debtAmount) || 0), 0);
 
   // 7. Gastos en Efectivo USD y Bs
   const expensesCashUsd = getTransactionsTotalByMethod('Efectivo $', 'gastos', false) + getTransactionsTotalByMethod('Efectivo', 'gastos', false);
@@ -728,8 +825,11 @@ export default function CheesePOSView({
     if (isClosingDrawer) return;
     setIsClosingDrawer(true);
     try {
+      // Create a deterministic ID with the exact timestamp
+      const deterministicId = `CLO-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`;
+      
       const report = {
-        id: `CLO-${Date.now().toString().slice(-4)}`,
+        id: deterministicId,
         date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
         timestamp: new Date().toISOString(),
         startingCashUsd,
@@ -761,6 +861,7 @@ export default function CheesePOSView({
         differenceUsd: diffUsd,
         differenceBs: diffBs,
         status: (diffUsd === 0 && diffBs === 0) ? 'Balance Perfecto' : (diffUsd > 0 || diffBs > 0) ? 'Sobrante' : 'Faltante',
+        bcvRateAtClose: exchangeRate || 1,
         };
       
       await addLocalDoc('cashClosings', report);
@@ -785,12 +886,74 @@ export default function CheesePOSView({
 
       setIsClosed(true);
       setClosingReport(report);
+      
+      // Resetear estado del turno a cero
+      setActualCashUsd(0);
+      setActualCashBs(0);
+      setStartingCashUsd(0);
+      setStartingCashBs(0);
+
       onAddNotification('Cierre de caja registrado y Tesorería actualizada.', 'success');
     } catch (error) {
       console.error('Error al guardar cierre de caja:', error);
       onAddNotification('Error al guardar el cierre en la nube. Reintente.', 'warning');
     } finally {
       setIsClosingDrawer(false);
+    }
+  };
+
+  const handlePurgeSelectedClosings = async () => {
+    if (selectedClosings.length === 0) return;
+    const confirm = window.confirm(`¿Estás seguro de que deseas purgar (compactar) ${selectedClosings.length} cierres? Esto eliminará el detalle de ventas de esos turnos para ahorrar espacio, pero conservará los montos del arqueo.`);
+    if (!confirm) return;
+
+    setIsPurgingClosings(true);
+    try {
+      for (const closingId of selectedClosings) {
+        const closing = closingsHistory.find(c => c.id === closingId);
+        if (!closing || closing.purged) continue;
+
+        // Find T_fin and T_inicio
+        const closingTime = new Date(closing.timestamp?.seconds ? closing.timestamp.seconds * 1000 : closing.timestamp).getTime();
+        
+        // Find the immediately preceding closing
+        const previousClosing = closingsHistory
+          .filter(c => {
+            const t = new Date(c.timestamp?.seconds ? c.timestamp.seconds * 1000 : c.timestamp).getTime();
+            return t < closingTime;
+          })
+          .sort((a, b) => {
+            const tA = new Date(a.timestamp?.seconds ? a.timestamp.seconds * 1000 : a.timestamp).getTime();
+            const tB = new Date(b.timestamp?.seconds ? b.timestamp.seconds * 1000 : b.timestamp).getTime();
+            return tB - tA;
+          })[0];
+          
+        const startTime = previousClosing 
+          ? new Date(previousClosing.timestamp?.seconds ? previousClosing.timestamp.seconds * 1000 : previousClosing.timestamp).getTime()
+          : 0;
+
+        // Find transactions to delete
+        const txsToDelete = allTransactions.filter(t => {
+          const tTime = new Date(t.timestamp?.seconds ? t.timestamp.seconds * 1000 : t.timestamp).getTime();
+          return tTime > startTime && tTime <= closingTime;
+        });
+
+        if (txsToDelete.length > 0) {
+          const ids = txsToDelete.map(t => t.id);
+          await batchDeleteLocalDocs('transactions', ids);
+        }
+
+        // Mark the closing as purged
+        await updateLocalDoc('cashClosings', closing.id, { purged: true });
+      }
+
+      setSelectedClosings([]);
+      onAddNotification('Cierres seleccionados purgados correctamente.', 'success');
+    } catch (e) {
+      console.error(e);
+      onAddNotification('Error al purgar cierres.', 'warning');
+    } finally {
+      setIsPurgingClosings(false);
     }
   };
 
@@ -1195,6 +1358,7 @@ export default function CheesePOSView({
                         <div className="absolute z-10 w-full mt-1 bg-editorial-card border border-editorial-border rounded shadow-lg max-h-48 overflow-y-auto">
                           {suppliers.filter(s => {
                               try {
+                                if (!s.isCheeseProducer && !s.isEmployee) return false;
                                 return (s.name || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) || 
                                        (s.rfc || s.idNumber || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
                                        (s.phone || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
@@ -1207,6 +1371,7 @@ export default function CheesePOSView({
                           ).length > 0 ? (
                             suppliers.filter(s => {
                                 try {
+                                  if (!s.isCheeseProducer && !s.isEmployee) return false;
                                   return (s.name || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) || 
                                          (s.rfc || s.idNumber || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
                                          (s.phone || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
@@ -1878,14 +2043,26 @@ export default function CheesePOSView({
                   </div>
                 </div>
 
-                <button
-                  onClick={handlePerformClosing}
-                  disabled={isClosingDrawer}
-                  className={`w-full h-12 bg-amber-500 hover:brightness-110 text-white font-serif font-bold text-md tracking-tight transition-all flex items-center justify-center gap-2 ${isClosingDrawer ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                >
-                  <CheckCircle className="w-4 h-4" />
-                  {isClosingDrawer ? '⏳ Procesando Cierre...' : 'Realizar Cierre de Caja Diario'}
-                </button>
+                {(() => {
+                  const isShiftEmpty = currentShiftSales.length === 0 && currentShiftTransactions.length === 0;
+                  return (
+                    <div className="flex flex-col gap-2">
+                      <button
+                        onClick={handlePerformClosing}
+                        disabled={isClosingDrawer || isShiftEmpty}
+                        className={`w-full h-12 bg-amber-500 text-white font-serif font-bold text-md tracking-tight transition-all flex items-center justify-center gap-2 ${isClosingDrawer || isShiftEmpty ? 'opacity-50 cursor-not-allowed' : 'hover:brightness-110 cursor-pointer'}`}
+                      >
+                        <CheckCircle className="w-4 h-4" />
+                        {isClosingDrawer ? '⏳ Procesando Cierre...' : 'Realizar Cierre de Caja Diario'}
+                      </button>
+                      {isShiftEmpty && (
+                        <div className="text-center text-[10px] uppercase text-amber-500 font-bold tracking-wider">
+                          Turno en $0.00 - Esperando movimientos
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </div>
@@ -2007,62 +2184,151 @@ export default function CheesePOSView({
             <h3 className="font-serif text-2xl font-bold text-editorial-text-primary tracking-tight">
               Historial de Cierres de Caja
             </h3>
+            <div className="flex gap-4 items-center">
+              {selectedClosings.length > 0 && (
+                <button
+                  onClick={handlePurgeSelectedClosings}
+                  disabled={isPurgingClosings}
+                  className="px-4 py-2 bg-rose-500/20 text-rose-400 border border-rose-500/50 hover:bg-rose-500/30 rounded font-bold text-xs uppercase tracking-wider flex items-center gap-2"
+                >
+                  <span className="flex items-center justify-center w-4 h-4">
+                    {isPurgingClosings ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                  </span>
+                  <span>Compactar Seleccionados ({selectedClosings.length})</span>
+                </button>
+              )}
+              <input
+                type="date"
+                value={closingSearchDate}
+                onChange={(e) => {
+                  setClosingSearchDate(e.target.value);
+                  setClosingPage(1);
+                }}
+                className="bg-editorial-bg border border-editorial-border text-editorial-text-primary px-3 py-1.5 rounded text-sm outline-none focus:border-amber-500"
+              />
+            </div>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="border-b border-editorial-border text-[10px] font-mono text-editorial-text-muted uppercase tracking-wider">
+                  <th className="py-3 px-4 w-10 text-center">
+                    <input 
+                      type="checkbox" 
+                      checked={(() => {
+                        const filtered = closingsHistory.filter(c => !closingSearchDate || (new Date(c.timestamp?.seconds ? c.timestamp.seconds * 1000 : c.timestamp).toISOString().split('T')[0] === closingSearchDate));
+                        const pageData = filtered.slice((closingPage - 1) * 15, closingPage * 15);
+                        return pageData.length > 0 && pageData.every(c => selectedClosings.includes(c.id));
+                      })()}
+                      onChange={() => {
+                        const filtered = closingsHistory.filter(c => !closingSearchDate || (new Date(c.timestamp?.seconds ? c.timestamp.seconds * 1000 : c.timestamp).toISOString().split('T')[0] === closingSearchDate));
+                        const pageData = filtered.slice((closingPage - 1) * 15, closingPage * 15);
+                        const isAllSelected = pageData.length > 0 && pageData.every(c => selectedClosings.includes(c.id));
+                        if (isAllSelected) {
+                          setSelectedClosings(prev => prev.filter(id => !pageData.find(c => c.id === id)));
+                        } else {
+                          const newIds = pageData.map(c => c.id).filter(id => !selectedClosings.includes(id));
+                          setSelectedClosings(prev => [...prev, ...newIds]);
+                        }
+                      }}
+                      className="accent-amber-500 cursor-pointer"
+                    />
+                  </th>
                   <th className="py-3 px-4">Fecha / Hora</th>
-                  <th className="py-3 px-4">Reporte ID</th>
-                  <th className="py-3 px-4">Recaudado USD</th>
-                  <th className="py-3 px-4">Efectivo Real</th>
-                  <th className="py-3 px-4">Cuadre</th>
+                  <th className="py-3 px-4">Total Ventas</th>
+                  <th className="py-3 px-4">Efectivo USD</th>
+                  <th className="py-3 px-4">Efectivo BS</th>
+                  <th className="py-3 px-4">Pago Móvil</th>
+                  <th className="py-3 px-4">Fiado</th>
+                  <th className="py-3 px-4">Tasa</th>
                   <th className="py-3 px-4 text-center">Acción</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-editorial-border/60 font-sans">
-                {closingsHistory.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="py-8 text-center text-editorial-text-muted">
-                      No hay cierres de caja registrados en el sistema.
-                    </td>
-                  </tr>
-                ) : (
-                  closingsHistory.map((c) => (
-                    <tr key={c.docId} className="hover:bg-editorial-bg/40 transition-all">
-                      <td className="py-3.5 px-4 font-mono">{new Date(c.timestamp).toLocaleString('es-ES')}</td>
-                      <td className="py-3.5 px-4 font-mono font-bold text-editorial-text-primary">{c.id}</td>
-                      <td className="py-3.5 px-4 text-emerald-400 font-bold font-mono">${(c.totalCashUsd || 0).toFixed(2)}</td>
-                      <td className="py-3.5 px-4 font-mono">${(c.actualCash || 0).toFixed(2)}</td>
-                      <td className="py-3.5 px-4">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                          c.difference === 0 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
-                        }`}>
-                          {c.status}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-center">
-                        <button
-                          onClick={() => setSelectedAuditClosing(c)}
-                          className="px-3 py-1.5 text-[10px] font-mono border border-amber-500 text-amber-500 hover:bg-amber-500 hover:text-black rounded transition-all cursor-pointer inline-flex items-center gap-1.5 font-bold uppercase tracking-wider"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          Auditar
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
+                {(() => {
+                  const filtered = closingsHistory.filter(c => !closingSearchDate || (new Date(c.timestamp?.seconds ? c.timestamp.seconds * 1000 : c.timestamp).toISOString().split('T')[0] === closingSearchDate));
+                  const pageData = filtered.slice((closingPage - 1) * 15, closingPage * 15);
+                  if (pageData.length === 0) {
+                    return (
+                      <tr>
+                        <td colSpan={9} className="py-8 text-center text-editorial-text-muted">
+                          No hay cierres encontrados.
+                        </td>
+                      </tr>
+                    );
+                  }
+                  return pageData.map((c) => {
+                    const totalVentas = (c.salesCashUsd || 0) + ((c.salesCashBs || 0) / (c.bcvRateAtClose || exchangeRate || 1)) + (c.totalCard || 0) + (c.totalMobile || 0) + (c.totalBiopago || 0) + (c.totalCreditSales || 0);
+                    return (
+                      <tr key={c.id} className="hover:bg-editorial-bg/40 transition-all">
+                        <td className="py-3.5 px-4 text-center">
+                          <input 
+                            type="checkbox" 
+                            checked={selectedClosings.includes(c.id)}
+                            onChange={(e) => {
+                              if (e.target.checked) setSelectedClosings(prev => [...prev, c.id]);
+                              else setSelectedClosings(prev => prev.filter(id => id !== c.id));
+                            }}
+                            className="accent-amber-500 cursor-pointer"
+                          />
+                        </td>
+                        <td className="py-3.5 px-4 font-mono">
+                          {new Date(c.timestamp?.seconds ? c.timestamp.seconds * 1000 : c.timestamp).toLocaleString('es-ES')}
+                          {c.purged && <span className="ml-2 px-1.5 py-0.5 rounded text-[8px] bg-neutral-700 text-neutral-300 border border-neutral-600 uppercase">Purgado</span>}
+                        </td>
+                        <td className="py-3.5 px-4 text-emerald-400 font-bold font-mono">${totalVentas.toFixed(2)}</td>
+                        <td className="py-3.5 px-4 font-mono">${(c.salesCashUsd || 0).toFixed(2)}</td>
+                        <td className="py-3.5 px-4 font-mono">Bs. {(c.salesCashBs || 0).toFixed(2)}</td>
+                        <td className="py-3.5 px-4 font-mono">${(c.totalMobile || 0).toFixed(2)}</td>
+                        <td className="py-3.5 px-4 font-mono text-amber-500">${(c.totalCreditSales || 0).toFixed(2)}</td>
+                        <td className="py-3.5 px-4 font-mono text-editorial-text-muted">Bs. {(c.bcvRateAtClose || exchangeRate || 1).toFixed(2)}</td>
+                        <td className="py-3.5 px-4 text-center">
+                          <button
+                            onClick={() => setSelectedAuditClosing(c)}
+                            className="px-3 py-1.5 text-[10px] font-mono border border-amber-500 text-amber-500 hover:bg-amber-500 hover:text-black rounded transition-all cursor-pointer inline-flex items-center gap-1.5 font-bold uppercase tracking-wider"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            Ver Detalle
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  });
+                })()}
               </tbody>
             </table>
           </div>
+          
+          {/* Pagination Controls */}
+          {(() => {
+            const filtered = closingsHistory.filter(c => !closingSearchDate || (new Date(c.timestamp?.seconds ? c.timestamp.seconds * 1000 : c.timestamp).toISOString().split('T')[0] === closingSearchDate));
+            const totalPages = Math.ceil(filtered.length / 15);
+            if (totalPages <= 1) return null;
+            return (
+              <div className="mt-4 flex justify-between items-center text-xs font-mono">
+                <span className="text-editorial-text-muted">Página {closingPage} de {totalPages}</span>
+                <div className="flex gap-2">
+                  <button 
+                    disabled={closingPage === 1}
+                    onClick={() => setClosingPage(p => p - 1)}
+                    className="px-3 py-1 bg-editorial-bg border border-editorial-border rounded disabled:opacity-50 hover:bg-editorial-border/50"
+                  >Anterior</button>
+                  <button 
+                    disabled={closingPage === totalPages}
+                    onClick={() => setClosingPage(p => p + 1)}
+                    className="px-3 py-1 bg-editorial-bg border border-editorial-border rounded disabled:opacity-50 hover:bg-editorial-border/50"
+                  >Siguiente</button>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
       {/* Ticket Preview Modal */}
       {lastReceipt && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-editorial-bg border border-editorial-border rounded w-full max-w-sm flex flex-col shadow-2xl overflow-hidden animate-slide-up print-ticket">
             
             {/* Modal Header (No print) */}
@@ -2407,7 +2673,7 @@ export default function CheesePOSView({
       {/* Receipt Modal */}
       {selectedAuditClosing && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="bg-editorial-card border border-editorial-border rounded w-full max-w-2xl flex flex-col shadow-2xl overflow-hidden animate-slide-up">
+          <div className="bg-editorial-card border border-editorial-border rounded w-11/12 max-w-5xl flex flex-col shadow-2xl overflow-hidden animate-slide-up">
             <div className="flex items-center justify-between p-4 bg-editorial-bg border-b border-editorial-border">
               <h3 className="font-serif font-bold text-amber-500 text-lg flex items-center gap-2">
                 <Archive className="w-5 h-5" />
@@ -2422,74 +2688,198 @@ export default function CheesePOSView({
             </div>
             <div className="p-6 overflow-y-auto max-h-[70vh] space-y-6">
               
-              <div className="grid grid-cols-2 gap-4 text-sm font-mono">
-                <div className="bg-editorial-bg p-3 border border-editorial-border rounded">
-                  <div className="text-[10px] text-editorial-text-muted uppercase">Fecha del Cierre</div>
-                  <div className="font-bold text-editorial-text-primary mt-1">{new Date(selectedAuditClosing.timestamp).toLocaleString('es-ES')}</div>
+              <div className="grid grid-cols-4 gap-4 text-sm font-mono bg-editorial-bg p-4 border border-editorial-border rounded">
+                <div>
+                  <div className="text-[9px] text-editorial-text-muted uppercase tracking-wider mb-1">Cajero Responsable</div>
+                  <div className="font-bold text-amber-500 uppercase">Administrador</div>
                 </div>
-                <div className="bg-editorial-bg p-3 border border-editorial-border rounded">
-                  <div className="text-[10px] text-editorial-text-muted uppercase">Estado del Cuadre</div>
-                  {(() => {
-                    const diffU = selectedAuditClosing.differenceUsd ?? selectedAuditClosing.diffUsd ?? selectedAuditClosing.difference ?? 0;
-                    const diffB = selectedAuditClosing.differenceBs ?? selectedAuditClosing.diffBs ?? 0;
-                    if (diffU === 0 && diffB === 0) {
-                      return <div className="font-bold mt-1 text-emerald-400">Balance Perfecto ($0.00)</div>;
-                    }
-                    return (
-                      <div className="font-bold mt-1 text-rose-400">
-                        {diffU !== 0 && `USD: ${diffU > 0 ? '+' : ''}${diffU.toFixed(2)} `}
-                        {diffB !== 0 && `Bs: ${diffB > 0 ? '+' : ''}${diffB.toFixed(2)}`}
+                <div>
+                  <div className="text-[9px] text-editorial-text-muted uppercase tracking-wider mb-1">Tasa BCV del Turno</div>
+                  <div className="font-bold text-editorial-text-primary">Bs. {(selectedAuditClosing.bcvRateAtClose || exchangeRate || 1).toFixed(2)}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-editorial-text-muted uppercase tracking-wider mb-1">Apertura Gaveta ($)</div>
+                  <div className="font-bold text-editorial-text-primary">${(selectedAuditClosing.initialCashUsd ?? selectedAuditClosing.initialDrawerUsd ?? selectedAuditClosing.startingCashUsd ?? selectedAuditClosing.startingCash ?? 0).toFixed(2)}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-editorial-text-muted uppercase tracking-wider mb-1">Apertura Gaveta (Bs)</div>
+                  <div className="font-bold text-editorial-text-primary">Bs. {(selectedAuditClosing.initialCashBs ?? selectedAuditClosing.initialDrawerBs ?? selectedAuditClosing.startingCashBs ?? 0).toFixed(2)}</div>
+                </div>
+              </div>
+
+              {/* Bloque de Conciliación */}
+              <div>
+                <h4 className="font-serif text-md font-bold text-editorial-text-primary border-b border-editorial-border pb-2 mb-3 flex items-center gap-2">
+                  <Banknote className="w-4 h-4 text-editorial-text-muted" />
+                  Conciliación de Efectivo en Gaveta
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-editorial-bg p-4 border border-editorial-border rounded relative">
+                    <div className="absolute top-0 right-0 px-2 py-1 bg-neutral-800 text-[9px] font-mono font-bold uppercase rounded-bl text-editorial-text-muted">Divisas ($)</div>
+                    <div className="space-y-1 text-xs font-mono mt-2">
+                      <div className="flex justify-between"><span className="text-editorial-text-muted">Esperado (Sistema):</span> <span>${(selectedAuditClosing.expectedCashUsd ?? selectedAuditClosing.expectedUsd ?? selectedAuditClosing.totalCalculated ?? 0).toFixed(2)}</span></div>
+                      <div className="flex justify-between font-bold"><span className="text-editorial-text-primary">Real (Declarado):</span> <span>${(selectedAuditClosing.countedCashUsd ?? selectedAuditClosing.countedRealUsd ?? selectedAuditClosing.actualCashUsd ?? selectedAuditClosing.actualCash ?? 0).toFixed(2)}</span></div>
+                      <div className="flex justify-between pt-2 mt-2 border-t border-editorial-border/30">
+                        <span className="text-editorial-text-muted">Diferencia:</span>
+                        {(() => {
+                          const diffU = selectedAuditClosing.differenceUsd ?? selectedAuditClosing.diffUsd ?? selectedAuditClosing.difference ?? 0;
+                          return (
+                            <span className={`font-bold ${diffU === 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {diffU === 0 ? 'Balance Perfecto' : `${diffU > 0 ? 'Sobrante +' : 'Faltante '}${diffU.toFixed(2)}`}
+                            </span>
+                          );
+                        })()}
                       </div>
-                    );
-                  })()}
+                    </div>
+                  </div>
+                  <div className="bg-editorial-bg p-4 border border-editorial-border rounded relative">
+                    <div className="absolute top-0 right-0 px-2 py-1 bg-neutral-800 text-[9px] font-mono font-bold uppercase rounded-bl text-editorial-text-muted">Moneda Nac. (Bs)</div>
+                    <div className="space-y-1 text-xs font-mono mt-2">
+                      <div className="flex justify-between"><span className="text-editorial-text-muted">Esperado (Sistema):</span> <span>Bs. {(selectedAuditClosing.expectedCashBs ?? selectedAuditClosing.expectedBs ?? 0).toFixed(2)}</span></div>
+                      <div className="flex justify-between font-bold"><span className="text-editorial-text-primary">Real (Declarado):</span> <span>Bs. {(selectedAuditClosing.countedCashBs ?? selectedAuditClosing.actualCashBs ?? 0).toFixed(2)}</span></div>
+                      <div className="flex justify-between pt-2 mt-2 border-t border-editorial-border/30">
+                        <span className="text-editorial-text-muted">Diferencia:</span>
+                        {(() => {
+                          const diffB = selectedAuditClosing.differenceBs ?? selectedAuditClosing.diffBs ?? 0;
+                          return (
+                            <span className={`font-bold ${diffB === 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {diffB === 0 ? 'Balance Perfecto' : `${diffB > 0 ? 'Sobrante +' : 'Faltante '}${diffB.toFixed(2)}`}
+                            </span>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
+              {/* Ingresos por Otros Medios (Banco/Fiado) */}
               <div>
-                <h4 className="font-serif text-md font-bold text-editorial-text-primary border-b border-editorial-border pb-2 mb-3">Balance de Gaveta (Efectivo USD)</h4>
-                <div className="space-y-2 text-xs font-mono">
-                  <div className="flex justify-between"><span className="text-editorial-text-muted">Fondo Inicial:</span> <span>${(selectedAuditClosing.initialCashUsd ?? selectedAuditClosing.initialDrawerUsd ?? selectedAuditClosing.startingCashUsd ?? selectedAuditClosing.startingCash ?? 0).toFixed(2)}</span></div>
-                  <div className="flex justify-between"><span className="text-editorial-text-muted">Ingresos Ventas USD:</span> <span className="text-emerald-400">+${(selectedAuditClosing.salesCashUsd || 0).toFixed(2)}</span></div>
-                  <div className="flex justify-between"><span className="text-editorial-text-muted">Ingresos Abonos USD:</span> <span className="text-emerald-400">+${(selectedAuditClosing.incomeCashUsd || 0).toFixed(2)}</span></div>
-                  <div className="flex justify-between"><span className="text-editorial-text-muted">Egresos / Gastos USD:</span> <span className="text-rose-400">-${(selectedAuditClosing.expensesCashUsd || 0).toFixed(2)}</span></div>
-                  <div className="flex justify-between pt-2 border-t border-editorial-border/30 font-bold"><span className="text-editorial-text-primary">Efectivo Esperado:</span> <span>${(selectedAuditClosing.expectedCashUsd ?? selectedAuditClosing.expectedUsd ?? selectedAuditClosing.totalCalculated ?? 0).toFixed(2)}</span></div>
-                  <div className="flex justify-between font-bold"><span className="text-editorial-text-primary">Efectivo Físico Contado:</span> <span>${(selectedAuditClosing.countedCashUsd ?? selectedAuditClosing.countedRealUsd ?? selectedAuditClosing.actualCashUsd ?? selectedAuditClosing.actualCash ?? 0).toFixed(2)}</span></div>
+                <h4 className="font-serif text-md font-bold text-editorial-text-primary border-b border-editorial-border pb-2 mb-3">Resumen Consolidado (Banco y Fiado)</h4>
+                <div className="grid grid-cols-4 gap-3 text-[10px] font-mono">
+                  <div className="bg-editorial-bg p-3 border border-editorial-border rounded text-center">
+                    <div className="text-editorial-text-muted mb-1">Pago Móvil</div>
+                    <div className="font-bold text-editorial-text-primary text-sm">Bs. {((selectedAuditClosing.totalMobile || 0) * (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)).toFixed(2)}</div>
+                    <div className="text-[9px] text-emerald-400 mt-0.5">~${(selectedAuditClosing.totalMobile || 0).toFixed(2)}</div>
+                  </div>
+                  <div className="bg-editorial-bg p-3 border border-editorial-border rounded text-center">
+                    <div className="text-editorial-text-muted mb-1">Punto / Biopago</div>
+                    <div className="font-bold text-editorial-text-primary text-sm">Bs. {(((selectedAuditClosing.totalCard || 0) + (selectedAuditClosing.totalBiopago || 0)) * (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)).toFixed(2)}</div>
+                    <div className="text-[9px] text-emerald-400 mt-0.5">~${((selectedAuditClosing.totalCard || 0) + (selectedAuditClosing.totalBiopago || 0)).toFixed(2)}</div>
+                  </div>
+                  <div className="bg-editorial-bg p-3 border border-amber-500/30 rounded text-center">
+                    <div className="text-amber-500/70 mb-1">Fiado (Crédito)</div>
+                    <div className="font-bold text-amber-500 text-sm">${(selectedAuditClosing.totalCreditSales || 0).toFixed(2)}</div>
+                    <div className="text-[9px] text-amber-500/50 mt-0.5">Pendiente</div>
+                  </div>
+                  <div className="bg-editorial-bg p-3 border border-editorial-border rounded text-center">
+                    <div className="text-editorial-text-muted mb-1">Total Ventas (Turno)</div>
+                    <div className="font-bold text-emerald-400 text-sm">${((selectedAuditClosing.salesCashUsd || 0) + ((selectedAuditClosing.salesCashBs || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) + (selectedAuditClosing.totalCard || 0) + (selectedAuditClosing.totalMobile || 0) + (selectedAuditClosing.totalBiopago || 0) + (selectedAuditClosing.totalCreditSales || 0)).toFixed(2)}</div>
+                  </div>
                 </div>
               </div>
 
-              <div>
-                <h4 className="font-serif text-md font-bold text-editorial-text-primary border-b border-editorial-border pb-2 mb-3">Balance de Gaveta (Efectivo Bs)</h4>
-                <div className="space-y-2 text-xs font-mono">
-                  <div className="flex justify-between"><span className="text-editorial-text-muted">Fondo Inicial Bs:</span> <span>Bs. {(selectedAuditClosing.initialCashBs ?? selectedAuditClosing.initialDrawerBs ?? selectedAuditClosing.startingCashBs ?? 0).toFixed(2)}</span></div>
-                  <div className="flex justify-between"><span className="text-editorial-text-muted">Ingresos Ventas Bs:</span> <span className="text-emerald-400">+Bs. {(selectedAuditClosing.salesCashBs || 0).toFixed(2)}</span></div>
-                  <div className="flex justify-between"><span className="text-editorial-text-muted">Ingresos Abonos Bs:</span> <span className="text-emerald-400">+Bs. {(selectedAuditClosing.incomeCashBs || 0).toFixed(2)}</span></div>
-                  <div className="flex justify-between"><span className="text-editorial-text-muted">Egresos / Gastos Bs:</span> <span className="text-rose-400">-Bs. {(selectedAuditClosing.expensesCashBs || 0).toFixed(2)}</span></div>
-                  <div className="flex justify-between pt-2 border-t border-editorial-border/30 font-bold"><span className="text-editorial-text-primary">Efectivo Esperado Bs:</span> <span>Bs. {(selectedAuditClosing.expectedCashBs ?? selectedAuditClosing.expectedBs ?? 0).toFixed(2)}</span></div>
-                  <div className="flex justify-between font-bold"><span className="text-editorial-text-primary">Efectivo Físico Contado Bs:</span> <span>Bs. {(selectedAuditClosing.countedCashBs ?? selectedAuditClosing.actualCashBs ?? 0).toFixed(2)}</span></div>
+              {selectedAuditClosing.purged ? (
+                <div className="bg-neutral-800 border border-neutral-700 p-6 rounded text-center mt-6">
+                  <Archive className="w-8 h-8 text-neutral-500 mx-auto mb-3" />
+                  <p className="text-neutral-400 font-mono text-xs uppercase tracking-wider">Detalle de tickets compactado para optimización de disco.</p>
+                  <p className="text-neutral-500 font-mono text-[10px] mt-2">Cascarón contable preservado</p>
                 </div>
-              </div>
+              ) : (
+                <>
+                  {/* Detalle de Ventas */}
+                  <div>
+                    <h4 className="font-serif text-md font-bold text-editorial-text-primary border-b border-editorial-border pb-2 mb-3">Detalle de Ventas del Día ({closingDetails.sales.length})</h4>
+                    <div className="bg-editorial-bg border border-editorial-border rounded overflow-hidden">
+                      <table className="w-full text-left text-[9px] font-mono">
+                        <thead className="bg-editorial-card border-b border-editorial-border text-editorial-text-muted uppercase">
+                          <tr>
+                            <th className="py-2 px-3">Boleto / Fecha y Hora</th>
+                            <th className="py-2 px-3">Cliente</th>
+                            <th className="py-2 px-3">Artículos</th>
+                            <th className="py-2 px-3">Método</th>
+                            <th className="py-2 px-3">Monto Total</th>
+                            <th className="py-2 px-3 text-center">Acciones</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-editorial-border/60">
+                          {closingDetails.sales.length === 0 ? (
+                            <tr><td colSpan={6} className="p-4 text-center text-editorial-text-muted">No se registraron ventas.</td></tr>
+                          ) : (
+                            closingDetails.sales.map((sale: any) => {
+                              return (
+                                <tr key={sale.id} className="hover:bg-editorial-bg/60 transition-colors">
+                                  <td className="py-2 px-3">
+                                    <div className="font-bold text-amber-500">{sale.invoiceNumber || sale.id.slice(-6)}</div>
+                                    <div className="text-[8px] text-editorial-text-muted">{new Date(sale.timestamp?.seconds ? sale.timestamp.seconds * 1000 : sale.timestamp).toLocaleTimeString('es-ES', {hour: '2-digit', minute:'2-digit'})}</div>
+                                  </td>
+                                  <td className="py-2 px-3 truncate max-w-[100px]">{sale.entityName || sale.entity || 'Público'}</td>
+                                  <td className="py-2 px-3">{sale.items?.length || 0} items</td>
+                                  <td className="py-2 px-3">
+                                    <span className={`px-1.5 py-0.5 rounded text-[8px] uppercase ${sale.category === 'credito' || sale.paymentMethod === 'Mundo Kalu' ? 'bg-amber-500/20 text-amber-500' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                                      {sale.paymentMethod || 'Contado'}
+                                    </span>
+                                  </td>
+                                  <td className="py-2 px-3 font-bold text-emerald-400">${(sale.amount || 0).toFixed(2)}</td>
+                                  <td className="py-2 px-3 text-center">
+                                    <button 
+                                      onClick={() => setLastReceipt(sale)}
+                                      className="px-2 py-1 bg-editorial-card border border-editorial-border text-editorial-text-primary rounded hover:bg-amber-500/20 hover:text-amber-500 hover:border-amber-500/50 transition-colors inline-flex items-center gap-1 font-bold"
+                                    >
+                                      <FileText className="w-3 h-3" />
+                                      Ver boleto
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
 
-              <div>
-                <h4 className="font-serif text-md font-bold text-editorial-text-primary border-b border-editorial-border pb-2 mb-3">Ingresos por Otros Medios</h4>
-                <div className="grid grid-cols-2 gap-3 text-xs font-mono">
-                  <div className="bg-editorial-bg p-2 rounded flex justify-between">
-                    <span className="text-editorial-text-muted">Punto / Tarjeta:</span>
-                    <span className="font-bold">${(selectedAuditClosing.totalCard || 0).toFixed(2)}</span>
+                  {/* Abonos y Gastos */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <h4 className="font-serif text-md font-bold text-editorial-text-primary border-b border-editorial-border pb-2 mb-3 text-emerald-400">Detalle de Abonos</h4>
+                      <div className="bg-editorial-bg border border-editorial-border rounded overflow-hidden p-2 space-y-2 max-h-[200px] overflow-y-auto">
+                        {closingDetails.incomes.length === 0 ? (
+                          <div className="text-[10px] text-editorial-text-muted font-mono text-center py-2">No hubo abonos.</div>
+                        ) : (
+                          closingDetails.incomes.map((inc: any) => (
+                            <div key={inc.id} className="flex justify-between items-center text-[10px] font-mono border-b border-editorial-border/30 pb-1">
+                              <div>
+                                <div className="text-editorial-text-primary">{inc.entity || inc.entityName || 'Cliente'}</div>
+                                <div className="text-[8px] text-editorial-text-muted">{inc.paymentMethod}</div>
+                              </div>
+                              <div className="text-emerald-400 font-bold">+${inc.amount.toFixed(2)}</div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="font-serif text-md font-bold text-editorial-text-primary border-b border-editorial-border pb-2 mb-3 text-rose-400">Detalle de Gastos</h4>
+                      <div className="bg-editorial-bg border border-editorial-border rounded overflow-hidden p-2 space-y-2 max-h-[200px] overflow-y-auto">
+                        {closingDetails.expenses.length === 0 ? (
+                          <div className="text-[10px] text-editorial-text-muted font-mono text-center py-2">No hubo gastos.</div>
+                        ) : (
+                          closingDetails.expenses.map((exp: any) => (
+                            <div key={exp.id} className="flex justify-between items-center text-[10px] font-mono border-b border-editorial-border/30 pb-1">
+                              <div>
+                                <div className="text-editorial-text-primary">{exp.description || 'Gasto'}</div>
+                                <div className="text-[8px] text-editorial-text-muted">{exp.paymentMethod}</div>
+                              </div>
+                              <div className="text-rose-400 font-bold">-${exp.amount.toFixed(2)}</div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <div className="bg-editorial-bg p-2 rounded flex justify-between">
-                    <span className="text-editorial-text-muted">Pago Móvil:</span>
-                    <span className="font-bold">${(selectedAuditClosing.totalMobile || 0).toFixed(2)}</span>
-                  </div>
-                  <div className="bg-editorial-bg p-2 rounded flex justify-between">
-                    <span className="text-editorial-text-muted">Biopago:</span>
-                    <span className="font-bold">${(selectedAuditClosing.totalBiopago || 0).toFixed(2)}</span>
-                  </div>
-                  <div className="bg-editorial-bg p-2 rounded flex justify-between">
-                    <span className="text-editorial-text-muted">Efectivo Bs:</span>
-                    <span className="font-bold">${(selectedAuditClosing.totalCashBs || 0).toFixed(2)}</span>
-                  </div>
-                </div>
-              </div>
+                </>
+              )}
 
             </div>
             <div className="p-4 bg-editorial-bg border-t border-editorial-border flex justify-end">

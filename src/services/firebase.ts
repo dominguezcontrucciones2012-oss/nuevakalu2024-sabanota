@@ -1,7 +1,6 @@
-import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from './services/localApi';
 import { initializeApp } from 'firebase/app';
-
-
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 
 // Reemplazar con las credenciales reales provistas por el usuario
 const firebaseConfig = {

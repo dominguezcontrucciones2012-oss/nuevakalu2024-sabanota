@@ -31,10 +31,11 @@ export default function BudgetControlView({
   const [loadingTrips, setLoadingTrips] = useState(true);
 
   // Load Debts
+  // Load Debts
   useEffect(() => {
-    const q = query(collection(db, 'business_debts'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setDebts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const unsubscribe = onCollectionSnapshot('business_debts', (data) => {
+      data.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setDebts(data);
       setLoadingDebts(false);
     });
     return () => unsubscribe();
@@ -42,9 +43,9 @@ export default function BudgetControlView({
 
   // Load Trips
   useEffect(() => {
-    const q = query(collection(db, 'vehicle_trips'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setTrips(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    const unsubscribe = onCollectionSnapshot('vehicle_trips', (data) => {
+      data.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setTrips(data);
       setLoadingTrips(false);
     });
     return () => unsubscribe();
@@ -291,7 +292,7 @@ function PayDebtModal({ debt, onClose, vaultBalance, exchangeRate, onAddTransact
       
       // Update Debt Document
       const newPending = Math.max(0, debt.pendingBalance - usdAmount);
-      await updateDoc(doc(db, 'business_debts', debt.id), {
+      await updateLocalDoc('business_debts', debt.id, {
         pendingBalance: newPending,
         status: newPending <= 0 ? 'settled' : 'active',
         payments: [...(debt.payments || []), {

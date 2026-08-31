@@ -168,9 +168,13 @@ const readCollection = (name) => {
   return [];
 };
 
-const writeCollection = (name, data) => {
+const writeCollection = (name, data, delta = null) => {
   fs.writeFileSync(getCollectionFilePath(name), JSON.stringify(data, null, 2));
-  io.emit('collection_updated', name); // Broadcast event
+  if (delta) {
+    io.emit('collection_delta', delta);
+  } else {
+    io.emit('collection_updated', name); // Fallback for full reload
+  }
 };
 
 app.get('/api/collections/:name', (req, res) => {
@@ -187,8 +191,16 @@ app.post('/api/collections/:name', (req, res) => {
   try {
     const data = readCollection(req.params.name);
     const newDoc = { id: req.body.id || Date.now().toString(), ...req.body };
-    data.push(newDoc);
-    writeCollection(req.params.name, data);
+    const index = data.findIndex(d => String(d.id) === String(newDoc.id));
+    
+    if (index !== -1) {
+      // Overwrite if it already exists to prevent duplication
+      data[index] = newDoc;
+      writeCollection(req.params.name, data, { action: 'update', collection: req.params.name, doc: newDoc });
+    } else {
+      data.push(newDoc);
+      writeCollection(req.params.name, data, { action: 'add', collection: req.params.name, doc: newDoc });
+    }
     res.json({ success: true, doc: newDoc });
   } catch (error) {
     console.error(`Error writing ${req.params.name}:`, error);
@@ -202,10 +214,14 @@ app.patch('/api/collections/:name/:id', (req, res) => {
     const index = data.findIndex(d => String(d.id) === String(req.params.id));
     if (index !== -1) {
       data[index] = { ...data[index], ...req.body };
-      writeCollection(req.params.name, data);
+      writeCollection(req.params.name, data, { action: 'update', collection: req.params.name, doc: data[index] });
       res.json({ success: true, doc: data[index] });
     } else {
-      res.status(404).json({ error: 'Document not found' });
+      // UPSERT: Create document if it does not exist (like Firebase setDoc)
+      const newDoc = { id: req.params.id, ...req.body };
+      data.push(newDoc);
+      writeCollection(req.params.name, data, { action: 'add', collection: req.params.name, doc: newDoc });
+      res.json({ success: true, doc: newDoc });
     }
   } catch (error) {
     console.error(`Error updating ${req.params.name}:`, error);
@@ -213,9 +229,22 @@ app.patch('/api/collections/:name/:id', (req, res) => {
   }
 });
 
+app.post('/api/collections/:name/batchDelete', (req, res) => {
+  try {
+    const data = readCollection(req.params.name);
+    const idsToDelete = req.body.ids || [];
+    const filtered = data.filter(d => !idsToDelete.includes(String(d.id)));
+    writeCollection(req.params.name, filtered, { action: 'batchDelete', collection: req.params.name, count: idsToDelete.length });
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`Error batch deleting ${req.params.name}:`, error);
+    res.status(500).json({ error: 'Error batch deleting documents' });
+  }
+});
+
 app.delete('/api/collections/:name', (req, res) => {
   try {
-    writeCollection(req.params.name, []);
+    writeCollection(req.params.name, [], { action: 'clear', collection: req.params.name });
     res.json({ success: true });
   } catch (error) {
     console.error(`Error clearing ${req.params.name}:`, error);
@@ -227,7 +256,7 @@ app.delete('/api/collections/:name/:id', (req, res) => {
   try {
     const data = readCollection(req.params.name);
     const filtered = data.filter(d => String(d.id) !== String(req.params.id));
-    writeCollection(req.params.name, filtered);
+    writeCollection(req.params.name, filtered, { action: 'delete', collection: req.params.name, doc: { id: req.params.id } });
     res.json({ success: true });
   } catch (error) {
     console.error(`Error deleting ${req.params.name}:`, error);

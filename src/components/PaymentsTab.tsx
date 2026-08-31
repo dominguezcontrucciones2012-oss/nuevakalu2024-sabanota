@@ -104,22 +104,25 @@ export default function PaymentsTab({
       ? `Liquidación de Venta Completa - Ref: ${reference}`
       : `Abono a Cuota ${selectedDebt.id} - Ref: ${reference}`;
     
-    const payload: Partial<Transaction> = {
-      category: 'ingresos_cobranza',
-      isIncome: true,
+    const pwaPayload = {
+      id: `PWA-PAGO-${Date.now()}`,
+      type: 'cliente',
+      entityId: clientData.id,
+      entityName: clientData.name,
       amount: Number(paymentAmountBs || 0) / bcvRate,
-      changeBs: Number(paymentAmountBs || 0),
-      paymentMethod: 'Pago Móvil',
-      status: 'pending_verification',
-      clientId: clientData.id,
-      installmentIds,
-      notes: notesText,
+      currency: 'USD',
+      amountBs: Number(paymentAmountBs || 0),
+      reference: reference,
+      method: 'Pago Móvil',
+      status: 'pending',
       date: new Date().toISOString(),
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      installmentIds,
+      notes: notesText
     };
     
     try {
-       await addLocalDoc('transactions', payload);
+       await addLocalDoc('pwa_payments', pwaPayload);
        
        // Update installment status
        const updatePromises = installmentIds.map(id => 

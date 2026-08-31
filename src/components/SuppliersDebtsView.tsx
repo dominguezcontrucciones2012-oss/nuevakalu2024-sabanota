@@ -448,16 +448,16 @@ export default function SuppliersDebtsView({
 
       <div className={`grid grid-cols-1 md:grid-cols-2 ${isSidebarOpen ? 'lg:grid-cols-3' : 'lg:grid-cols-4'} gap-6`}>
         {suppliers
-          .filter(s => activeTab === 'libreta' ? s.isCheeseProducer : !s.isCheeseProducer)
+          .filter(s => activeTab === 'libreta' ? (s.isCheeseProducer || s.isEmployee) : (!s.isCheeseProducer && !s.isEmployee))
           .filter(s => {
             if (!searchQuery.trim()) return true;
             const term = searchQuery.toLowerCase();
             return (
-              s.name.toLowerCase().includes(term) ||
-              (s.contactName && s.contactName.toLowerCase().includes(term)) ||
-              (s.rfc && s.rfc.toLowerCase().includes(term)) ||
-              (s.address && s.address.toLowerCase().includes(term)) ||
-              s.id.toLowerCase().includes(term)
+              String(s.name || '').toLowerCase().includes(term) ||
+              String(s.contactName || '').toLowerCase().includes(term) ||
+              String(s.rfc || '').toLowerCase().includes(term) ||
+              String(s.address || '').toLowerCase().includes(term) ||
+              String(s.id || '').toLowerCase().includes(term)
             );
           })
           .map((s) => (
@@ -465,14 +465,14 @@ export default function SuppliersDebtsView({
             <div className="space-y-2">
               <div className="flex justify-between items-start">
                 <div className="w-10 h-10 rounded bg-editorial-text-primary/10 text-editorial-text-primary flex items-center justify-center font-serif text-lg font-bold border border-editorial-text-primary/30">
-                  {s.name.slice(0, 2).toUpperCase()}
+                  {String(s.name || 'Sin Nombre').slice(0, 2).toUpperCase()}
                 </div>
-                <span className="font-mono text-[9px] text-editorial-text-muted/60">ID PROV: {s.id}</span>
+                <span className="font-mono text-[9px] text-editorial-text-muted/60">ID PROV: {String(s.id || '')}</span>
                 <button onClick={() => openEditModal(s)} className="text-[10px] text-amber-500 hover:text-amber-400">✏️ Editar</button>
               </div>
 
               <div className="space-y-1">
-                <h4 className="font-serif text-xl font-bold text-editorial-text-primary tracking-tight leading-tight">{s.name}</h4>
+                <h4 className="font-serif text-xl font-bold text-editorial-text-primary tracking-tight leading-tight">{String(s.name || 'Sin Nombre')}</h4>
                 <p className="text-xs text-editorial-text-muted font-sans mt-1">
                   <span className="text-[10px] font-mono uppercase text-editorial-text-muted/60 block mt-1.5">Vendedor:</span>
                   {s.contactName}

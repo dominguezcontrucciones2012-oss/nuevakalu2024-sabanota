@@ -11,6 +11,9 @@ export interface PurchaseItem {
   purchasePrice: number;
   marginPercent: number;
   sellingPrice: number;
+  unit?: 'Kg' | 'Und' | 'Bulto';
+  contentPerBulto?: number;
+  previousCost?: number;
 }
 
 export interface FrozenInvoice {
@@ -116,7 +119,8 @@ export default function StockPurchasesView({
       setIsScanning(true);
       onAddNotification('Procesando factura con IA...', 'info');
       try {
-        const extracted = await extractInvoiceData(file, exchangeRate);
+        const inventoryNames = products.map(p => p.name);
+        const extracted = await extractInvoiceData(file, exchangeRate, inventoryNames);
         
         // Supplier Matching
         if (extracted.proveedor?.nombre) {
@@ -137,16 +141,23 @@ export default function StockPurchasesView({
         if (extracted.items && extracted.items.length > 0) {
           const newPurchaseItems: PurchaseItem[] = extracted.items.map(item => {
             const itemNameLow = item.nombre.toLowerCase();
-            const matchedProd = products.find(p => p.name.toLowerCase().includes(itemNameLow));
+            const matchedProd = products.find(p => p.name.toLowerCase() === itemNameLow || p.name.toLowerCase().includes(itemNameLow));
             
+            const currentMargin = matchedProd ? (matchedProd.sellingPrice - matchedProd.purchasePrice) / matchedProd.sellingPrice : 0.3;
+            const safeMargin = isNaN(currentMargin) || currentMargin >= 1 || currentMargin <= 0 ? 0.3 : currentMargin;
+            const newSellingPrice = item.costo_unitario / (1 - safeMargin);
+
             return {
               uiId: `itm-${Date.now()}-${Math.random()}`,
               productId: matchedProd ? matchedProd.id : '',
               name: matchedProd ? matchedProd.name : `[NUEVO] ${item.nombre.toUpperCase()}`,
               quantityKg: item.cantidad,
               purchasePrice: item.costo_unitario,
-              marginPercent: 30,
-              sellingPrice: parseFloat((item.costo_unitario * 1.3).toFixed(2))
+              marginPercent: safeMargin * 100,
+              sellingPrice: parseFloat(newSellingPrice.toFixed(2)),
+              unit: (item.unidad as any) === 'Bulto' ? 'Bulto' : (item.unidad === 'Und' ? 'Und' : 'Kg'),
+              contentPerBulto: (item.unidad as any) === 'Bulto' ? 1 : undefined,
+              previousCost: matchedProd ? matchedProd.purchasePrice : undefined
             };
           });
           
@@ -167,11 +178,12 @@ export default function StockPurchasesView({
     const newItem: PurchaseItem = {
       uiId: `itm-${Date.now()}`,
       productId: '',
-      name: '-- Seleccionar Producto --',
+      name: '',
       quantityKg: 0,
       purchasePrice: 0,
       marginPercent: 30,
-      sellingPrice: 0
+      sellingPrice: 0,
+      unit: 'Kg'
     };
     setItems((prev) => [...prev, newItem]);
   };
@@ -188,6 +200,19 @@ export default function StockPurchasesView({
           updated.purchasePrice = prod.purchasePrice;
           updated.sellingPrice = prod.sellingPrice;
           updated.marginPercent = ((prod.sellingPrice - prod.purchasePrice) / prod.sellingPrice) * 100 || 0;
+        }
+      }
+
+      if (field === 'name') {
+        const prod = products.find(p => p.name.toLowerCase() === String(value).toLowerCase());
+        if (prod && updated.productId !== prod.id) {
+          updated.productId = prod.id;
+          updated.name = prod.name;
+          updated.purchasePrice = prod.purchasePrice;
+          updated.sellingPrice = prod.sellingPrice;
+          updated.marginPercent = ((prod.sellingPrice - prod.purchasePrice) / prod.sellingPrice) * 100 || 0;
+        } else if (!prod) {
+          updated.productId = '';
         }
       }
       
@@ -242,10 +267,26 @@ export default function StockPurchasesView({
       return;
     }
 
+    const normalizedItems = items.map(item => {
+      let finalQty = item.quantityKg;
+      let finalPurchasePrice = item.purchasePrice;
+      
+      if (item.unit === 'Bulto' && item.contentPerBulto && item.contentPerBulto > 0) {
+        finalQty = item.quantityKg * item.contentPerBulto;
+        finalPurchasePrice = item.purchasePrice / item.contentPerBulto;
+      }
+
+      return {
+        ...item,
+        quantityKg: finalQty,
+        purchasePrice: finalPurchasePrice
+      };
+    });
+
     onLoadPurchase({
       supplierId,
-      items,
-      isCredit
+      items: normalizedItems,
+      isCredit: true
     });
     
     // Reset form after successful save
@@ -274,8 +315,10 @@ export default function StockPurchasesView({
             </div>
             <div className="flex items-center gap-2">
               <button disabled={isScanning} onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-3 py-1.5 bg-[#1e293b] border border-amber-500/40 text-amber-500 rounded text-xs font-mono hover:bg-amber-500/10 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait">
-                {isScanning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ScanText className="w-3.5 h-3.5" />}
-                {isScanning ? 'Procesando...' : 'Escanear Factura IA'}
+                <span className="flex items-center justify-center w-3.5 h-3.5">
+                  {isScanning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ScanText className="w-3.5 h-3.5" />}
+                </span>
+                <span>{isScanning ? 'Procesando...' : 'Escanear Factura IA'}</span>
               </button>
               <button onClick={handleFreezePurchase} className="flex items-center gap-2 px-3 py-1.5 bg-editorial-bg border border-editorial-border text-editorial-text-primary rounded text-xs font-mono hover:text-amber-500 hover:border-amber-500/40 transition-colors cursor-pointer">
                 <Snowflake className="w-3.5 h-3.5" /> Congelar
@@ -328,47 +371,76 @@ export default function StockPurchasesView({
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-editorial-border bg-black/40 font-mono text-[10px] text-editorial-text-muted uppercase tracking-wider">
-                    <th className="py-3 px-4 w-[25%]">Producto</th>
-                    <th className="py-3 px-3 w-[15%]">Cant. (Kg)</th>
-                    <th className="py-3 px-3 w-[15%]">Costo ($)</th>
-                    <th className="py-3 px-3 w-[15%]">% Ganancia</th>
-                    <th className="py-3 px-3 w-[15%] text-amber-500">P. Venta ($)</th>
-                    <th className="py-3 px-3 w-[15%] text-right">Subtotal</th>
-                    <th className="py-3 px-2 w-[5%]"></th>
+                    <th className="py-3 px-4 w-[32%]">Producto</th>
+                    <th className="py-3 px-3 w-[20%]">Cant. & Unidad</th>
+                    <th className="py-3 px-3 w-[12%]">Costo ($)</th>
+                    <th className="py-3 px-3 w-[12%]">% Ganancia</th>
+                    <th className="py-3 px-3 w-[12%] text-amber-500">P. Venta ($)</th>
+                    <th className="py-3 px-3 w-[10%] text-right">Subtotal</th>
+                    <th className="py-3 px-2 w-[2%]"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-editorial-border/40">
                   {items.map((item) => (
                     <tr key={item.uiId} className="hover:bg-editorial-bg/30 group">
                       <td className="py-2 px-4">
-                        <select 
-                          value={item.productId}
-                          onChange={(e) => handleUpdateItem(item.uiId, 'productId', e.target.value)}
-                          className="w-full bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 cursor-pointer"
-                        >
-                          <option value="">-- Seleccionar Producto --</option>
-                          {products.map(p => (
-                            <option key={p.id} value={p.id}>{p.name}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="py-2 px-3">
                         <input 
-                          type="number" step="0.01" min="0"
-                          value={item.quantityKg || ''}
-                          onChange={(e) => handleUpdateItem(item.uiId, 'quantityKg', Number(e.target.value))}
-                          className="w-full bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono"
-                          placeholder="0"
+                          type="text"
+                          list="inventory-products"
+                          value={item.name}
+                          onChange={(e) => handleUpdateItem(item.uiId, 'name', e.target.value)}
+                          onFocus={(e) => { if (e.target.value === '') e.target.value = '' }}
+                          placeholder="Buscar producto..."
+                          className="w-full min-w-[220px] bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-sans placeholder:text-editorial-text-muted/50"
                         />
                       </td>
                       <td className="py-2 px-3">
-                        <input 
-                          type="number" step="0.01" min="0"
-                          value={item.purchasePrice || ''}
-                          onChange={(e) => handleUpdateItem(item.uiId, 'purchasePrice', Number(e.target.value))}
-                          className="w-full bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono"
-                          placeholder="0.00"
-                        />
+                        <div className="flex items-center gap-1">
+                          <input 
+                            type="number" step="0.01" min="0"
+                            value={item.quantityKg || ''}
+                            onChange={(e) => handleUpdateItem(item.uiId, 'quantityKg', Number(e.target.value))}
+                            className="w-16 bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono"
+                            placeholder="0"
+                          />
+                          <div className="flex bg-black/40 border border-editorial-border rounded overflow-hidden">
+                            {(['Kg', 'Bulto', 'Und'] as const).map(u => (
+                              <button
+                                key={u}
+                                onClick={() => handleUpdateItem(item.uiId, 'unit', u)}
+                                className={`px-2 py-1.5 text-[9px] font-mono font-bold transition-colors cursor-pointer ${item.unit === u || (!item.unit && u === 'Kg') ? 'bg-amber-500 text-white' : 'text-editorial-text-muted hover:text-white hover:bg-white/5'}`}
+                              >
+                                {u === 'Bulto' ? 'BTO' : u.toUpperCase()}
+                              </button>
+                            ))}
+                          </div>
+                          {item.unit === 'Bulto' && (
+                            <input 
+                              type="number" step="0.01" min="0"
+                              title="Contenido por bulto"
+                              value={item.contentPerBulto || ''}
+                              onChange={(e) => handleUpdateItem(item.uiId, 'contentPerBulto', Number(e.target.value))}
+                              className="w-16 bg-amber-500/10 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 focus:outline-none focus:border-amber-500 font-mono placeholder:text-amber-500/30"
+                              placeholder="Cnt/Blt"
+                            />
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-2 px-3">
+                        <div className="flex flex-col gap-1 relative">
+                          <input 
+                            type="number" step="0.01" min="0"
+                            value={item.purchasePrice || ''}
+                            onChange={(e) => handleUpdateItem(item.uiId, 'purchasePrice', Number(e.target.value))}
+                            className={`w-full bg-black/30 border rounded px-2 py-1.5 text-xs text-white focus:outline-none font-mono ${item.previousCost !== undefined && item.previousCost !== item.purchasePrice ? 'border-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.2)]' : 'border-editorial-border focus:border-amber-500'}`}
+                            placeholder="0.00"
+                          />
+                          {item.previousCost !== undefined && item.previousCost !== item.purchasePrice && (
+                            <div className="absolute -bottom-5 left-0 whitespace-nowrap bg-amber-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded shadow-lg animate-pulse z-10">
+                              ⚠️ Antes ${item.previousCost.toFixed(2)}
+                            </div>
+                          )}
+                        </div>
                       </td>
                       <td className="py-2 px-3">
                         <input 
@@ -403,6 +475,13 @@ export default function StockPurchasesView({
               </table>
             </div>
           )}
+
+          {/* Datalist for Product Autocomplete */}
+          <datalist id="inventory-products">
+            {products.map(p => (
+              <option key={p.id} value={p.name} />
+            ))}
+          </datalist>
 
           <div className="p-4 bg-black/20 border-t border-editorial-border flex justify-center">
             <button 
@@ -441,18 +520,10 @@ export default function StockPurchasesView({
 
             <div className="flex items-center justify-between p-4 bg-black/30 border border-editorial-border rounded">
               <div>
-                <span className="block text-[10px] font-mono text-editorial-text-muted uppercase">¿Compra a Crédito?</span>
-                <span className="text-xs text-editorial-text-primary font-sans">Generar cuenta en Libreta</span>
+                <span className="block text-[10px] font-mono text-amber-500 uppercase tracking-wider">MODO: CUENTAS POR PAGAR</span>
+                <span className="text-[10px] text-editorial-text-muted font-sans block mt-1">Toda la factura entrará como deuda.</span>
+                <span className="text-[10px] text-editorial-text-muted font-sans block">Los pagos se liquidan luego desde Bóveda.</span>
               </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input 
-                  type="checkbox" 
-                  className="sr-only peer" 
-                  checked={isCredit}
-                  onChange={(e) => setIsCredit(e.target.checked)}
-                />
-                <div className="w-11 h-6 bg-editorial-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
-              </label>
             </div>
           </div>
 
