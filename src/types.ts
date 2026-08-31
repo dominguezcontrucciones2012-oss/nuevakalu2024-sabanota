@@ -43,6 +43,8 @@ export interface Transaction {
   isVoided?: boolean;
   debtAmount?: number;
   createdAt?: number;
+  isClosed?: boolean;
+  closureId?: string;
 }
 
 export interface DebtInstallment {

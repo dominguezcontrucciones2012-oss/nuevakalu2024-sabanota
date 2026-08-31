@@ -624,33 +624,36 @@ export default function CheesePOSView({
     return 0;
   }, []);
 
-  const currentShiftDetails = React.useMemo(() => {
-    const latestClosing = closingsHistory
-      .filter(c => !c.purged)
-      .sort((a, b) => parseTime(b) - parseTime(a))[0];
+  React.useEffect(() => {
+    // Rutina de Auto-Saneamiento / Migración al Iniciar
+    const runMigration = async () => {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Inicio del día local
+      const startOfTodayMs = today.getTime();
       
-    const currentShiftStartTime = latestClosing ? parseTime(latestClosing) : 0;
-    const closingDateStr = latestClosing && !isNaN(currentShiftStartTime) ? new Date(currentShiftStartTime).toISOString().split('T')[0] : '';
+      const orphans = allTransactions.filter(t => !t.isClosed && parseTime(t) < startOfTodayMs);
+      
+      if (orphans.length > 0) {
+        console.log(`Migrando ${orphans.length} transacciones huérfanas a cerradas.`);
+        await Promise.all(
+          orphans.map(t => 
+            updateLocalDoc('transactions', t.id, { isClosed: true, closureId: 'CLO-LEGACY-MIGRATED' }).catch(console.error)
+          )
+        );
+      }
+    };
     
-    const currentShiftTransactions = allTransactions.filter(t => {
-      const tTime = parseTime(t);
-      if (tTime > currentShiftStartTime) return true;
-      if (!tTime || isNaN(tTime) || !closingDateStr) return false;
-      const tDateStr = new Date(tTime).toISOString().split('T')[0];
-      // Si fue el mismo dia y la transaccion no esta en el cierre anterior (mayor al cierre)
-      return tDateStr === closingDateStr && tTime > currentShiftStartTime;
-    });
+    if (allTransactions.length > 0) {
+      runMigration();
+    }
+  }, [allTransactions, parseTime]);
 
-    const currentShiftSales = validSalesHistory.filter(s => {
-      const sTime = parseTime(s);
-      if (sTime > currentShiftStartTime) return true;
-      if (!sTime || isNaN(sTime) || !closingDateStr) return false;
-      const sDateStr = new Date(sTime).toISOString().split('T')[0];
-      return sDateStr === closingDateStr && sTime > currentShiftStartTime;
-    });
+  const currentShiftDetails = React.useMemo(() => {
+    const currentShiftTransactions = allTransactions.filter(t => !t.isClosed && !t.isVoided);
+    const currentShiftSales = validSalesHistory.filter(s => !s.isClosed && !s.isVoided);
 
     return { currentShiftSales, currentShiftTransactions };
-  }, [closingsHistory, allTransactions, validSalesHistory, parseTime]);
+  }, [allTransactions, validSalesHistory]);
 
   const { currentShiftSales, currentShiftTransactions } = currentShiftDetails;
 
@@ -675,21 +678,26 @@ export default function CheesePOSView({
       ? parseTime(previousClosing)
       : 0;
       
-    const closingDateStr = closingTime && !isNaN(closingTime) ? new Date(closingTime).toISOString().split('T')[0] : '';
+    const closingDateObj = closingTime && !isNaN(closingTime) ? new Date(closingTime) : null;
+    const closingDateStr = closingDateObj ? `${closingDateObj.getFullYear()}-${String(closingDateObj.getMonth() + 1).padStart(2, '0')}-${String(closingDateObj.getDate()).padStart(2, '0')}` : '';
 
     const txsInShift = allTransactions.filter(t => {
+      if (t.closureId === selectedAuditClosing.id) return true;
       const tTime = parseTime(t);
       if (tTime >= startTime && tTime <= closingTime) return true;
       if (!tTime || isNaN(tTime) || !closingDateStr) return false;
-      const tDateStr = new Date(tTime).toISOString().split('T')[0];
+      const tDate = new Date(tTime);
+      const tDateStr = `${tDate.getFullYear()}-${String(tDate.getMonth() + 1).padStart(2, '0')}-${String(tDate.getDate()).padStart(2, '0')}`;
       return tDateStr === closingDateStr && tTime <= closingTime;
     });
 
     const salesInShift = validSalesHistory.filter(s => {
+       if (s.closureId === selectedAuditClosing.id) return true;
        const sTime = parseTime(s);
        if (sTime >= startTime && sTime <= closingTime) return true;
        if (!sTime || isNaN(sTime) || !closingDateStr) return false;
-       const sDateStr = new Date(sTime).toISOString().split('T')[0];
+       const sDate = new Date(sTime);
+       const sDateStr = `${sDate.getFullYear()}-${String(sDate.getMonth() + 1).padStart(2, '0')}-${String(sDate.getDate()).padStart(2, '0')}`;
        return sDateStr === closingDateStr && sTime <= closingTime;
     });
     
@@ -823,10 +831,18 @@ export default function CheesePOSView({
 
   const handlePerformClosing = async () => {
     if (isClosingDrawer) return;
+
+    if (currentShiftTransactions.length === 0) {
+      onAddNotification('Bloqueo: No hay transacciones pendientes para cerrar el turno.', 'warning');
+      return;
+    }
+
     setIsClosingDrawer(true);
     try {
-      // Create a deterministic ID with the exact timestamp
-      const deterministicId = `CLO-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`;
+      const now = new Date();
+      // YYYYMMDDHHmmss based on local time, safer than toISOString
+      const localTimestampStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+      const deterministicId = `CLO-${localTimestampStr}`;
       
       const report = {
         id: deterministicId,
@@ -865,6 +881,13 @@ export default function CheesePOSView({
         };
       
       await addLocalDoc('cashClosings', report);
+
+      // CIERRE FUERTE: Marcar todas las transacciones del turno
+      await Promise.all(
+        currentShiftTransactions.map(tx => 
+          updateLocalDoc('transactions', tx.id, { isClosed: true, closureId: deterministicId })
+        )
+      );
 
       // Actualizar Bóveda Central (única fuente de verdad) en Firebase
       const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
@@ -934,6 +957,9 @@ export default function CheesePOSView({
 
         // Find transactions to delete
         const txsToDelete = allTransactions.filter(t => {
+          if (t.closureId === closing.id) return true;
+          
+          // Fallback para cierres viejos
           const tTime = new Date(t.timestamp?.seconds ? t.timestamp.seconds * 1000 : t.timestamp).getTime();
           return tTime > startTime && tTime <= closingTime;
         });
@@ -1812,14 +1838,14 @@ export default function CheesePOSView({
                 </tr>
               </thead>
               <tbody className="divide-y divide-editorial-border/60 font-sans">
-                {salesHistory.length === 0 ? (
+                {currentShiftSales.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="py-8 text-center text-editorial-text-muted">
                       No se han procesado ventas en esta sesión.
                     </td>
                   </tr>
                 ) : (
-                  salesHistory.map((s) => (
+                  currentShiftSales.map((s) => (
                     <tr key={s.id} className="hover:bg-editorial-bg/40 transition-all">
                       <td className="py-3.5 px-4 font-mono font-bold text-editorial-text-primary">{s.invoiceNumber || s.id}</td>
                       <td className="py-3.5 px-4 text-editorial-text-muted">{s.date}</td>

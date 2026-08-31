@@ -1138,11 +1138,11 @@ export default function App() {
 
         let prod = cheeseProducts.find(p => p.id === item.productId);
 
-        if (item.createNewItem && !prod) {
+        if (!prod) {
           const newProdRef = doc(collection(db, 'products'));
           const newProd: CheeseProduct = {
             id: newProdRef.id,
-            name: item.name,
+            name: item.name || 'Producto Nuevo (IA)',
             category: 'Fresco', // Default or guess
             stockKg: item.quantityKg,
             purchasePrice: item.purchasePrice,
@@ -1150,13 +1150,13 @@ export default function App() {
             alertThreshold: 5,
             agingDays: 0,
             origin: selectedSup?.name || '',
-            unit: 'Kg'
+            unit: (item as any).unit === 'Bulto' ? 'Und' : ((item as any).unit || 'Kg')
           };
           await setDoc(newProdRef, newProd);
           prod = newProd;
           
           setCheeseProducts(prev => [...prev, newProd]);
-        } else if (prod) {
+        } else {
           const currentStock = prod.stockKg || 0;
           // Update product document atomically
           await updateDoc(doc(db, 'products', prod.id), {
@@ -1610,7 +1610,7 @@ export default function App() {
       />
 
       {/* Main Canvas Frame */}
-      <div className="flex-1 flex flex-col min-h-screen">
+      <div className="flex-1 min-w-0 flex flex-col min-h-screen">
         {/* Horizontal Navigation Header */}
         <Header
           currentView={currentView}
@@ -1622,7 +1622,7 @@ export default function App() {
         />
 
         {/* Scrollable Main View Stage */}
-        <main className="flex-1 p-6 sm:p-10 max-w-7xl mx-auto w-full overflow-y-auto">
+        <main className={`flex-1 p-6 sm:p-10 mx-auto w-full overflow-y-auto ${currentView === 'inventory' ? 'max-w-full' : 'max-w-7xl'}`}>
           {currentView === 'portal-dashboard' && (
             <DashboardView
               transactions={transactions}
@@ -1679,6 +1679,7 @@ export default function App() {
 
           {currentView === 'inventory' && (
             <CheeseInventoryView
+              isAdmin={currentUser?.role === 'admin'}
               products={cheeseProducts}
               batches={cheeseBatches}
               suppliers={suppliers}

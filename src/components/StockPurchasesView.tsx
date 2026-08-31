@@ -367,17 +367,17 @@ export default function StockPurchasesView({
               <p className="text-xs">Utiliza la IA o añade un producto manualmente para comenzar.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
+            <div className="overflow-x-auto overflow-y-auto max-h-[65vh]">
+              <table className="w-full min-w-[950px] text-left border-collapse text-xs">
+                <thead className="sticky top-0 z-20 bg-editorial-card">
                   <tr className="border-b border-editorial-border bg-black/40 font-mono text-[10px] text-editorial-text-muted uppercase tracking-wider">
-                    <th className="py-3 px-4 w-[32%]">Producto</th>
+                    <th className="py-3 px-4 w-[28%]">Producto</th>
                     <th className="py-3 px-3 w-[20%]">Cant. & Unidad</th>
-                    <th className="py-3 px-3 w-[12%]">Costo ($)</th>
-                    <th className="py-3 px-3 w-[12%]">% Ganancia</th>
-                    <th className="py-3 px-3 w-[12%] text-amber-500">P. Venta ($)</th>
+                    <th className="py-3 px-3 w-[13%]">Costo ($)</th>
+                    <th className="py-3 px-3 w-[13%]">% Ganancia</th>
+                    <th className="py-3 px-3 w-[13%] text-amber-500">P. Venta ($)</th>
                     <th className="py-3 px-3 w-[10%] text-right">Subtotal</th>
-                    <th className="py-3 px-2 w-[2%]"></th>
+                    <th className="py-3 px-2 w-[3%]"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-editorial-border/40">
@@ -400,17 +400,17 @@ export default function StockPurchasesView({
                             type="number" step="0.01" min="0"
                             value={item.quantityKg || ''}
                             onChange={(e) => handleUpdateItem(item.uiId, 'quantityKg', Number(e.target.value))}
-                            className="w-16 bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono"
+                            className="w-16 bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                             placeholder="0"
                           />
                           <div className="flex bg-black/40 border border-editorial-border rounded overflow-hidden">
-                            {(['Kg', 'Bulto', 'Und'] as const).map(u => (
+                            {(['Und', 'Bulto'] as const).map(u => (
                               <button
                                 key={u}
                                 onClick={() => handleUpdateItem(item.uiId, 'unit', u)}
-                                className={`px-2 py-1.5 text-[9px] font-mono font-bold transition-colors cursor-pointer ${item.unit === u || (!item.unit && u === 'Kg') ? 'bg-amber-500 text-white' : 'text-editorial-text-muted hover:text-white hover:bg-white/5'}`}
+                                className={`px-2 py-1.5 text-[9px] font-mono font-bold transition-colors cursor-pointer ${item.unit === u || (!item.unit && u === 'Und') ? 'bg-amber-500 text-white' : 'text-editorial-text-muted hover:text-white hover:bg-white/5'}`}
                               >
-                                {u === 'Bulto' ? 'BTO' : u.toUpperCase()}
+                                {u === 'Bulto' ? 'BTO' : 'UND'}
                               </button>
                             ))}
                           </div>
@@ -420,7 +420,7 @@ export default function StockPurchasesView({
                               title="Contenido por bulto"
                               value={item.contentPerBulto || ''}
                               onChange={(e) => handleUpdateItem(item.uiId, 'contentPerBulto', Number(e.target.value))}
-                              className="w-16 bg-amber-500/10 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 focus:outline-none focus:border-amber-500 font-mono placeholder:text-amber-500/30"
+                              className="w-16 bg-amber-500/10 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 focus:outline-none focus:border-amber-500 font-mono placeholder:text-amber-500/30 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                               placeholder="Cnt/Blt"
                             />
                           )}
@@ -432,7 +432,7 @@ export default function StockPurchasesView({
                             type="number" step="0.01" min="0"
                             value={item.purchasePrice || ''}
                             onChange={(e) => handleUpdateItem(item.uiId, 'purchasePrice', Number(e.target.value))}
-                            className={`w-full bg-black/30 border rounded px-2 py-1.5 text-xs text-white focus:outline-none font-mono ${item.previousCost !== undefined && item.previousCost !== item.purchasePrice ? 'border-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.2)]' : 'border-editorial-border focus:border-amber-500'}`}
+                            className={`w-full bg-black/30 border rounded px-2 py-1.5 text-xs text-white focus:outline-none font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${item.previousCost !== undefined && item.previousCost !== item.purchasePrice ? 'border-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.2)]' : 'border-editorial-border focus:border-amber-500'}`}
                             placeholder="0.00"
                           />
                           {item.previousCost !== undefined && item.previousCost !== item.purchasePrice && (
@@ -447,7 +447,7 @@ export default function StockPurchasesView({
                           type="number" step="0.1" min="0" max="99"
                           value={item.marginPercent.toFixed(1)}
                           onChange={(e) => handleUpdateItem(item.uiId, 'marginPercent', Number(e.target.value))}
-                          className="w-full bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-editorial-text-muted focus:outline-none focus:border-amber-500 font-mono"
+                          className="w-full bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                         />
                       </td>
                       <td className="py-2 px-3">
@@ -455,7 +455,7 @@ export default function StockPurchasesView({
                           type="number" step="0.01" min="0"
                           value={item.sellingPrice.toFixed(2)}
                           onChange={(e) => handleUpdateItem(item.uiId, 'sellingPrice', Number(e.target.value))}
-                          className="w-full bg-black/30 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 font-bold focus:outline-none focus:border-amber-500 font-mono"
+                          className="w-full bg-black/30 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 font-bold focus:outline-none focus:border-amber-500 font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                         />
                       </td>
                       <td className="py-2 px-3 text-right font-mono font-bold text-editorial-text-primary">
@@ -506,16 +506,28 @@ export default function StockPurchasesView({
           <div className="space-y-4">
             <div className="space-y-1.5">
               <label className="text-[10px] font-mono text-editorial-text-muted uppercase block tracking-wider">Productor / Proveedor</label>
-              <select 
-                value={supplierId}
-                onChange={(e) => setSupplierId(e.target.value)}
-                className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:outline-none focus:border-amber-500 cursor-pointer font-serif"
-              >
-                <option value="">Seleccione el proveedor...</option>
-                {suppliers.map(s => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
+              <input
+                type="text"
+                list="suppliers-list"
+                value={suppliers.find(s => s.id === supplierId)?.name || supplierId}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const matched = suppliers.find(s => s.name === val);
+                  if (matched) {
+                    setSupplierId(matched.id);
+                  } else {
+                    setSupplierId(val);
+                  }
+                }}
+                onFocus={(e) => { if (e.target.value === '') e.target.value = '' }}
+                placeholder="Seleccione o busque el proveedor..."
+                className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:outline-none focus:border-amber-500 font-serif placeholder:text-editorial-text-muted/50"
+              />
+              <datalist id="suppliers-list">
+                {suppliers.filter(s => !s.isCheeseProducer).map(s => (
+                  <option key={s.id} value={s.name} />
                 ))}
-              </select>
+              </datalist>
             </div>
 
             <div className="flex items-center justify-between p-4 bg-black/30 border border-editorial-border rounded">

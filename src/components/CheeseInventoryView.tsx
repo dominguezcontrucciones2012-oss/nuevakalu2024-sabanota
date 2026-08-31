@@ -1,33 +1,17 @@
-import React, { useState, useRef } from 'react';
-import { CheeseProduct, CheeseLedgerBatch, SupplierProfile } from '../types';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { 
+  Package, TrendingUp, AlertTriangle, ArrowUpRight, Search, Plus, Save, Download, 
+  Upload, Trash2, Edit3, X, Eye, FileText, ChevronDown, ChevronUp, Bot, Mic,
+  FileSpreadsheet, Brain, History, AlertCircle, TrendingDown, Edit2, Check,
+  Activity, Sparkles, RefreshCw, Clock, CheckCircle, Camera
+} from 'lucide-react';
+import { CheeseProduct, SupplierProfile, CheeseLedgerBatch } from '../types';
+import { processInventoryCommand, AIAction } from '../services/geminiInventoryAssistant';
 import StockPurchasesView, { PurchaseItem } from './StockPurchasesView';
 import { getUnitLabel, formatCurrency, formatQuantity, parseSafeDecimal } from '../utils';
-import {
-  Package,
-  Plus,
-  ArrowUpRight,
-  TrendingUp,
-  FileSpreadsheet,
-  Brain,
-  History,
-  AlertCircle,
-  TrendingDown,
-  Edit2,
-  Trash2,
-  Check,
-  Activity,
-  Upload,
-  Download,
-  Sparkles,
-  RefreshCw,
-  Clock,
-  CheckCircle,
-  Search,
-  X,
-  Camera
-} from 'lucide-react';
 
 interface CheeseInventoryViewProps {
+  isAdmin?: boolean;
   products: CheeseProduct[];
   batches: CheeseLedgerBatch[];
   suppliers: SupplierProfile[];
@@ -54,7 +38,8 @@ export default function CheeseInventoryView({
   onDeleteProduct,
   onLoadPurchase,
   onUpdateBatchWeight,
-  onAddNotification
+  onAddNotification,
+  isAdmin = false
 }: CheeseInventoryViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<'stock' | 'adjust' | 'purchase' | 'ledger' | 'ai' | 'excel'>('stock');
 
@@ -95,6 +80,170 @@ export default function CheeseInventoryView({
 
 
   const csvFileInputRef = useRef<HTMLInputElement>(null);
+
+  // ====== AI Assistant State ======
+  const [aiCommand, setAiCommand] = useState('');
+  const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [aiResultPanelOpen, setAiResultPanelOpen] = useState(false);
+  const [aiResponse, setAiResponse] = useState<{ message: string; actions: AIAction[] } | null>(null);
+  const [editableAIActions, setEditableAIActions] = useState<AIAction[]>([]);
+  const [selectedAIActionIndices, setSelectedAIActionIndices] = useState<Set<number>>(new Set());
+
+  const recognitionRef = useRef<any>(null);
+
+  const toggleVoiceRecognition = () => {
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      return;
+    }
+
+    if (!('webkitSpeechRecognition' in window)) {
+      onAddNotification('Su navegador no soporta entrada de voz.', 'warning');
+      return;
+    }
+    const recognition = new (window as any).webkitSpeechRecognition();
+    recognitionRef.current = recognition;
+    recognition.lang = 'es-ES';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onresult = (event: any) => {
+      let transcript = '';
+      for (let i = 0; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      setAiCommand(transcript);
+    };
+    recognition.onerror = (event: any) => {
+      console.error('Speech recognition error', event.error);
+      setIsListening(false);
+    };
+    recognition.onend = () => setIsListening(false);
+    
+    recognition.start();
+  };
+
+  const handleExecuteAICommand = async () => {
+    if (!aiCommand.trim()) return;
+    setIsAiProcessing(true);
+    setAiResultPanelOpen(true);
+    setAiResponse(null);
+    setEditableAIActions([]);
+    setSelectedAIActionIndices(new Set());
+    try {
+      const res = await processInventoryCommand(aiCommand, products);
+      setAiResponse(res);
+      setEditableAIActions(res.actions || []);
+      setSelectedAIActionIndices(new Set((res.actions || []).map((_, i) => i)));
+      setAiCommand(''); // clear input after execution
+    } catch (err: any) {
+      setAiResponse({ message: `Error: ${err.message}`, actions: [] });
+    } finally {
+      setIsAiProcessing(false);
+    }
+  };
+
+  const applySingleAIAction = async (action: AIAction, index: number) => {
+    try {
+      if (action.type === 'ADD_PRODUCT' && action.payload) {
+        await onAddProduct({
+          name: action.payload.name || 'Nuevo Producto AI',
+          category: action.payload.category || 'Genérico',
+          stockKg: action.payload.stockKg || 0,
+          purchasePrice: action.payload.purchasePrice || 0,
+          sellingPrice: action.payload.sellingPrice || 0,
+          alertThreshold: 5,
+          agingDays: 0,
+          origin: action.payload.origin || 'Asistente IA',
+          unit: action.payload.unit || 'Kg'
+        });
+      } else if (action.type === 'UPDATE_PRODUCT' && action.payload && action.payload.id) {
+        const { id, ...updates } = action.payload;
+        await onUpdateProduct(id, updates);
+      } else if (action.type === 'NOTIFY' && action.message) {
+        onAddNotification(action.message, 'info');
+      }
+      
+      onAddNotification('Acción aplicada correctamente', 'success');
+      // Remove this action from the pending list
+      setEditableAIActions(prev => prev.filter((_, i) => i !== index));
+      setSelectedAIActionIndices(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(index);
+        return newSet;
+      });
+      if (editableAIActions.length <= 1) {
+        setAiResultPanelOpen(false);
+        setAiResponse(null);
+      }
+    } catch (error) {
+      onAddNotification('Error al aplicar la acción', 'warning');
+    }
+  };
+
+  const executeBulkSelectedAIActions = async () => {
+    if (selectedAIActionIndices.size === 0) {
+      onAddNotification('No hay acciones seleccionadas para ejecutar.', 'warning');
+      return;
+    }
+    
+    let successCount = 0;
+    
+    for (const index of Array.from(selectedAIActionIndices)) {
+      const action = editableAIActions[index];
+      if (!action) continue;
+      
+      if (action.type === 'ADD_PRODUCT' && action.payload) {
+        await onAddProduct({
+          name: action.payload.name || 'Nuevo Producto AI',
+          category: action.payload.category || 'Genérico',
+          stockKg: action.payload.stockKg || 0,
+          purchasePrice: action.payload.purchasePrice || 0,
+          sellingPrice: action.payload.sellingPrice || 0,
+          alertThreshold: 5,
+          agingDays: 0,
+          origin: action.payload.origin || 'Asistente IA',
+          unit: action.payload.unit || 'Kg'
+        });
+        successCount++;
+      } else if (action.type === 'UPDATE_PRODUCT' && action.payload && action.payload.id) {
+        const { id, ...updates } = action.payload;
+        await onUpdateProduct(id, updates);
+        successCount++;
+      } else if (action.type === 'NOTIFY' && action.message) {
+        onAddNotification(action.message, 'info');
+      }
+    }
+    
+    if (successCount > 0) {
+      onAddNotification(`Se guardaron ${successCount} productos correctamente.`, 'success');
+      setAiResultPanelOpen(false);
+      setAiResponse(null);
+      setEditableAIActions([]);
+      setSelectedAIActionIndices(new Set());
+    }
+  };
+
+  const updateEditableAction = (index: number, field: string, value: any) => {
+    setEditableAIActions(prev => {
+      const newActions = [...prev];
+      if (newActions[index] && newActions[index].payload) {
+        newActions[index].payload = { ...newActions[index].payload, [field]: value };
+      }
+      return newActions;
+    });
+  };
+
+  const toggleAIActionSelection = (index: number) => {
+    setSelectedAIActionIndices(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(index)) newSet.delete(index);
+      else newSet.add(index);
+      return newSet;
+    });
+  };
 
   const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -379,6 +528,168 @@ export default function CheeseInventoryView({
           );
         })}
       </div>
+
+      {/* AI Assistant Console (Admin Only) */}
+      {isAdmin && (
+        <div className="bg-editorial-card border border-amber-500/30 rounded-lg p-4 shadow-sm relative overflow-hidden transition-all duration-300">
+          <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-full ${isAiProcessing ? 'bg-amber-500/20 text-amber-500 animate-pulse' : 'bg-editorial-bg text-amber-500'}`}>
+              <Bot className="w-5 h-5" />
+            </div>
+            <div className="flex-1 flex gap-2 relative">
+              <input
+                type="text"
+                value={aiCommand}
+                onChange={e => setAiCommand(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleExecuteAICommand()}
+                placeholder="Ej: Crea Harina Pan, costo 1, venta 2, categoría Secos..."
+                className="w-full h-10 pl-4 pr-12 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none focus:border-amber-500 font-sans transition-colors"
+                disabled={isAiProcessing}
+              />
+              <button
+                type="button"
+                onClick={toggleVoiceRecognition}
+                disabled={isAiProcessing}
+                className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-full transition-colors cursor-pointer ${
+                  isListening ? 'bg-rose-500 text-white animate-pulse' : 'text-editorial-text-muted hover:text-amber-500'
+                }`}
+                title={isListening ? 'Detener grabación' : 'Dictar por voz'}
+              >
+                <Mic className="w-4 h-4" />
+              </button>
+            </div>
+            <button
+              onClick={handleExecuteAICommand}
+              disabled={isAiProcessing || !aiCommand.trim()}
+              className="px-4 py-2 bg-amber-500 text-white font-serif font-bold text-[10px] tracking-wider uppercase rounded hover:brightness-110 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer"
+            >
+              {isAiProcessing ? 'Procesando...' : 'Ejecutar orden'}
+            </button>
+          </div>
+
+          {/* AI Result Panel Dropdown */}
+          {aiResultPanelOpen && (
+            <div className="mt-4 pt-4 border-t border-editorial-border/40 animate-fade-in">
+              <div className="flex justify-between items-start mb-3">
+                <h4 className="text-sm font-bold text-editorial-text-primary flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-amber-500" /> Respuesta del Asistente
+                </h4>
+                <button onClick={() => setAiResultPanelOpen(false)} className="text-editorial-text-muted hover:text-rose-400 cursor-pointer">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              
+              {aiResponse ? (
+                <div className="space-y-3">
+                  <p className="text-xs text-editorial-text-muted">{aiResponse.message}</p>
+                  
+                  {editableAIActions && editableAIActions.length > 0 && (
+                    <div className="bg-editorial-bg border border-editorial-border rounded p-3">
+                      <div className="flex justify-between items-center mb-3">
+                        <p className="text-[10px] font-mono font-bold uppercase text-editorial-text-primary">
+                          Acciones a ejecutar ({selectedAIActionIndices.size} de {editableAIActions.length}):
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setAiResultPanelOpen(false)}
+                            className="px-3 py-1.5 bg-editorial-card border border-editorial-border text-editorial-text-primary font-bold text-[10px] tracking-wider uppercase rounded hover:text-rose-400 transition-all cursor-pointer"
+                          >
+                            ❌ Cancelar
+                          </button>
+                          <button
+                            onClick={executeBulkSelectedAIActions}
+                            disabled={selectedAIActionIndices.size === 0}
+                            className="px-3 py-1.5 bg-emerald-500 text-white font-bold text-[10px] tracking-wider uppercase rounded hover:brightness-110 active:scale-95 disabled:opacity-50 transition-all cursor-pointer"
+                          >
+                            ✅ Aplicar Seleccionadas
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="max-h-96 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                        {editableAIActions.map((act, i) => {
+                          const isSelected = selectedAIActionIndices.has(i);
+                          const isProductAction = act.type === 'ADD_PRODUCT' || act.type === 'UPDATE_PRODUCT';
+                          const prodName = act.type === 'UPDATE_PRODUCT' ? products.find(p => p.id === act.payload?.id)?.name || `ID: ${act.payload?.id}` : act.payload?.name;
+
+                          return (
+                            <div key={i} className={`p-2 rounded border flex flex-wrap gap-3 items-center transition-all ${isSelected ? 'bg-editorial-card border-amber-500/50' : 'bg-editorial-bg border-editorial-border opacity-60'}`}>
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => toggleAIActionSelection(i)}
+                                className="w-4 h-4 rounded border-editorial-border text-amber-500 focus:ring-amber-500 cursor-pointer"
+                              />
+                              
+                              <div className="flex flex-col min-w-[150px] flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${
+                                    act.type === 'ADD_PRODUCT' ? 'bg-emerald-500/20 text-emerald-400' :
+                                    act.type === 'UPDATE_PRODUCT' ? 'bg-amber-500/20 text-amber-400' :
+                                    'bg-rose-500/20 text-rose-400'
+                                  }`}>
+                                    {act.type}
+                                  </span>
+                                  <span className="text-xs font-bold text-editorial-text-primary truncate">
+                                    {isProductAction ? prodName : (act.message || 'Notificación')}
+                                  </span>
+                                </div>
+                                {act.type === 'UPDATE_PRODUCT' && (
+                                  <span className="text-[10px] text-editorial-text-muted mt-0.5">ID: {act.payload?.id}</span>
+                                )}
+                              </div>
+
+                              {isProductAction && (
+                                <>
+                                  <select
+                                    value={act.payload?.category || ''}
+                                    onChange={e => updateEditableAction(i, 'category', e.target.value)}
+                                    className="h-8 px-2 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none focus:border-amber-500 cursor-pointer"
+                                  >
+                                    <option value="">(Categoría)</option>
+                                    <option value="Repuestos">Repuestos</option>
+                                    <option value="Charcutería">Charcutería</option>
+                                    <option value="Víveres">Víveres</option>
+                                    <option value="Genérico">Genérico</option>
+                                  </select>
+                                  
+                                  <select
+                                    value={act.payload?.unit || ''}
+                                    onChange={e => updateEditableAction(i, 'unit', e.target.value)}
+                                    className="h-8 px-2 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none focus:border-amber-500 cursor-pointer"
+                                  >
+                                    <option value="">(Unidad)</option>
+                                    <option value="Kg">Kg</option>
+                                    <option value="Und">Und</option>
+                                    <option value="Bto">Bto</option>
+                                    <option value="Lt">Lt</option>
+                                  </select>
+                                </>
+                              )}
+
+                              <button
+                                onClick={() => applySingleAIAction(act, i)}
+                                className="ml-auto px-2 py-1 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500 hover:text-white border border-emerald-500/30 font-bold text-[10px] rounded transition-all cursor-pointer"
+                                title="Aplicar solo este cambio"
+                              >
+                                ✔️ Aplicar
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-xs text-editorial-text-muted flex items-center gap-2">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Analizando tu orden...
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {activeSubTab === 'stock' && (
         <div className="space-y-6">

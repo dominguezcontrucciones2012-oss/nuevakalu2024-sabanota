@@ -75,38 +75,62 @@ export async function extractInvoiceData(file: File, bcvRate: number, inventoryN
     }
   };
 
-  try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload)
-    });
+  const maxRetries = 3;
+  let attempt = 0;
 
-    if (!response.ok) {
-      const errBody = await response.text();
-      console.error('Gemini API Error:', errBody);
-      throw new Error(`Error de Google (HTTP ${response.status}): Revisa la consola o tu VPN.`);
-    }
+  while (attempt < maxRetries) {
+    try {
+      // Intentos 0 y 1: gemini-2.5-flash. Intento 2 (respaldo): gemini-2.5-pro
+      const model = attempt < 2 ? 'gemini-2.5-flash' : 'gemini-2.5-pro';
+      
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload)
+      });
 
-    const data = await response.json();
-    
-    if (data.candidates && data.candidates.length > 0) {
-      let textResponse = data.candidates[0].content.parts[0].text;
+      if (!response.ok) {
+        const errBody = await response.text();
+        console.error(`Gemini API Error (Intento ${attempt + 1} con ${model}):`, errBody);
+        
+        if (response.status === 503 || response.status === 429 || response.status >= 500) {
+          throw new Error(`RETRY_ERROR_${response.status}`);
+        }
+        throw new Error(`FATAL: Error de Google (HTTP ${response.status}): Revisa la consola o tu VPN.`);
+      }
+
+      const data = await response.json();
       
-      // Limpiar formato markdown (```json ... ```) si viene incluido
-      textResponse = textResponse.replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
+      if (data.candidates && data.candidates.length > 0) {
+        let textResponse = data.candidates[0].content.parts[0].text;
+        
+        textResponse = textResponse.replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
+        
+        const parsedJson = JSON.parse(textResponse) as InvoiceData;
+        return parsedJson;
+      } else {
+        throw new Error('Respuesta de IA vacía o formato incorrecto.');
+      }
+    } catch (error: any) {
+      if (error.message && error.message.startsWith('FATAL:')) {
+        throw new Error(error.message.replace('FATAL: ', ''));
+      }
       
-      const parsedJson = JSON.parse(textResponse) as InvoiceData;
-      return parsedJson;
-    } else {
-      throw new Error('Respuesta de IA vacía o formato incorrecto.');
+      attempt++;
+      if (attempt >= maxRetries) {
+        console.error('Error procesando OCR tras varios intentos:', error);
+        throw new Error('Fallo al extraer los datos de la factura con IA tras múltiples reintentos.');
+      }
+      
+      const pauseMs = attempt === 1 ? 1500 : 3000;
+      console.warn(`Reintentando OCR en ${pauseMs}ms... (Intento ${attempt + 1}/${maxRetries}). Error previo: ${error.message}`);
+      await new Promise(res => setTimeout(res, pauseMs));
     }
-  } catch (error: any) {
-    console.error('Error procesando OCR:', error);
-    throw new Error(error.message || 'Fallo al extraer los datos de la factura con IA.');
   }
+  
+  throw new Error('Fallo inesperado en el flujo de OCR.');
 }
 
 function fileToBase64(file: File): Promise<string> {
