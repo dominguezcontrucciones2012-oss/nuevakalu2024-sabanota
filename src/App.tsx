@@ -1514,6 +1514,18 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    import('./services/exchangeRateService').then(({ fetchOfficialBcvRate }) => {
+      fetchOfficialBcvRate()
+        .then(({ rate, timestamp }) => {
+          handleUpdateSettings({ exchangeRate: rate, lastRateSync: timestamp });
+          addNotification(`Tasa BCV auto-sincronizada a ${rate}`, 'success');
+        })
+        .catch(err => console.warn("Fallo auto-sync BCV al iniciar", err));
+    });
+  }, []); // Run once on mount
+
+
   const handleResetAccounting = async () => {
     // Import dynamically or assume it's imported (wait, let me import it at the top)
     // Wipe local state
