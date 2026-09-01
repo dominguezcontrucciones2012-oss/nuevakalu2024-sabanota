@@ -1360,7 +1360,7 @@ export default function App() {
         notes: notes || 'Abono de Cuenta por Cobrar',
         paidAmount: amount,
         debtAmount: 0,
-        exchangeRate: settings.exchangeRate || 45.00,
+        exchangeRate: settings.exchangeRate || 0,
         paymentBreakdown: paymentBreakdown || null,
         isAbono: true
       };
@@ -1507,7 +1507,11 @@ export default function App() {
   const handleUpdateSettings = async (newSettings: Partial<BusinessSettings>) => {
     setSettings((prev) => ({ ...prev, ...newSettings })); // Optimistic update
     try {
-      await addLocalDoc('settings', newSettings);
+      try {
+        await updateLocalDoc('settings', 'general', newSettings);
+      } catch (err) {
+        await addLocalDoc('settings', { id: 'general', ...newSettings });
+      }
     } catch (error) {
       console.error("Error saving settings to Local API:", error);
       addNotification("Error de red: La tasa y ajustes se guardaron solo localmente.", "warning");
@@ -1609,7 +1613,7 @@ export default function App() {
           notificationCount={complaints.filter(c => c.status === 'Pendiente').length + mobileOrders.filter(o => o.status === 'Pendiente').length}
           isSidebarOpen={isSidebarOpen}
           onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
-          exchangeRate={settings.exchangeRate || 45.00}
+          exchangeRate={settings.exchangeRate || 0}
         />
 
         {/* Scrollable Main View Stage */}
@@ -1635,7 +1639,7 @@ export default function App() {
 
           {currentView === 'pos-terminal' && (
             <CheesePOSView
-              exchangeRate={settings.exchangeRate || 45.00}
+              exchangeRate={settings.exchangeRate || 0}
               settings={settings}
               onUpdateSettings={handleUpdateSettings}
               products={cheeseProducts}
@@ -1763,7 +1767,7 @@ export default function App() {
             <ContadorIAView 
               isAdmin={currentUser?.role === 'admin'} 
               vaultBalance={settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 }}
-              exchangeRate={settings.exchangeRate || 45.00}
+              exchangeRate={settings.exchangeRate || 0}
               cheeseTrips={cheeseTrips}
               cheeseProducts={cheeseProducts}
               clients={clients}
