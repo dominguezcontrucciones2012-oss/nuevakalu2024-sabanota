@@ -9,7 +9,7 @@ export async function fetchOfficialBcvRate(): Promise<{ rate: number; timestamp:
     const fallbackData = await fallbackRes.json();
     if (fallbackData && fallbackData.monitors && fallbackData.monitors.usd && fallbackData.monitors.usd.price) {
        const rate = fallbackData.monitors.usd.price;
-       if (rate > 100 || rate < 10) throw new Error('Tasa anómala descartada');
+       if (!rate || isNaN(rate) || rate <= 0) throw new Error('Tasa inválida');
        return { rate, timestamp: new Date().toISOString() };
     }
   } catch (error) {
@@ -24,7 +24,7 @@ export async function fetchOfficialBcvRate(): Promise<{ rate: number; timestamp:
       const data = await res.json();
       if (data && typeof data.promedio === 'number') {
         const rate = data.promedio;
-        if (rate > 100 || rate < 10) throw new Error('Tasa anómala descartada');
+        if (!rate || isNaN(rate) || rate <= 0) throw new Error('Tasa inválida');
         return { rate, timestamp: new Date().toISOString() };
       }
     } catch (fallbackError) {

@@ -117,13 +117,19 @@ export default function Header({ currentView, notificationCount, isSidebarOpen =
 
       {/* Right Area: Exchange Rate, Network Controls & Gateway Status */}
       <div className="flex items-center gap-2 md:gap-4 flex-wrap justify-end">
-        {exchangeRate > 0 && (
-          <div className="flex items-center gap-2 bg-amber-500/10 px-2 md:px-3 py-1.5 md:py-2 rounded border border-amber-500/30 w-fit animate-in fade-in duration-500">
-            <span className="text-[10px] md:text-xs font-bold text-amber-500 tracking-widest font-mono">
-              <span className="hidden md:inline">TASA BCV: </span>Bs. {exchangeRate.toFixed(2)}
-            </span>
-          </div>
-        )}
+        {/* Exchange Rate Box (Always visible) */}
+        <div className={`flex items-center gap-2 px-2 md:px-3 py-1.5 md:py-2 rounded border w-fit animate-in fade-in duration-500 ${
+          exchangeRate > 0 
+            ? 'bg-amber-500/10 border-amber-500/30' 
+            : 'bg-rose-500/10 border-rose-500/30'
+        }`}>
+          <span className={`text-[10px] md:text-xs font-bold tracking-widest font-mono ${
+            exchangeRate > 0 ? 'text-amber-500' : 'text-rose-500'
+          }`}>
+            <span className="hidden md:inline">TASA BCV: </span>
+            {exchangeRate > 0 ? `Bs. ${exchangeRate.toFixed(2)}` : 'NO SYNC (0.00)'}
+          </span>
+        </div>
         
         {/* Network Toggle Controls */}
         <div className="flex bg-editorial-card border border-editorial-border rounded overflow-hidden h-[28px] md:h-[34px]">
