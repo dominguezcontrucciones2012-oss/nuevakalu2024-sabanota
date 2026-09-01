@@ -89,7 +89,7 @@ export default function Header({ currentView, notificationCount, isSidebarOpen =
   const meta = getViewMeta();
 
   return (
-    <header className="h-20 border-b border-editorial-border bg-editorial-bg sticky top-0 z-30 px-10 flex items-center justify-between select-none">
+    <header className="h-20 border-b border-editorial-border bg-editorial-bg sticky top-0 z-40 px-10 flex items-center justify-between select-none">
       {/* Left Area: Editorial Index & Breadcrumb */}
       <div className="flex items-center gap-6">
         <button

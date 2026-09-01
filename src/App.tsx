@@ -1610,6 +1610,7 @@ export default function App() {
           handleUpdateSettings({ exchangeRate: rate, lastRateSync: date });
           addNotification(`Tasa BCV actualizada a ${rate}`, 'success');
         }}
+        onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
       />
 
       {/* Main Canvas Frame */}
