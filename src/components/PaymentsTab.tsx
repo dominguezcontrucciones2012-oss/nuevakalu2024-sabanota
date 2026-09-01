@@ -75,7 +75,7 @@ export default function PaymentsTab({
   const submitPayment = async () => {
     if (!selectedDebt || !clientData?.id) return;
 
-    const saleInstallments = debtList.filter(i => (i.saleId === selectedDebt.saleId || (i as any).transactionId === (selectedDebt as any).transactionId) && i.status !== 'paid');
+    const saleInstallments = debtList.filter(i => ((i as any).saleId === (selectedDebt as any).saleId || (i as any).transactionId === (selectedDebt as any).transactionId) && i.status !== 'paid');
     const isFullSalePayment = paymentType === 'venta_completa';
     
     const installmentIds = isFullSalePayment ? saleInstallments.map(i => i.id) : [selectedDebt.id];
@@ -250,7 +250,7 @@ export default function PaymentsTab({
 
       {/* Immersive Payment Modal */}
       {showPaymentModal && selectedDebt && (() => {
-        const saleInstallments = debtList.filter(i => (i.saleId === selectedDebt.saleId || (i as any).transactionId === (selectedDebt as any).transactionId) && i.status !== 'paid');
+        const saleInstallments = debtList.filter(i => ((i as any).saleId === (selectedDebt as any).saleId || (i as any).transactionId === (selectedDebt as any).transactionId) && i.status !== 'paid');
         const saleTotalUSD = saleInstallments.reduce((acc, curr) => acc + (Number((curr as any).amountUSD) || Number(curr.amount) || 0), 0);
         const safeSingleUSD = Number((selectedDebt as any).amountUSD) || Number(selectedDebt.amount) || 0;
         
