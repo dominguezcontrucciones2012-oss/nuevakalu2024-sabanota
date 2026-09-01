@@ -177,6 +177,67 @@ const writeCollection = (name, data, delta = null) => {
   }
 };
 
+app.get('/api/sync-rate', async (req, res) => {
+  try {
+    let rate = 0;
+    
+    // First provider
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+      const resp = await fetch('https://ve.dolarapi.com/v1/dolares/oficial', { signal: controller.signal });
+      clearTimeout(timeout);
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && typeof data.promedio === 'number' && data.promedio > 0) {
+          rate = data.promedio;
+        }
+      }
+    } catch(e) {
+      console.warn("dolarapi failed", e.message);
+    }
+
+    // Second provider fallback
+    if (rate <= 0) {
+      try {
+        const controller2 = new AbortController();
+        const timeout2 = setTimeout(() => controller2.abort(), 4000);
+        const resp2 = await fetch('https://pydolarvenezuela-api.vercel.app/api/v1/dollar?page=bcv', { signal: controller2.signal });
+        clearTimeout(timeout2);
+        if (resp2.ok) {
+          const data2 = await resp2.json();
+          if (data2 && data2.monitors && data2.monitors.usd && data2.monitors.usd.price > 0) {
+            rate = data2.monitors.usd.price;
+          }
+        }
+      } catch(e2) {
+        console.warn("pydolarve failed", e2.message);
+      }
+    }
+
+    if (rate > 0) {
+      // Update DB
+      const data = readCollection('settings');
+      let index = data.findIndex(d => String(d.id) === 'general');
+      const timestamp = new Date().toISOString();
+      if (index !== -1) {
+        data[index] = { ...data[index], exchangeRate: rate, lastRateSync: timestamp };
+        writeCollection('settings', data, { action: 'update', collection: 'settings', doc: data[index] });
+      } else {
+        const newDoc = { id: 'general', exchangeRate: rate, lastRateSync: timestamp };
+        data.push(newDoc);
+        writeCollection('settings', data, { action: 'add', collection: 'settings', doc: newDoc });
+      }
+      return res.json({ success: true, rate, timestamp });
+    } else {
+      return res.status(500).json({ error: 'Failed to fetch valid rate from any provider' });
+    }
+  } catch(error) {
+    console.error("Error in sync-rate", error);
+    res.status(500).json({ error: 'Internal server error during sync' });
+  }
+});
+
 app.get('/api/collections/:name', (req, res) => {
   try {
     const data = readCollection(req.params.name);

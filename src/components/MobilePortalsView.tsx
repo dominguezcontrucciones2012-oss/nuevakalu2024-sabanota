@@ -135,8 +135,13 @@ export default function MobilePortalsView({
   React.useEffect(() => {
     const unsubSettings = onCollectionSnapshot('settings', (docs) => {
       const general = docs.find((d: any) => d.id === 'general');
-      if (general && general.exchangeRate) {
+      if (general && general.exchangeRate > 0) {
         setPwaBcvRate(general.exchangeRate);
+      } else {
+        const cached = localStorage.getItem('kalu_bcv_rate');
+        if (cached && parseFloat(cached) > 0) {
+          setPwaBcvRate(parseFloat(cached));
+        }
       }
     });
     return () => { unsubSettings(); };
@@ -184,6 +189,24 @@ export default function MobilePortalsView({
        unsubPayments();
     };
   }, [loggedClient]);
+
+  React.useEffect(() => {
+    const syncRate = () => {
+      import('../services/exchangeRateService').then(({ fetchOfficialBcvRate }) => {
+        fetchOfficialBcvRate()
+          .then(({ rate }) => {
+            if (rate > 0) {
+              setPwaBcvRate(rate);
+              localStorage.setItem('kalu_bcv_rate', rate.toString());
+            }
+          })
+          .catch(() => {});
+      });
+    };
+    syncRate();
+    window.addEventListener('focus', syncRate);
+    return () => window.removeEventListener('focus', syncRate);
+  }, []);
 
   React.useEffect(() => {
     const savedTab = localStorage.getItem('kaluMobileClientTab') as any;

@@ -158,3 +158,12 @@ export const clearCollection = async (collectionName: string) => {
   if (!res.ok) throw new Error(`Failed to clear ${collectionName}`);
   return await res.json();
 };
+
+export const callSyncRate = async () => {
+  const res = await fetch(`${API_URL}/sync-rate`);
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || 'Failed to sync rate from backend');
+  }
+  return await res.json();
+};

@@ -1519,16 +1519,23 @@ export default function App() {
   };
 
   useEffect(() => {
-    import('./services/exchangeRateService').then(({ fetchOfficialBcvRate }) => {
-      fetchOfficialBcvRate()
-        .then(({ rate, timestamp }) => {
-          handleUpdateSettings({ exchangeRate: rate, lastRateSync: timestamp });
-          addNotification(`Tasa BCV auto-sincronizada a ${rate}`, 'success');
-        })
-        .catch(err => console.warn("Fallo auto-sync BCV al iniciar", err));
-    });
-  }, []); // Run once on mount
-
+    const syncRate = () => {
+      import('./services/exchangeRateService').then(({ fetchOfficialBcvRate }) => {
+        fetchOfficialBcvRate()
+          .then(({ rate, timestamp }) => {
+            handleUpdateSettings({ exchangeRate: rate, lastRateSync: timestamp });
+          })
+          .catch(err => console.warn("Fallo auto-sync BCV", err));
+      });
+    };
+    
+    // Run once on mount
+    syncRate();
+    
+    // Run on window focus to ensure fresh rate
+    window.addEventListener('focus', syncRate);
+    return () => window.removeEventListener('focus', syncRate);
+  }, []);
 
   const handleResetAccounting = async () => {
     // Import dynamically or assume it's imported (wait, let me import it at the top)
