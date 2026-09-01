@@ -156,7 +156,8 @@ export default function PaymentsTab({
               (() => {
                 const groups: Record<string, DebtInstallment[]> = {};
                 debtList.forEach(debt => {
-                  const txId = (debt as any).transactionId || (debt as any).saleId || 'Sin Referencia';
+                  const fallbackDate = debt.dueDate ? new Date(debt.dueDate).toLocaleDateString('es-ES') : 'Deuda Antigua';
+                  const txId = (debt as any).transactionId || (debt as any).saleId || `Compra del ${fallbackDate}`;
                   if (!groups[txId]) groups[txId] = [];
                   groups[txId].push(debt);
                 });
@@ -164,19 +165,23 @@ export default function PaymentsTab({
                   const group = groups[txId];
                   const isExpanded = expandedTx === txId;
                   const totalGroupUSD = group.reduce((sum, d) => sum + (Number((d as any).amountUSD) || Number(d.amount) || 0), 0);
+                  
+                  const isFallback = txId.startsWith('Compra del');
+                  const headerTitle = isFallback ? txId : `Venta #${txId.slice(-6)}`;
+
                   return (
-                    <div key={txId} className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-sm">
+                    <div key={txId} className="bg-zinc-900 border border-emerald-500/20 rounded-2xl overflow-hidden shadow-sm">
                       <div 
                         onClick={() => setExpandedTx(isExpanded ? null : txId)}
                         className="p-4 flex justify-between items-center cursor-pointer hover:bg-zinc-800/50 transition-colors"
                       >
                         <div>
-                          <h4 className="font-bold text-sm text-zinc-100 uppercase">Venta #{txId.slice(-6)}</h4>
+                          <h4 className="font-bold text-sm text-zinc-100 uppercase">{headerTitle}</h4>
                           <p className="text-[10px] text-zinc-400 mt-0.5">{group.length} Cuota{group.length > 1 ? 's' : ''} pendiente{group.length > 1 ? 's' : ''}</p>
                         </div>
                         <div className="text-right">
                           <p className="font-black text-white text-lg">${totalGroupUSD.toFixed(2)}</p>
-                          <p className="text-[9px] text-emerald-500 font-bold uppercase mt-1">{isExpanded ? 'Ocultar' : 'Ver detalle'}</p>
+                          <p className="text-[9px] text-emerald-500 font-bold uppercase mt-1">{isExpanded ? 'Cerrar' : 'Ver Deuda'}</p>
                         </div>
                       </div>
                       
@@ -187,7 +192,7 @@ export default function PaymentsTab({
                               <div className="flex justify-between items-start">
                                 <div>
                                   <p className="text-xs font-bold text-zinc-200 uppercase">Cuota {(debt as any).installmentNumber || index + 1} de {(debt as any).totalInstallments || group.length}</p>
-                                  <p className="text-[10px] text-zinc-400">Vence: {new Date(debt.dueDate).toLocaleDateString('es-ES')}</p>
+                                  <p className="text-[10px] text-zinc-400">Vence: {debt.dueDate ? new Date(debt.dueDate).toLocaleDateString('es-ES') : 'Sin fecha'}</p>
                                 </div>
                                 <div className="text-right">
                                   <p className="font-black text-white text-sm">${Number((debt as any).amountUSD || debt.amount || 0).toFixed(2)}</p>

@@ -127,8 +127,20 @@ export default function MobilePortalsView({
   // Real-Time Sync: Aprobación de Crédito (Cashea Style)
   const [pendingCreditRequest, setPendingCreditRequest] = useState<any>(null);
 
+  const [pwaBcvRate, setPwaBcvRate] = useState<number>(0);
+  
   const [activeInstallments, setActiveInstallments] = useState<any[]>([]);
   const [paymentHistory, setPaymentHistory] = useState<any[]>([]);
+
+  React.useEffect(() => {
+    const unsubSettings = onCollectionSnapshot('settings', (docs) => {
+      const general = docs.find((d: any) => d.id === 'general');
+      if (general && general.exchangeRate) {
+        setPwaBcvRate(general.exchangeRate);
+      }
+    });
+    return () => { unsubSettings(); };
+  }, []);
 
   React.useEffect(() => {
     if (!loggedClient) {
@@ -795,7 +807,7 @@ export default function MobilePortalsView({
 
                   {clientActiveTab === 'pagos' && (
                     <PaymentsTab
-                      bcvRate={36.5}
+                      bcvRate={pwaBcvRate || 36.50} // Fallback to 36.50 if not loaded
                       clientData={loggedClient}
                       activeInstallments={activeInstallments}
                       paymentHistory={paymentHistory}
