@@ -206,7 +206,7 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }
               </div>
             </div>
             
-            {Number(qrPaymentAmount || 0) > 0 && (() => {
+            {Number(qrPaymentAmount || 0) > 0 && !fetchedTx && (() => {
               const amount = Number(qrPaymentAmount || 0);
               const level = getClientLevelInfo((loggedClient as any)?.loyaltyPoints || 0).level;
               const inicialPct = level >= 5 ? 0.10 : level >= 3 ? 0.15 : 0.20;

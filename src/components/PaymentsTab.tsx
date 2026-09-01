@@ -6,6 +6,8 @@ import { ClientProfile, DebtInstallment, Transaction } from '../types';
 interface PaymentsTabProps {
   bcvRate: number;
   clientData: ClientProfile;
+  activeInstallments: DebtInstallment[];
+  paymentHistory: Transaction[];
   onNavigateTab?: (tab: any) => void;
   onAddNotification?: (msg: string, type: 'success'|'info'|'warning') => void;
 }
@@ -13,6 +15,8 @@ interface PaymentsTabProps {
 export default function PaymentsTab({
   bcvRate,
   clientData,
+  activeInstallments,
+  paymentHistory,
   onNavigateTab,
   onAddNotification
 }: PaymentsTabProps) {
@@ -20,34 +24,9 @@ export default function PaymentsTab({
   const [selectedDebt, setSelectedDebt] = useState<DebtInstallment | null>(null);
   const [selectedBank, setSelectedBank] = useState<'0102' | '0134'>('0102');
   const [paymentType, setPaymentType] = useState<'cuota' | 'venta_completa' | 'parcial'>('cuota');
+  const [expandedTx, setExpandedTx] = useState<string | null>(null);
   
-  // Real-time Data
-  const [debtList, setDebtList] = useState<DebtInstallment[]>([]);
-  const [paymentHistory, setPaymentHistory] = useState<Transaction[]>([]);
-
-  useEffect(() => {
-    if (!clientData?.id) return;
-    // 1. Escuchar Cuotas Pendientes
-    const unsubDebts = onCollectionSnapshot('installments', (data) => {
-      const debts = data.filter((d: any) => d.clientId === clientData.id && d.status === 'pending') as DebtInstallment[];
-      // Sort by due date
-      debts.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
-      setDebtList(debts);
-    });
-
-    // 2. Escuchar Historial de Pagos
-    const unsubPayments = onCollectionSnapshot('transactions', (data) => {
-      const payments = data.filter((d: any) => d.clientId === clientData.id && d.category === 'ingresos_cobranza') as Transaction[];
-      // Sort desc
-      payments.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      setPaymentHistory(payments);
-    });
-
-    return () => {
-      unsubDebts();
-      unsubPayments();
-    };
-  }, [clientData?.id]);
+  const debtList = activeInstallments;
 
   // Modal forms
   const [paymentAmountBs, setPaymentAmountBs] = useState<string>('');
@@ -174,26 +153,60 @@ export default function PaymentsTab({
                 <p className="text-xs text-zinc-400">No tienes deudas pendientes</p>
               </div>
             ) : (
-              debtList.map(debt => (
-                <div key={debt.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 shadow-sm flex flex-col gap-3 relative overflow-hidden">
-                  <div className="flex justify-between items-start z-10">
-                    <div>
-                      <h4 className="font-bold text-sm text-zinc-100">Abono a Crédito</h4>
-                      <p className="text-[10px] text-zinc-400 mt-0.5">Vence: {new Date(debt.dueDate).toLocaleDateString('es-ES')}</p>
+              (() => {
+                const groups: Record<string, DebtInstallment[]> = {};
+                debtList.forEach(debt => {
+                  const txId = (debt as any).transactionId || (debt as any).saleId || 'Sin Referencia';
+                  if (!groups[txId]) groups[txId] = [];
+                  groups[txId].push(debt);
+                });
+                return Object.keys(groups).map(txId => {
+                  const group = groups[txId];
+                  const isExpanded = expandedTx === txId;
+                  const totalGroupUSD = group.reduce((sum, d) => sum + (Number((d as any).amountUSD) || Number(d.amount) || 0), 0);
+                  return (
+                    <div key={txId} className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-sm">
+                      <div 
+                        onClick={() => setExpandedTx(isExpanded ? null : txId)}
+                        className="p-4 flex justify-between items-center cursor-pointer hover:bg-zinc-800/50 transition-colors"
+                      >
+                        <div>
+                          <h4 className="font-bold text-sm text-zinc-100 uppercase">Venta #{txId.slice(-6)}</h4>
+                          <p className="text-[10px] text-zinc-400 mt-0.5">{group.length} Cuota{group.length > 1 ? 's' : ''} pendiente{group.length > 1 ? 's' : ''}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="font-black text-white text-lg">${totalGroupUSD.toFixed(2)}</p>
+                          <p className="text-[9px] text-emerald-500 font-bold uppercase mt-1">{isExpanded ? 'Ocultar' : 'Ver detalle'}</p>
+                        </div>
+                      </div>
+                      
+                      {isExpanded && (
+                        <div className="bg-zinc-950/50 p-4 border-t border-zinc-800 space-y-3">
+                          {group.map((debt, index) => (
+                            <div key={debt.id} className="flex flex-col gap-2 bg-zinc-900 border border-zinc-800 p-3 rounded-xl">
+                              <div className="flex justify-between items-start">
+                                <div>
+                                  <p className="text-xs font-bold text-zinc-200 uppercase">Cuota {(debt as any).installmentNumber || index + 1} de {(debt as any).totalInstallments || group.length}</p>
+                                  <p className="text-[10px] text-zinc-400">Vence: {new Date(debt.dueDate).toLocaleDateString('es-ES')}</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="font-black text-white text-sm">${Number((debt as any).amountUSD || debt.amount || 0).toFixed(2)}</p>
+                                </div>
+                              </div>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); openPaymentModal(debt); }}
+                                className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold uppercase tracking-widest text-[10px] py-2 rounded-lg transition-all"
+                              >
+                                Pagar Cuota
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                    <div className="text-right">
-                      <p className="font-black text-white text-lg">${Number(debt.amount || 0).toFixed(2)}</p>
-                      <p className="text-[9px] text-zinc-500 font-mono">Bs. {Number(debt.amount * bcvRate).toFixed(2)}</p>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={() => openPaymentModal(debt)}
-                    className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold uppercase tracking-widest text-[10px] py-2.5 rounded-xl transition-all z-10"
-                  >
-                    Pagar
-                  </button>
-                </div>
-              ))
+                  );
+                });
+              })()
             )}
           </div>
         </div>

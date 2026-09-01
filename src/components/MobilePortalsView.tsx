@@ -128,6 +128,7 @@ export default function MobilePortalsView({
   const [pendingCreditRequest, setPendingCreditRequest] = useState<any>(null);
 
   const [activeInstallments, setActiveInstallments] = useState<any[]>([]);
+  const [paymentHistory, setPaymentHistory] = useState<any[]>([]);
 
   React.useEffect(() => {
     if (!loggedClient) {
@@ -158,9 +159,17 @@ export default function MobilePortalsView({
         setActiveInstallments(inst);
     });
 
+    // Listener de historial de pagos
+    const unsubPayments = onCollectionSnapshot('transactions', (data) => {
+        const payments = data.filter((d: any) => d.clientId === loggedClient.id && d.category === 'ingresos_cobranza');
+        payments.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        setPaymentHistory(payments);
+    });
+
     return () => {
        unsubscribe();
        unsubInst();
+       unsubPayments();
     };
   }, [loggedClient]);
 
@@ -788,6 +797,8 @@ export default function MobilePortalsView({
                     <PaymentsTab
                       bcvRate={36.5}
                       clientData={loggedClient}
+                      activeInstallments={activeInstallments}
+                      paymentHistory={paymentHistory}
                       onNavigateTab={setClientActiveTab}
                       onAddNotification={onAddNotification}
                     />
