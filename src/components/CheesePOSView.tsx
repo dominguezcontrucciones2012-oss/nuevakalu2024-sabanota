@@ -85,8 +85,60 @@ export default function CheesePOSView({
   const [isChangeModalOpen, setIsChangeModalOpen] = useState(false);
   const [changeCurrency, setChangeCurrency] = useState<'USD' | 'BS' | 'PAGO_MOVIL' | 'MIXED'>('USD');
   const [changeReference, setChangeReference] = useState('');
-  const [isWaitingForApproval, setIsWaitingForApproval] = useState(false);
+    const [isWaitingForApproval, setIsWaitingForApproval] = useState(false);
   const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(null);
+  
+  // DIAGNOSTIC STATE
+  const [approvalTimer, setApprovalTimer] = useState(40);
+  const [isDiagnosticVisible, setIsDiagnosticVisible] = useState(false);
+  const [diagnosticManualCheck, setDiagnosticManualCheck] = useState(false);
+
+  React.useEffect(() => {
+    let interval: any;
+    if (isWaitingForApproval) {
+      setApprovalTimer(40);
+      setIsDiagnosticVisible(false);
+      interval = setInterval(() => {
+        setApprovalTimer((prev) => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            setIsDiagnosticVisible(true);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } else {
+      setApprovalTimer(40);
+      setIsDiagnosticVisible(false);
+    }
+    return () => clearInterval(interval);
+  }, [isWaitingForApproval]);
+  
+  const handleManualDiagnosticCheck = async () => {
+    if (!pendingApprovalId) return;
+    setDiagnosticManualCheck(true);
+    try {
+        // Usa fetch para bypassear el caché local del socket
+        const res = await fetch('/api/collections/transactions').catch(() => fetch('http://localhost:3001/api/collections/transactions'));
+        if (res) {
+          const txs = await res.json();
+          const tx = txs.find((t: any) => String(t.id) === String(pendingApprovalId));
+          if (tx && tx.status === 'approved') {
+              onAddNotification('Transacción aprobada en servidor. Gatillando local...', 'success');
+              await updateLocalDoc('transactions', pendingApprovalId, { status: 'approved' });
+          } else {
+              onAddNotification(`Estado actual: ${tx?.status || 'No encontrada'}`, 'warning');
+          }
+        }
+    } catch(e) {
+        console.error(e);
+        onAddNotification('Error de red al consultar.', 'warning');
+    } finally {
+        setDiagnosticManualCheck(false);
+    }
+  };
+
   
   const [mixedChangeUsd, setMixedChangeUsd] = useState('');
   const [mixedChangeBs, setMixedChangeBs] = useState('');
@@ -406,7 +458,9 @@ export default function CheesePOSView({
         amount: total,
         status: 'pending_approval',
         clientId: client?.id,
-        clientCi: client?.ciRif || client?.ci || client?.idNumber || client?.cedula || client?.rfc || '',
+          clientCiRif: client?.ciRif || client?.ci || client?.idNumber || client?.cedula || client?.rfc || '',
+          clientPhone: client?.phone || '',
+          clientCi: client?.ciRif || client?.ci || client?.idNumber || client?.cedula || client?.rfc || '',
         totalUSD: total,
         downPayment: kaluInitial,
         financedAmount: kaluDebt,
@@ -423,64 +477,78 @@ export default function CheesePOSView({
       };
 
       try {
-        setIsWaitingForApproval(true);
-        const now = new Date().toISOString();
-        const finalPendingTx = {
-          ...pendingTx,
-          status: 'pending_approval',
-          timestamp: now
-        };
-        const docRef = await addLocalDoc('transactions', finalPendingTx);
+          const now = new Date().toISOString();
+          const finalPendingTx = {
+            ...pendingTx,
+            status: 'pending_approval',
+            timestamp: now
+          };
+          const docRef = await addLocalDoc('transactions', finalPendingTx);
+          if (!docRef || !docRef.id) throw new Error("Fallo al guardar transacción");
+          
+          setIsWaitingForApproval(true);
         setPendingApprovalId(docRef.id);
         
         // Setup listener via WebSocket for real-time approval
-        const unsubscribe = onCollectionSnapshot('transactions', (data) => {
-          const updatedDoc = data.find(d => String(d.id) === String(docRef.id));
-          if (updatedDoc) {
+        const handleApprovedDoc = async (updatedDoc: any) => {
             if (updatedDoc.status === 'approved') {
-               unsubscribe();
-               setIsWaitingForApproval(false);
-               setPendingApprovalId(null);
-
-               // FASE 1: GENERACIÓN DE CUOTAS
-               if (updatedDoc.kaluCreditData && client) {
-                  const fallbackCuotas = getKaluInstallmentsCount(kaluCreditType, client.loyaltyPoints || 0);
-                  const numC = updatedDoc.installmentsCount || fallbackCuotas;
-                  const promises = [];
-                  for (let i = 1; i <= numC; i++) {
-                     const dueDate = new Date();
-                     dueDate.setDate(dueDate.getDate() + (i * 15));
-                     promises.push(addLocalDoc('installments', {
-                        clientId: client.id,
-                        transactionId: docRef.id,
-                        amount: updatedDoc.kaluCreditData.cuotas,
-                        dueDate: dueDate.toISOString(),
-                        status: 'pending',
-                        timestamp: new Date().toISOString()
-                     }));
-                  }
-                  Promise.all(promises).catch(console.error);
-               }
-
-               onAddNotification('¡Crédito aprobado por el cliente! Facturando...', 'success');
-               // Set trigger for auto-checkout
-               setKaluAutoCheckoutTrigger(true);
-            } else if (updatedDoc.status === 'rejected') {
-               unsubscribe();
-               setIsWaitingForApproval(false);
-               setPendingApprovalId(null);
-               onAddNotification('El cliente rechazó la aprobación del crédito.', 'warning');
-               
-               // Clean up the rejected request & remove the added payment
-               deleteLocalDoc('transactions', docRef.id).catch(console.error);
-               setAddedPayments(prev => prev.filter(p => p.id !== newPayment.id));
+                   setIsWaitingForApproval(false);
+                   setPendingApprovalId(null);
+  
+                   // FASE 1: GENERACIÓN DE CUOTAS
+                   if (updatedDoc.kaluCreditData && client) {
+                     let nextDate = new Date();
+                     nextDate.setDate(nextDate.getDate() + 15);
+                     
+                     for (let i = 0; i < updatedDoc.installmentsCount; i++) {
+                       const installmentDoc = {
+                         clientId: client.id,
+                         transactionId: updatedDoc.id,
+                         amount: updatedDoc.kaluCreditData.cuotas,
+                         dueDate: nextDate.toISOString().split('T')[0],
+                         status: 'pending',
+                         installmentNumber: i + 1,
+                         totalInstallments: updatedDoc.installmentsCount,
+                         timestamp: new Date().toISOString()
+                       };
+                       await addLocalDoc('installments', installmentDoc);
+                       nextDate.setDate(nextDate.getDate() + 15);
+                     }
+                   }
+                   
+                   // FASE 2: AUTO CHECKOUT
+                   setKaluAutoCheckoutTrigger(true);
             }
-          }
-        });
+          };
+
+          // Polling in case WebSocket fails
+          const intervalId = setInterval(async () => {
+            try {
+              const res = await fetch(`https://sistemakalu.com/api/collections/transactions`);
+              if (res.ok) {
+                const allTxs = await res.json();
+                const polledDoc = allTxs.find((t: any) => String(t.id) === String(docRef.id));
+                if (polledDoc && polledDoc.status === 'approved') {
+                  clearInterval(intervalId);
+                  unsubscribe();
+                  handleApprovedDoc(polledDoc);
+                }
+              }
+            } catch (e) { /* ignore */ }
+          }, 2000);
+
+          const unsubscribe = onCollectionSnapshot('transactions', (data) => {
+            const updatedDoc = data.find(d => String(d.id) === String(docRef.id));
+            if (updatedDoc && updatedDoc.status === 'approved') {
+               clearInterval(intervalId);
+               unsubscribe();
+               handleApprovedDoc(updatedDoc);
+            }
+          });
       } catch (err) {
         console.error("Error creating pending approval", err);
         setIsWaitingForApproval(false);
-        onAddNotification('Error de conexión al enviar la solicitud de crédito.', 'warning');
+        onAddNotification('Error: No se pudo registrar la orden en el servidor. Verifica la conexión', 'error');
         setAddedPayments(prev => prev.filter(p => p.id !== newPayment.id));
       }
     }
@@ -2946,18 +3014,7 @@ export default function CheesePOSView({
               >
                 Cancelar Solicitud
               </button>
-              {/* DEV BUTTON: FORZAR APROBACIÓN */}
-              {pendingApprovalId && (
-                <button
-                  onClick={() => {
-                     updateLocalDoc('transactions', pendingApprovalId, { status: 'approved' }).catch(console.error);
-                  }}
-                  className="w-full py-3 bg-amber-500 text-editorial-bg font-serif font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-amber-400 transition-colors flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(245,158,11,0.4)]"
-                  title="Sólo para pruebas locales"
-                >
-                  <span>⚡</span> Forzar Aprobación (Test)
-                </button>
-              )}
+              
             </div>
           </div>
         </div>

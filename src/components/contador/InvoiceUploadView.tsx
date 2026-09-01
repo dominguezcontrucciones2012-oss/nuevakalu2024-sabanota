@@ -1,7 +1,7 @@
 import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
 import React, { useState, useEffect, useRef } from 'react';
 
-import { guardianAddDoc as addDoc, guardianUpdateDoc as updateDoc } from '../../utils/firebaseGuardian';
+
 
 import { askGeminiWithImage, askGemini } from '../../services/gemini';
 import { INITIAL_CHEESE_PRODUCTS } from '../../data';

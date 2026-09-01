@@ -10,7 +10,7 @@ export default function AccessControlView({ isAdmin }: AccessControlViewProps) {
       id: 'cliente',
       title: 'Portal del Cliente',
       desc: 'Acceso para clientes y compra de repuestos/quesos',
-      url: `${window.location.origin}/?portal=cliente`,
+      url: `https://sistemakalu.com/?portal=cliente`,
       icon: UserCircle,
       color: 'amber'
     },
@@ -18,7 +18,7 @@ export default function AccessControlView({ isAdmin }: AccessControlViewProps) {
       id: 'productor',
       title: 'Portal del Productor',
       desc: 'Acceso para productores y solicitud de insumos',
-      url: `${window.location.origin}/?portal=productor`,
+      url: `https://sistemakalu.com/?portal=productor`,
       icon: Users,
       color: 'emerald'
     },
@@ -26,7 +26,7 @@ export default function AccessControlView({ isAdmin }: AccessControlViewProps) {
       id: 'contador',
       title: 'Portal del Contador (IA)',
       desc: 'Acceso directo a la IA y balances (Solo Admin)',
-      url: `${window.location.origin}/?portal=contador`,
+      url: `https://sistemakalu.com/?portal=contador`,
       icon: BrainCircuit,
       color: 'brand-accent'
     },
@@ -34,7 +34,7 @@ export default function AccessControlView({ isAdmin }: AccessControlViewProps) {
       id: 'kalu-qr',
       title: 'Mundo Kalu (Caja)',
       desc: 'QR Maestro para vitrina. Escanear para Crédito.',
-      url: `${window.location.origin}/?portal=cliente#qr`,
+      url: `https://sistemakalu.com/?portal=cliente#qr`,
       icon: QrCode,
       color: 'amber',
       printable: true

@@ -58,7 +58,6 @@ import CollectionsView from './components/contador/CollectionsView';
 import { CheckCircle2, Info, AlertTriangle, X } from 'lucide-react';
 import { onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc, fetchCollection } from './services/localApi';
 import { fetchLocalProducts, updateLocalProduct, addLocalProduct, deleteLocalProduct } from './services/productApi';
-import { guardianSetDoc as setDoc, guardianUpdateDoc as updateDoc, guardianAddDoc as addDoc, guardianDeleteDoc as deleteDoc, db, doc, collection, increment } from './utils/firebaseGuardian';
 
 interface ToastNotification {
   id: string;
@@ -140,21 +139,10 @@ export default function App() {
     return saved ? parseFloat(saved) : 0;
   });
 
-  // Nuevo estado para el guardián
-  const [firebaseLoopAlert, setFirebaseLoopAlert] = useState<{message: string, isBlocked: boolean} | null>(null);
-
-  useEffect(() => {
-    const handleLoopDetection = (e: any) => {
-      setFirebaseLoopAlert({ message: e.detail.message, isBlocked: true });
-      setTimeout(() => setFirebaseLoopAlert(null), e.detail.blockDurationMs);
-    };
-    
-    window.addEventListener('FIREBASE_LOOP_DETECTED', handleLoopDetection);
-    return () => window.removeEventListener('FIREBASE_LOOP_DETECTED', handleLoopDetection);
-  }, []);
+  
 
 
-  // Real-time Firebase Listeners -> Local Listeners
+  // Real-time Local API Listeners -> Local Listeners
   useEffect(() => {
     fetchLocalProducts().then(data => {
       if (data && data.length) setCheeseProducts(data);
@@ -373,9 +361,8 @@ export default function App() {
           const newStock = Math.max(0, p.stockKg - item.quantityKg);
           
           // Generate Kardex Movement
-          const kardexRef = doc(collection(db, 'kardex'));
           const kardexMovement: KardexMovement = {
-            id: kardexRef.id,
+            id: crypto.randomUUID(),
             date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
             timestamp: Date.now(),
             productId: p.id,
@@ -392,9 +379,9 @@ export default function App() {
             notes: 'Venta registrada desde el POS'
           };
           
-          // Persist to Firebase immediately
-          updateDoc(doc(db, 'products', p.id), { stockKg: newStock }).catch(e => console.error("Error updating stock", e));
-          setDoc(kardexRef, kardexMovement).catch(e => console.error("Error saving kardex", e));
+          // Persist to Local API immediately
+          updateLocalDoc('products', p.id, { stockKg: newStock }).catch(e => console.error("Error updating stock", e));
+          addLocalDoc('kardex', kardexMovement).catch(e => console.error("Error saving kardex", e));
           
           return { ...p, stockKg: newStock };
         }
@@ -428,8 +415,8 @@ export default function App() {
                 loyaltyPoints: Number(c.loyaltyPoints || 0) + addedPoints
               };
             }
-            // Persist client updates to Firebase
-            updateDoc(doc(db, 'clients', clientId), { 
+            // Persist client updates to Local API
+            updateLocalDoc('clients', clientId, { 
               outstandingDebt: updatedClient.outstandingDebt,
               loyaltyPoints: updatedClient.loyaltyPoints
             }).catch(e => console.error("Error updating client", e));
@@ -476,8 +463,8 @@ export default function App() {
               newStoreDebt = newStoreDebt + debtAmount;
             }
 
-            // Persist supplier debt updates to Firebase
-            updateDoc(doc(db, 'suppliers', supplierId), {
+            // Persist supplier debt updates to Local API
+            updateLocalDoc('suppliers', supplierId, {
               storeDebt: newStoreDebt,
               balanceOwed: newBalanceOwed
             }).catch(e => console.error("Error updating supplier store debt", e));
@@ -522,7 +509,7 @@ export default function App() {
             items: saleItems
           };
           
-          setDoc(doc(db, 'transactions', supTxId), supTx).catch(e => console.error("Error al registrar fiado en historial de quesero", e));
+          addLocalDoc('transactions', supTx).catch(e => console.error("Error al registrar fiado en historial de quesero", e));
         }
       }
     }
@@ -567,7 +554,7 @@ export default function App() {
     // Save to Local State immediately (which triggers localStorage backup)
     setTransactions((prev) => [newTx, ...prev]);
 
-    // Eliminar cualquier valor undefined restante para evitar el fallo silencioso de Firebase
+    // Eliminar cualquier valor undefined restante para evitar el fallo silencioso de Local API
     const sanitizedTx = { ...newTx };
     Object.keys(sanitizedTx).forEach(key => {
       if ((sanitizedTx as any)[key] === undefined) {
@@ -575,11 +562,11 @@ export default function App() {
       }
     });
 
-    // Save to Firebase so it syncs globally and doesn't get overwritten by the listener
+    // Save to Local API so it syncs globally and doesn't get overwritten by the listener
     try {
-      await setDoc(doc(db, 'transactions', sanitizedTx.id), sanitizedTx);
+      await addLocalDoc('transactions', sanitizedTx);
     } catch (err) {
-      console.error("Error saving transaction to Firebase:", err);
+      console.error("Error saving transaction to Local API:", err);
     }
 
     // Activity Stream
@@ -599,9 +586,9 @@ export default function App() {
     // 1. Mark as voided in State
     setTransactions(prev => prev.map(t => t.id === transactionId ? { ...t, isVoided: true } : t));
 
-    // 2. Mark as voided in Firebase
+    // 2. Mark as voided in Local API
     try {
-      await updateDoc(doc(db, 'transactions', transactionId), { isVoided: true });
+      await updateLocalDoc('transactions', transactionId, { isVoided: true });
     } catch (e) {
       console.error('Failed to void transaction', e);
     }
@@ -613,8 +600,7 @@ export default function App() {
         setCheeseProducts(prev => prev.map(prod => prod.id === item.id ? { ...prod, stockKg: prod.stockKg + item.quantity } : prod));
         try {
           // Import increment if not present, but it's already used below
-          const { increment } = await import('firebase/firestore');
-          await updateDoc(doc(db, 'products', item.id), { stockKg: increment(item.quantity) });
+                    await updateLocalDoc('products', item.id, { stockKg: (cheeseProducts.find(p => p.id === item.id)?.stockKg || 0) + item.quantity });
         } catch (e) {
           console.error('Failed to return stock', e);
         }
@@ -654,13 +640,12 @@ export default function App() {
     if (quantityDiff === 0) return;
 
     try {
-      await updateDoc(doc(db, 'products', prod.id), {
-        stockKg: increment(delta)
+      await updateLocalDoc('products', prod.id, {
+        stockKg: (cheeseProducts.find(p => p.id === prod.id)?.stockKg || 0) + delta
       });
 
-      const kardexRef = doc(collection(db, 'kardex'));
       const kardexMovement: KardexMovement = {
-        id: kardexRef.id,
+        id: crypto.randomUUID(),
         date: new Date().toISOString(),
         productId: prod.id,
         productName: prod.name,
@@ -674,7 +659,7 @@ export default function App() {
         notes: reason,
         userOrCashier: 'Admin'
       };
-      await setDoc(kardexRef, kardexMovement);
+      await addLocalDoc('kardex', kardexMovement);
 
       setCheeseProducts((prev) => prev.map(p => p.id === productId ? { ...p, stockKg: newStock } : p));
       addNotification('Ajuste de inventario y Kardex guardados con éxito', 'success');
@@ -687,21 +672,19 @@ export default function App() {
   // --- Viajes San Juan Handlers ---
   const handleCreateTrip = async (trip: Omit<CheeseTrip, 'id'>) => {
     try {
-      const tripRef = doc(collection(db, 'cheeseTrips'));
-      const newTrip: CheeseTrip = { ...trip, id: tripRef.id };
-      await setDoc(tripRef, newTrip);
+      const newTrip: CheeseTrip = { ...trip, id: crypto.randomUUID() };
+      await addLocalDoc('trips', newTrip);
 
       // Descontar inventario
       const prod = cheeseProducts.find(p => p.id === trip.cheeseProductId);
       if (prod) {
-        await updateDoc(doc(db, 'products', prod.id), {
-          stockKg: increment(-trip.dispatchedKg)
+        await updateLocalDoc('products', prod.id, {
+          stockKg: (cheeseProducts.find(p => p.id === prod.id)?.stockKg || 0) - trip.dispatchedKg
         });
 
         // Registrar en Kardex
-        const kardexRef = doc(collection(db, 'kardex'));
         const kardexMovement: KardexMovement = {
-          id: kardexRef.id,
+          id: crypto.randomUUID(),
           date: new Date().toISOString(),
           productId: prod.id,
           productName: prod.name,
@@ -715,15 +698,15 @@ export default function App() {
           notes: `Viaje San Juan #${trip.tripNumber} a ${trip.destination}`,
           userOrCashier: 'Admin'
         };
-        await setDoc(kardexRef, kardexMovement);
+        await addLocalDoc('kardex', kardexMovement);
       }
       
       // Assign debt to client if selected
       if (trip.clientId) {
         const client = clients.find(c => c.id === trip.clientId);
         if (client) {
-          await updateDoc(doc(db, 'clients', client.id), {
-            outstandingDebt: increment(trip.dispatchedCostValue)
+          await updateLocalDoc('clients', client.id, {
+            outstandingDebt: (clients.find(c => c.id === client.id)?.outstandingDebt || 0) + trip.dispatchedCostValue
           });
         }
       }
@@ -737,7 +720,7 @@ export default function App() {
 
   const handleUpdateTrip = async (tripId: string, updates: Partial<CheeseTrip>) => {
     try {
-      await updateDoc(doc(db, 'cheeseTrips', tripId), updates);
+      await updateLocalDoc('cheeseTrips', tripId, updates);
       addNotification('Viaje actualizado', 'success');
     } catch (err) {
       console.error('Error updating trip:', err);
@@ -747,7 +730,7 @@ export default function App() {
 
   const handleSettleTrip = async (tripId: string, settlementData: Partial<CheeseTrip>) => {
     try {
-      await updateDoc(doc(db, 'cheeseTrips', tripId), {
+      await updateLocalDoc('cheeseTrips', tripId, {
         ...settlementData,
         status: 'liquidado',
         settledAt: new Date().toISOString()
@@ -758,8 +741,8 @@ export default function App() {
       // Actually, let's just reduce the client debt by the total settled amount (Total Liquidado = Mercancía + Dinero)
       const trip = cheeseTrips.find(t => t.id === tripId);
       if (trip && trip.clientId && settlementData.totalSettlementValueUsd) {
-        await updateDoc(doc(db, 'clients', trip.clientId), {
-          outstandingDebt: increment(-settlementData.totalSettlementValueUsd)
+        await updateLocalDoc('clients', trip.clientId, {
+          outstandingDebt: (clients.find(c => c.id === trip.clientId)?.outstandingDebt || 0) - (settlementData.totalSettlementValueUsd || 0)
         });
       }
 
@@ -784,7 +767,7 @@ export default function App() {
 
     const sup = suppliers.find(s => s.id === supplierId);
     if (sup) {
-      updateDoc(doc(db, 'suppliers', supplierId), {
+      updateLocalDoc('suppliers', supplierId, {
         storeDebt: Math.max(0, (sup.storeDebt || 0) - amount)
       }).catch(e => console.error("Error updating supplier store debt", e));
     }
@@ -825,9 +808,9 @@ export default function App() {
     setTransactions((prev) => [newTx, ...prev]);
 
     try {
-      setDoc(doc(db, 'transactions', newTx.id), newTx);
+      addLocalDoc('transactions', newTx);
     } catch (err) {
-      console.error("Error saving supplier transaction to Firebase:", err);
+      console.error("Error saving supplier transaction to Local API:", err);
     }
   };
 
@@ -869,12 +852,12 @@ export default function App() {
     
     // Save to Firestore
     try {
-      updateDoc(doc(db, 'suppliers', supplierId), {
+      updateLocalDoc('suppliers', supplierId, {
         balanceOwed: newBalanceOwed,
         storeDebt: newStoreDebt
       });
     } catch (err) {
-      console.error("Error updating supplier net balances in Firebase:", err);
+      console.error("Error updating supplier net balances in Local API:", err);
     }
 
     // Adjust bills
@@ -898,9 +881,9 @@ export default function App() {
     setTransactions((prev) => [newTx, ...prev]);
 
     try {
-      setDoc(doc(db, 'transactions', newTx.id), newTx);
+      addLocalDoc('transactions', newTx);
     } catch (err) {
-      console.error("Error saving net transaction to Firebase:", err);
+      console.error("Error saving net transaction to Local API:", err);
     }
 
     addNotification(`Intercambio en Libreta de Queso: Se han compensado $${netAmount.toLocaleString()} M.N. de deudas cruzadas.`, 'success');
@@ -914,9 +897,9 @@ export default function App() {
     setSuppliers(prev => prev.map(s => s.id === supplierId ? { ...s, balanceOwed: newBalance } : s));
 
     try {
-      await updateDoc(doc(db, 'suppliers', supplierId), { balance: newBalance, debt: newBalance, balanceOwed: newBalance });
+      await updateLocalDoc('suppliers', supplierId, { balance: newBalance, debt: newBalance, balanceOwed: newBalance });
     } catch (err) {
-      console.error("Error updating supplier balance in Firebase:", err);
+      console.error("Error updating supplier balance in Local API:", err);
     }
 
     if (paymentSource !== 'Dejar como Saldo Pendiente') {
@@ -955,9 +938,9 @@ export default function App() {
       };
       setTransactions(prev => [newTx, ...prev]);
       try {
-        setDoc(doc(db, 'transactions', newTx.id), newTx);
+        addLocalDoc('transactions', newTx);
       } catch (err) {
-        console.error("Error saving payment to Firebase:", err);
+        console.error("Error saving payment to Local API:", err);
       }
     }
   };
@@ -1042,9 +1025,9 @@ export default function App() {
       };
       setTransactions((prev) => [newTx, ...prev]);
       try {
-        setDoc(doc(db, 'transactions', newTx.id), newTx);
+        addLocalDoc('transactions', newTx);
       } catch (err) {
-        console.error("Error saving order tx to Firebase:", err);
+        console.error("Error saving order tx to Local API:", err);
       }
 
       // Activity Stream log
@@ -1082,23 +1065,22 @@ export default function App() {
       prev.map((p) => (p.id === id ? { ...p, ...updated } : p))
     );
     try {
-      await updateDoc(doc(db, 'products', id), updated);
+      await updateLocalDoc('products', id, updated);
     } catch (error) {
-      console.warn("Product not in Firebase or network error, updated locally:", error);
+      console.warn("Product not in Local API or network error, updated locally:", error);
     }
   };
 
   const handleAddProduct = async (newProd: Omit<CheeseProduct, 'id'>) => {
-    const docRef = doc(collection(db, 'products'));
     const freshProd: CheeseProduct = {
       ...newProd,
-      id: docRef.id
+      id: crypto.randomUUID()
     };
     try {
-      await setDoc(docRef, freshProd);
+      await addLocalDoc('products', freshProd);
       setCheeseProducts((prev) => [...prev, freshProd]);
     } catch (error) {
-      console.error("Error adding product to Firebase:", error);
+      console.error("Error adding product to Local API:", error);
       addNotification('Error al agregar el producto a la nube', 'warning');
       throw error;
     }
@@ -1106,10 +1088,10 @@ export default function App() {
 
   const handleDeleteProduct = async (id: string) => {
     try {
-      await deleteDoc(doc(db, 'products', id));
+      await deleteLocalDoc('products', id);
       setCheeseProducts((prev) => prev.filter((p) => p.id !== id));
     } catch (error) {
-      console.error("Error deleting product from Firebase:", error);
+      console.error("Error deleting product from Local API:", error);
       addNotification('Error al eliminar el producto de la nube', 'warning');
       throw error;
     }
@@ -1132,16 +1114,15 @@ export default function App() {
     const purchaseTxId = `F-COMP-${Math.floor(Math.random() * 8000 + 1000)}`;
 
     try {
-      // Process each item asynchronously in Firebase
+      // Process each item asynchronously in Local API
       for (const item of purchase.items) {
         totalCost += (item.quantityKg || 0) * (item.purchasePrice || 0);
 
         let prod = cheeseProducts.find(p => p.id === item.productId);
 
         if (!prod) {
-          const newProdRef = doc(collection(db, 'products'));
           const newProd: CheeseProduct = {
-            id: newProdRef.id,
+            id: crypto.randomUUID(),
             name: item.name || 'Producto Nuevo (IA)',
             category: 'Fresco', // Default or guess
             stockKg: item.quantityKg,
@@ -1152,15 +1133,15 @@ export default function App() {
             origin: selectedSup?.name || '',
             unit: (item as any).unit === 'Bulto' ? 'Und' : ((item as any).unit || 'Kg')
           };
-          await setDoc(newProdRef, newProd);
+          await addLocalDoc('products', newProd);
           prod = newProd;
           
           setCheeseProducts(prev => [...prev, newProd]);
         } else {
           const currentStock = prod.stockKg || 0;
           // Update product document atomically
-          await updateDoc(doc(db, 'products', prod.id), {
-            stockKg: increment(Number(item.quantityKg)),
+          await updateLocalDoc('products', prod.id, {
+            stockKg: (cheeseProducts.find(p => p.id === prod.id)?.stockKg || 0) + Number(item.quantityKg),
             purchasePrice: item.purchasePrice,
             sellingPrice: item.sellingPrice > 0 ? item.sellingPrice : (prod.sellingPrice || 0)
           });
@@ -1169,9 +1150,8 @@ export default function App() {
         if (prod) {
           const currentStock = prod.stockKg || 0;
           // Record Kardex Movement
-          const kardexRef = doc(collection(db, 'kardex'));
           const kardexMovement: KardexMovement = {
-            id: kardexRef.id,
+            id: crypto.randomUUID(),
             date: new Date().toISOString(),
             productId: prod.id,
             productName: prod.name,
@@ -1185,7 +1165,7 @@ export default function App() {
             referenceId: purchaseTxId,
             userOrCashier: 'Sistema de Compras'
           };
-          await setDoc(kardexRef, kardexMovement);
+          await addLocalDoc('kardex', kardexMovement);
         }
       }
 
@@ -1204,7 +1184,7 @@ export default function App() {
         })
       );
 
-      await updateDoc(doc(db, 'suppliers', purchase.supplierId), {
+      await updateLocalDoc('suppliers', purchase.supplierId, {
         balanceOwed: newBalanceOwed,
         storeDebt: newStoreDebt
       });
@@ -1258,7 +1238,7 @@ export default function App() {
     
     setTransactions((prev) => [newTx, ...prev]);
     try {
-      setDoc(doc(db, 'transactions', newTx.id), newTx);
+      addLocalDoc('transactions', newTx);
     } catch (e) { console.error(e); }
 
     // Add activity
@@ -1300,7 +1280,7 @@ export default function App() {
       loyaltyPoints: 10
     };
     try {
-      await setDoc(doc(db, 'clients', newCli.id), newCli);
+      await addLocalDoc('clients', newCli);
     } catch (err) {
       console.error("Error al crear cliente:", err);
       addNotification("Error al guardar cliente en base de datos", "warning");
@@ -1309,7 +1289,7 @@ export default function App() {
 
   const handleUpdateClient = async (clientId: string, updates: Partial<ClientProfile>) => {
     try {
-      await updateDoc(doc(db, 'clients', clientId), updates);
+      await updateLocalDoc('clients', clientId, updates);
       addNotification("Perfil de cliente actualizado", "success");
     } catch (err) {
       console.error("Error al actualizar cliente:", err);
@@ -1384,9 +1364,9 @@ export default function App() {
         paymentBreakdown: paymentBreakdown || null,
         isAbono: true
       };
-      await setDoc(doc(db, 'sales', saleId), saleDoc);
+      await addLocalDoc('sales', saleDoc);
     } catch (err) {
-      console.error("Error guardando recibo de abono en Firebase:", err);
+      console.error("Error guardando recibo de abono en Local API:", err);
     }
   };
 
@@ -1398,7 +1378,7 @@ export default function App() {
       balanceOwed: 0
     };
     try {
-      await setDoc(doc(db, 'suppliers', newSup.id), newSup);
+      await addLocalDoc('suppliers', newSup);
     } catch (err) {
       console.error("Error al crear proveedor:", err);
       addNotification("Error al guardar proveedor en base de datos", "warning");
@@ -1407,7 +1387,7 @@ export default function App() {
 
   const handleUpdateSupplier = async (supplierId: string, updates: Partial<SupplierProfile>) => {
     try {
-      await updateDoc(doc(db, 'suppliers', supplierId), updates);
+      await updateLocalDoc('suppliers', supplierId, updates);
       addNotification("Perfil de proveedor actualizado", "success");
     } catch (err) {
       console.error("Error al actualizar proveedor:", err);
@@ -1527,9 +1507,9 @@ export default function App() {
   const handleUpdateSettings = async (newSettings: Partial<BusinessSettings>) => {
     setSettings((prev) => ({ ...prev, ...newSettings })); // Optimistic update
     try {
-      await setDoc(doc(db, 'settings', 'general'), newSettings, { merge: true });
+      await addLocalDoc('settings', newSettings);
     } catch (error) {
-      console.error("Error saving settings to Firebase:", error);
+      console.error("Error saving settings to Local API:", error);
       addNotification("Error de red: La tasa y ajustes se guardaron solo localmente.", "warning");
     }
   };
@@ -1547,7 +1527,7 @@ export default function App() {
     setClients(prev => prev.map(c => ({ ...c, outstandingDebt: 0 })));
     setSuppliers(prev => prev.map(s => ({ ...s, balanceOwed: 0, storeDebt: 0 })));
     
-    // Wipe Firebase data via backupService
+    // Wipe Local API data via backupService
     const { resetAccountingData } = await import('./services/backupService');
     await resetAccountingData();
   };
@@ -1614,7 +1594,6 @@ export default function App() {
         {/* Horizontal Navigation Header */}
         <Header
           currentView={currentView}
-          onSimulateSale={() => addNotification('Simulador de venta reemplazado por el Punto de Venta real.', 'info')}
           notificationCount={complaints.filter(c => c.status === 'Pendiente').length + mobileOrders.filter(o => o.status === 'Pendiente').length}
           isSidebarOpen={isSidebarOpen}
           onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -1801,7 +1780,7 @@ export default function App() {
                  
                  setTransactions(prev => [newTx, ...prev]);
                  try {
-                   setDoc(doc(db, 'transactions', newTx.id), newTx);
+                   addLocalDoc('transactions', newTx);
                  } catch (e) {
                    console.error(e);
                  }
@@ -1836,17 +1815,6 @@ export default function App() {
       </main>
       </div>
 
-      {firebaseLoopAlert && (
-        <div className="fixed top-0 left-0 right-0 z-[9999] bg-rose-600 text-white px-4 py-3 flex items-center justify-between shadow-2xl animate-fade-in border-b-4 border-rose-900">
-          <div className="flex items-center gap-3">
-            <AlertTriangle className="w-6 h-6 animate-pulse text-rose-200" />
-            <div className="font-mono">
-              <span className="font-bold block text-sm uppercase tracking-wider">Bloqueo de Emergencia Activo</span>
-              <span className="text-xs text-rose-100">{firebaseLoopAlert.message}</span>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Modern High-End Editorial Toast Stack Container */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 max-w-sm w-full pointer-events-none">

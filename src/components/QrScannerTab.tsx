@@ -13,11 +13,46 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }
   const [scannerActive, setScannerActive] = useState(false);
   const [showQrPaymentModal, setShowQrPaymentModal] = useState(false);
   const [qrPaymentAmount, setQrPaymentAmount] = useState('');
+    const [fetchedTx, setFetchedTx] = useState<any>(null);
+    const [isFetching, setIsFetching] = useState(false);
+    const [fetchError, setFetchError] = useState('');
   const [scannedStore, setScannedStore] = useState('Mundo Kalu - Tienda Principal');
   
   const scannerRef = useRef<Html5Qrcode | null>(null);
 
-  // Initialize Scanner safely
+  const doFetchAndShowModal = async (storeName: string) => {
+      setScannedStore(storeName);
+      setShowQrPaymentModal(true);
+      setIsFetching(true);
+      setFetchError('');
+      try {
+        const res = await fetch('https://sistemakalu.com/api/collections/transactions');
+        const transactions = await res.json();
+        
+        const pending = transactions.filter((tx: any) => 
+            (tx.status === 'pending_approval' || tx.status === 'pending') &&
+            (
+                String(tx.clientId) === String(loggedClient?.id) ||
+                (tx.clientCiRif && (tx.clientCiRif === loggedClient?.cedula || tx.clientCiRif === loggedClient?.ciRif)) ||
+                (tx.clientPhone && tx.clientPhone === loggedClient?.phone)
+            )
+        );
+        
+        if (pending.length > 0) {
+            setFetchedTx(pending[0]);
+            setQrPaymentAmount(String(pending[0].amount || pending[0].totalUSD || 0));
+        } else {
+            setFetchedTx(null);
+            setFetchError('No hay cobros pendientes para tu cédula en el servidor en este momento.');
+        }
+      } catch (e) {
+        setFetchedTx(null);
+        setFetchError('Error de red al consultar cobros pendientes.');
+      }
+      setIsFetching(false);
+    };
+
+    // Initialize Scanner safely
   const startScanner = async () => {
     try {
       if (!scannerRef.current) {
@@ -52,11 +87,8 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }
   };
 
   const handleSuccessfulScan = (text: string) => {
-    // If the text is JSON or has a structure, we would parse it here.
-    // For now, we simulate finding the store.
-    setScannedStore("Mundo Kalu - Tienda Principal");
-    setShowQrPaymentModal(true);
-  };
+      doFetchAndShowModal("Mundo Kalu - Tienda Principal");
+    };
 
   const requestCamera = () => {
     startScanner();
@@ -91,20 +123,6 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }
             Mundo Kalu App v2.4.1 • La cámara local está desactivada.
           </p>
           
-          {/* DEV FALLBACK FOR TESTING PWA -> POS */}
-          <div className="mt-8 w-full max-w-[300px] border border-amber-500/30 rounded-xl p-4 bg-amber-500/5">
-             <h3 className="text-amber-500 font-black text-xs uppercase tracking-wider mb-3 flex items-center gap-2">
-                <span>⚡</span> Modo Dev (Simular Escaneo)
-             </h3>
-             <div className="space-y-3">
-                <button
-                   onClick={() => handleManualEntry()}
-                   className="w-full bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 py-2.5 rounded-lg text-xs font-bold transition-colors"
-                >
-                   Simular Escaneo de Tienda
-                </button>
-             </div>
-          </div>
           <p className="text-[10px] text-zinc-400 max-w-[250px] mx-auto mt-6">
             Apunta al código QR ubicado en la vitrina o mostrador de la tienda
           </p>
@@ -156,16 +174,7 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }
 
         </div>
         
-        {/* Bottom Actions */}
-        <div className="absolute bottom-24 left-0 right-0 flex justify-center px-6 z-30">
-          <button 
-            onClick={handleManualEntry}
-            className="w-full max-w-[300px] bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center gap-2 py-3.5 text-[11px] font-bold text-zinc-300 hover:text-white transition-colors shadow-xl"
-          >
-            <TerminalSquare className="w-4 h-4" />
-            Ingresar monto manualmente
-          </button>
-        </div>
+
       </div>
 
       {/* Payment Confirmation Modal */}
@@ -223,51 +232,109 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }
               );
             })()}
             
+            
+            {/* DYNAMIC CONTENT BASED ON FETCH */}
+            {isFetching ? null : fetchedTx ? (
+                <div className="bg-emerald-900/30 border border-emerald-500/50 rounded-xl p-4 mb-6 space-y-3">
+                   <h3 className="text-emerald-400 font-black uppercase text-xs mb-2 border-b border-emerald-500/20 pb-1 flex items-center justify-between">
+                     <span>COBRO ENCONTRADO</span>
+                     <span className="text-[10px] bg-emerald-500/20 px-2 py-0.5 rounded-full">{fetchedTx.invoiceNumber || 'N/A'}</span>
+                   </h3>
+                   <div className="flex justify-between items-center">
+                     <span className="text-xs text-emerald-200">Total de la Compra</span>
+                     <span className="text-sm font-black text-emerald-400">${Number(fetchedTx.amount || fetchedTx.totalUSD || 0).toFixed(2)}</span>
+                   </div>
+                   {fetchedTx.kaluCreditData && (
+                     <>
+                       <div className="flex justify-between items-center">
+                         <span className="text-xs text-emerald-200/70">Inicial Requerida (75%)</span>
+                         <span className="text-sm font-black text-emerald-400">${Number(fetchedTx.kaluCreditData.inicial || 0).toFixed(2)}</span>
+                       </div>
+                       <div className="flex justify-between items-center">
+                         <span className="text-xs text-emerald-200/70">Saldo Financiado</span>
+                         <span className="text-sm font-black text-white">${Number(fetchedTx.kaluCreditData.aFinanciar || 0).toFixed(2)}</span>
+                       </div>
+                       <div className="border-t border-emerald-500/20 pt-3 flex justify-between items-center">
+                         <span className="text-[10px] font-bold text-emerald-300 uppercase">Esquema Aplicado</span>
+                         <span className="text-[10px] font-black text-emerald-950 bg-emerald-500 px-2 py-0.5 rounded uppercase">{fetchedTx.installmentsCount} Cuota{fetchedTx.installmentsCount > 1 ? 's' : ''} de ${Number(fetchedTx.kaluCreditData.cuotas || 0).toFixed(2)}</span>
+                       </div>
+                     </>
+                   )}
+                </div>
+            ) : (
+              <div className="bg-red-950/40 border border-red-500/50 rounded-xl p-4 mb-6 text-left">
+                 <h3 className="text-red-400 font-bold uppercase text-xs mb-2 border-b border-red-500/20 pb-1">⚠️ Diagnóstico Técnico (Orden no detectada)</h3>
+                 <div className="text-[10px] font-mono text-red-200 space-y-2">
+                    <p><strong>Estado:</strong> {fetchError || "No hay cobros pendientes para tu cédula en el servidor en este momento."}</p>
+                    <p className="mt-2 text-white border-t border-red-500/30 pt-1">
+                       Cliente Logueado: {loggedClient ? `${loggedClient.name} (ID: ${loggedClient.id})` : 'Ninguno'}
+                    </p>
+                 </div>
+              </div>
+            )}
+            
             <button 
-              disabled={Number(qrPaymentAmount || 0) <= 0}
+              disabled={isFetching || (!fetchedTx && !qrPaymentAmount)}
               onClick={async () => {
-                const amount = Number(qrPaymentAmount || 0);
-                const level = getClientLevelInfo((loggedClient as any)?.loyaltyPoints || 0).level;
-                const inicialPct = level >= 5 ? 0.10 : level >= 3 ? 0.15 : 0.20;
-                const inicial = amount * inicialPct;
-                const aFinanciar = amount - inicial;
-                const cuotas = aFinanciar / 4;
-                
-                const payload = {
-                  id: `PWA-CASHEA-${Date.now()}`,
-                  type: 'credito_cashea',
-                  entityId: loggedClient.id,
-                  entityName: loggedClient.name,
-                  amount: amount,
-                  currency: 'USD',
-                  reference: 'QR-COMPRA',
-                  method: 'Cashea',
-                  status: 'pending',
-                  date: new Date().toISOString(),
-                  timestamp: new Date().toISOString(),
-                  casheaData: {
-                    inicial,
-                    aFinanciar,
-                    cuotas,
-                    tienda: scannedStore
+                if (fetchedTx) {
+                  const payload = { status: 'approved' };
+                  try {
+                    // 1. Direct fetch PATCH to assure server gets it immediately
+                    await fetch(`https://sistemakalu.com/api/collections/transactions/${fetchedTx.id}`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(payload)
+                    });
+                    
+                    // 2. updateLocalDoc to trigger local events or websocket emits
+                    const { updateLocalDoc } = await import('../services/localApi');
+                    await updateLocalDoc('transactions', fetchedTx.id, payload);
+                    
+                    alert('¡Compra Aprobada Exitosamente!');
+                    setShowQrPaymentModal(false);
+                    setQrPaymentAmount('');
+                    onNavigateTab('inicio');
+                  } catch (e) {
+                    console.error(e);
+                    alert('Error al aprobar la compra a crédito.');
                   }
-                };
-
-                try {
-                  const { addLocalDoc } = await import('../services/localApi');
-                  await addLocalDoc('pwa_payments', payload);
-                  alert('Solicitud de Crédito QR enviada al Centro de Cobranzas para aprobación.');
-                  setShowQrPaymentModal(false);
-                  setQrPaymentAmount('');
-                  onNavigateTab('inicio');
-                } catch (e) {
-                  console.error(e);
-                  alert('Error al procesar la compra a crédito.');
+                } else {
+                  // Original manual QR process flow fallback
+                  const amount = Number(qrPaymentAmount);
+                  const inicialPct = 0.20;
+                  const inicial = amount * inicialPct;
+                  const aFinanciar = amount - inicial;
+                  const cuotas = aFinanciar / 4;
+                  const payload = {
+                    category: 'credito',
+                    isIncome: true,
+                    type: 'credito_cashea',
+                    entityId: loggedClient.id,
+                    entityName: loggedClient.name,
+                    amount: amount,
+                    currency: 'USD',
+                    reference: 'QR-COMPRA',
+                    method: 'Cashea',
+                    status: 'pending',
+                    date: new Date().toISOString(),
+                    timestamp: new Date().toISOString(),
+                    casheaData: { inicial, aFinanciar, cuotas, tienda: scannedStore }
+                  };
+                  try {
+                    const { addLocalDoc } = await import('../services/localApi');
+                    await addLocalDoc('pwa_payments', payload);
+                    alert('Solicitud de Crédito QR enviada al Centro de Cobranzas para aprobación.');
+                    setShowQrPaymentModal(false);
+                    setQrPaymentAmount('');
+                    onNavigateTab('inicio');
+                  } catch (e) {
+                    alert('Error al procesar la compra a crédito.');
+                  }
                 }
               }}
               className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 disabled:text-zinc-500 text-zinc-950 font-black uppercase rounded-2xl text-sm tracking-widest transition-all"
             >
-              PROCESAR COMPRA A CRÉDITO
+              {fetchedTx ? "APROBAR Y CONFIRMAR COMPRA" : "PROCESAR COMPRA A CRÉDITO"}
             </button>
           </div>
         </div>

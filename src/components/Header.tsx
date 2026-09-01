@@ -9,14 +9,13 @@ import { Bell, RefreshCw, Cpu, Activity, Menu, Smartphone, HardDrive, Radio, Loa
 import { onCollectionSnapshot } from '../services/localApi';
 interface HeaderProps {
   currentView: ViewType;
-  onSimulateSale: () => void;
   notificationCount: number;
   isSidebarOpen?: boolean;
   onToggleSidebar?: () => void;
   exchangeRate?: number;
 }
 
-export default function Header({ currentView, onSimulateSale, notificationCount, isSidebarOpen = true, onToggleSidebar, exchangeRate = 0 }: HeaderProps) {
+export default function Header({ currentView, notificationCount, isSidebarOpen = true, onToggleSidebar, exchangeRate = 0 }: HeaderProps) {
   const [gatewayStatus, setGatewayStatus] = useState<{ isOnline: boolean, battery: number, lastSeenMs: number }>({ isOnline: false, battery: 0, lastSeenMs: 0 });
   const [isOnlineMode, setIsOnlineMode] = useState(true);
   const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);

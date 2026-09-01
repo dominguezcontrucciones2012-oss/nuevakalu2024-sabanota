@@ -138,7 +138,13 @@ export default function MobilePortalsView({
     
     // Listener de peticiones pendientes
     const unsubscribe = onCollectionSnapshot('transactions', (data) => {
-        const txs = data.filter((d: any) => d.clientId === loggedClient.id && d.status === 'pending_approval');
+        const txs = data.filter((d: any) => 
+            d.status === 'pending_approval' && 
+            (d.clientId === loggedClient.id || 
+             (d.clientCiRif && d.clientCiRif === loggedClient.ciRif) || 
+             (d.clientPhone && d.clientPhone === loggedClient.phone) ||
+             (d.clientCiRif && d.clientCiRif === loggedClient.cedula))
+          );
         if (txs.length > 0) {
            setPendingCreditRequest(txs[0]);
         } else {
@@ -1166,7 +1172,7 @@ export default function MobilePortalsView({
                     className="w-full py-3 bg-brand-accent hover:bg-amber-400 text-zinc-950 font-bold uppercase rounded-xl text-xs tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-brand-accent/20"
                   >
                     <Scan className="w-4 h-4" />
-                    Simular Escaneo QR
+                    Acceder al Módulo
                   </button>
                 </div>
               ) : (
@@ -1349,13 +1355,27 @@ export default function MobilePortalsView({
 
             <div className="w-full max-w-sm space-y-3 relative z-10 mx-auto">
               <button
-                onClick={async () => {
+                                onClick={async () => {
                   try {
+                    // Validar identidad del cliente contra la orden
+                    if (!loggedClient || (
+                        pendingCreditRequest.clientId && 
+                        pendingCreditRequest.clientId !== loggedClient.id && 
+                        pendingCreditRequest.clientCiRif !== loggedClient.ciRif && 
+                        pendingCreditRequest.clientPhone !== loggedClient.phone &&
+                        pendingCreditRequest.clientCiRif !== loggedClient.cedula
+                      )) {
+                      onAddNotification('Esta orden no te pertenece o no has iniciado sesión correctamente.', 'warning');
+                      return;
+                    }
+
+                    // 3. Marcar la transacción como completada en la BD (trigger para el POS)
                     await updateLocalDoc('transactions', pendingCreditRequest.id, { status: 'approved' });
                     setPendingCreditRequest(null);
                     onAddNotification('¡Compra aprobada con éxito!', 'success');
                   } catch (e) {
                     console.error(e);
+                    onAddNotification('Error al procesar la aprobación del crédito', 'warning');
                   }
                 }}
                 className="w-full py-4 bg-emerald-500 text-slate-950 font-black text-lg uppercase tracking-wider rounded-xl hover:bg-emerald-400 active:scale-95 transition-all shadow-lg shadow-emerald-500/20"

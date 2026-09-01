@@ -77,8 +77,8 @@ export default function FinancesAnalysisView({
   // Attributed ads stats
   const adsExpenses = expenses.filter(e => e.category === 'Publicidad');
   const totalAdsCost = adsExpenses.reduce((sum, e) => sum + e.amount, 0);
-  const estimatedAdSales = totalSalesRevenue * 0.35; // Simulate that 35% of sales come from advertising
-  const adROI = totalAdsCost > 0 ? (estimatedAdSales / totalAdsCost).toFixed(1) : '4.2';
+  const estimatedAdSales = 0; // Sin simulaciones
+  const adROI = totalAdsCost > 0 ? (estimatedAdSales / totalAdsCost).toFixed(1) : '0';
 
   return (
     <div className="space-y-6 animate-fade-in">

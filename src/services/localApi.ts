@@ -3,9 +3,10 @@ import { io, Socket } from 'socket.io-client';
 // Use standard relative/absolute routing instead of hardcoding localhost if possible, 
 // but since the server runs on 3001 locally, we stick to localhost:3001.
 // In a true local network setup with phones, we should use window.location.hostname
+const isProd = import.meta.env.PROD;
 const hostname = window.location.hostname;
-const API_URL = `http://${hostname}:3001/api`;
-const SOCKET_URL = `http://${hostname}:3001`;
+const API_URL = isProd ? `/api` : `http://${hostname}:3001/api`;
+const SOCKET_URL = isProd ? `/` : `http://${hostname}:3001`;
 
 // Global Socket Instance
 let socket: Socket | null = null;
@@ -127,11 +128,8 @@ export const updateLocalDoc = async (collectionName: string, id: string, data: a
     console.error(`Error updating doc in ${collectionName}:`, error);
     throw error;
   }
-};
-
-export const batchDeleteLocalDocs = async (collectionName: string, ids: string[]) => {
-  if (isFirebaseMode) return;
-  const res = await fetch(`${API_BASE_URL}/api/collections/${collectionName}/batchDelete`, {
+};export const batchDeleteLocalDocs = async (collectionName: string, ids: string[]) => {
+  const res = await fetch(`${API_URL}/collections/${collectionName}/batchDelete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids })
@@ -139,6 +137,7 @@ export const batchDeleteLocalDocs = async (collectionName: string, ids: string[]
   if (!res.ok) throw new Error('Error en batch delete local');
   return res.json();
 };
+
 
 export const deleteLocalDoc = async (collectionName: string, id: string) => {
   try {
