@@ -74,7 +74,7 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
   const [currentView, setCurrentView] = useState<ViewType>('portal-dashboard');
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 1024);
 
   // Unified States for Cheese ERP
   const [cheeseProducts, setCheeseProducts] = useState<CheeseProduct[]>(() => {

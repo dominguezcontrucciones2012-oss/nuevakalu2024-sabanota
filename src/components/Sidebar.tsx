@@ -41,11 +41,11 @@ interface SidebarProps {
 
 export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, userRole = 'cajero', userName = 'Invitado', isOpen = true, onToggle, exchangeRate = 0, lastRateSync, onSyncRate }: SidebarProps) {
   const [isSyncingRate, setIsSyncingRate] = useState(false);
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 1024);
 
   import('react').then(React => {
     React.useEffect(() => {
-      const handleResize = () => setIsMobile(window.innerWidth < 768);
+      const handleResize = () => setIsMobile(window.innerWidth < 1024);
       window.addEventListener('resize', handleResize);
       return () => window.removeEventListener('resize', handleResize);
     }, []);
@@ -162,12 +162,12 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
     <>
     {isOpen && isMobile && (
       <div 
-        className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden animate-in fade-in duration-300"
+        className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden animate-in fade-in duration-300"
         onClick={onToggle}
       />
     )}
-    <aside className={`transition-all duration-300 ease-in-out border-r border-editorial-border bg-editorial-bg flex flex-col py-8 min-h-screen fixed md:sticky top-0 left-0 z-50 shrink-0 h-screen select-none overflow-y-auto overflow-x-hidden ${
-      isOpen ? 'w-80 px-8 opacity-100 translate-x-0' : 'w-0 px-0 opacity-0 border-r-0 -translate-x-full md:translate-x-0'
+    <aside className={`transition-all duration-300 ease-in-out border-r border-editorial-border bg-editorial-bg flex flex-col py-8 min-h-screen fixed lg:sticky top-0 left-0 z-50 shrink-0 h-screen select-none overflow-y-auto overflow-x-hidden ${
+      isOpen ? 'w-80 px-8 opacity-100 translate-x-0' : 'w-0 px-0 opacity-0 border-r-0 -translate-x-full lg:translate-x-0'
     }`}>
       {/* Top Branding Section */}
       <div className="flex flex-col gap-8 shrink-0">
@@ -184,8 +184,8 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
             </div>
           </div>
           {onToggle && (
-            <button onClick={onToggle} className="md:hidden p-2 text-editorial-text-muted hover:text-white">
-              <span className="text-xl">X</span>
+            <button onClick={onToggle} className="lg:hidden p-2 text-editorial-text-muted hover:text-white cursor-pointer">
+              <span className="text-xl font-bold">X</span>
             </button>
           )}
         </div>
@@ -205,7 +205,10 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
           return (
             <button
               key={item.id}
-              onClick={() => onViewChange(item.id)}
+              onClick={() => {
+                onViewChange(item.id);
+                if (isMobile && onToggle) onToggle();
+              }}
               className={`group flex items-start gap-3 text-left p-2.5 rounded transition-all duration-300 border border-transparent ${
                 isActive
                   ? 'bg-editorial-card border-editorial-border shadow-lg'
