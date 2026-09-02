@@ -458,9 +458,8 @@ export default function CheesePOSView({
         amount: total,
         status: 'pending_approval',
         clientId: client?.id,
-          clientCiRif: client?.ciRif || client?.ci || client?.idNumber || client?.cedula || client?.rfc || '',
-          clientPhone: client?.phone || '',
-          clientCi: client?.ciRif || client?.ci || client?.idNumber || client?.cedula || client?.rfc || '',
+        clientCi: client?.ciRif || client?.ci || client?.idNumber || client?.cedula || client?.rfc || '',
+        
         totalUSD: total,
         downPayment: kaluInitial,
         financedAmount: kaluDebt,
@@ -548,7 +547,7 @@ export default function CheesePOSView({
       } catch (err) {
         console.error("Error creating pending approval", err);
         setIsWaitingForApproval(false);
-        onAddNotification('Error: No se pudo registrar la orden en el servidor. Verifica la conexión', 'error');
+        onAddNotification('Error: No se pudo registrar la orden en el servidor. Verifica la conexión', 'warning');
         setAddedPayments(prev => prev.filter(p => p.id !== newPayment.id));
       }
     }

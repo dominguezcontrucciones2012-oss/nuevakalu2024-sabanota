@@ -1568,7 +1568,7 @@ export default function App() {
     const effectiveType = (portalParam === 'productor' || portalParam === 'proveedor' || portalParam === 'contador') ? portalParam : 'cliente';
     return (
       <div className="min-h-screen bg-black text-white">
-        <MobilePortalsView
+        <MobilePortalsView cheeseTrips={cheeseTrips} transactions={transactions} 
           products={cheeseProducts}
           clients={clients}
           suppliers={suppliers}
@@ -1745,7 +1745,7 @@ export default function App() {
           )}
 
           {currentView === 'mobile-portals' && (
-            <MobilePortalsView
+            <MobilePortalsView cheeseTrips={cheeseTrips} transactions={transactions} 
               products={cheeseProducts}
               clients={clients}
               suppliers={suppliers}
