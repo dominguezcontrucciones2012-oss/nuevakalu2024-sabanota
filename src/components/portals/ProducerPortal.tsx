@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Store, Home, Package, Truck, Wallet, LogOut, Search, Shield, ChevronRight, LogIn,
-  ShoppingCart, X, Trash2, Copy, Image as ImageIcon, Banknote
+  ShoppingCart, X, Trash2, Copy, Image as ImageIcon, Banknote, Check
 } from 'lucide-react';
 import { MobilePortalsViewProps } from '../MobilePortalsView';
-import { SupplierProfile, Transaction, CheeseProduct } from '../../types';
+import { SupplierProfile, Transaction, CheeseProduct, MobileOrder } from '../../types';
 import { addLocalDoc, onCollectionSnapshot } from '../../services/localApi';
 
 export default function ProducerPortal({ 
   products, suppliers, onAddNotification, isolatedType, isolatedId,
-  cheeseTrips = [], transactions = []
+  cheeseTrips = [], transactions = [], mobileOrders = []
 }: MobilePortalsViewProps) {
   
   const [loggedSupplier, setLoggedSupplier] = useState<SupplierProfile | null>(() => {
@@ -31,7 +31,8 @@ export default function ProducerPortal({
 
     if (suppliers.length === 0) {
       setIsInitializing(true);
-      return;
+      const fallbackT = setTimeout(() => setIsInitializing(false), 2500);
+      return () => clearTimeout(fallbackT);
     }
 
     // 1. Prioridad: Si nos pasan un ID específico por URL
@@ -135,23 +136,35 @@ export default function ProducerPortal({
   const [paymentRef, setPaymentRef] = useState('');
   const [paymentImagePreview, setPaymentImagePreview] = useState<string | null>(null);
 
-  const handleCopy = (text: string) => {
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text);
-    } else {
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  const handleCopy = (text: string, fieldId: string) => {
+    const triggerSuccess = () => {
+      setCopiedField(fieldId);
+      setTimeout(() => setCopiedField(null), 2000);
+    };
+
+    const fallbackCopy = () => {
       const textArea = document.createElement('textarea');
       textArea.value = text;
       textArea.style.position = 'fixed';
       textArea.style.left = '-999999px';
       document.body.appendChild(textArea);
       textArea.focus();
-      textArea.select();
+      textArea.setSelectionRange(0, 99999);
       try {
         document.execCommand('copy');
+        triggerSuccess();
       } catch (err) {
         console.error('Error al copiar', err);
       }
       textArea.remove();
+    };
+
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(triggerSuccess).catch(fallbackCopy);
+    } else {
+      fallbackCopy();
     }
   };
 
@@ -237,46 +250,58 @@ export default function ProducerPortal({
     setSupplierCart(prev => prev.filter(item => item.productId !== productId));
   };
 
-  const submitSupplierOrder = async (e: React.FormEvent) => {
+  const submitSupplierOrder = async (e: React.FormEvent | React.MouseEvent) => {
     e.preventDefault();
-    if (!loggedSupplier || supplierCart.length === 0) return;
-    
-    let orderTotalUsd = 0;
-    const items = supplierCart.map(item => {
-      const product = products.find(p => p.id === item.productId);
-      const itemTotal = (product?.sellingPrice || 0) * item.quantity;
-      orderTotalUsd += itemTotal;
-      return {
-        productId: item.productId,
-        productName: product?.name || 'Insumo',
-        quantity: item.quantity,
-        unitPrice: product?.sellingPrice || 0,
-        subtotal: itemTotal
-      };
-    });
-
-    const newTx: Transaction = {
-      id: `tx_${Date.now()}`,
-      entity: loggedSupplier.name,
-      amount: orderTotalUsd,
-      isIncome: false,
-      notes: `Insumos: ${items.map(i => `${i.quantity}x ${i.productName}`).join(', ')}`,
-      date: new Date().toISOString(),
-      category: supplierPayment === 'fiado' ? 'credito' : 'ventas',
-      paymentMethod: supplierPayment === 'fiado' ? 'credito' : 'efectivo',
-      clientId: loggedSupplier.id,
-      invoiceNumber: `INV-${Date.now()}`,
-      status: 'Completado'
-    };
-
     try {
-      await addLocalDoc('transactions', newTx);
-      onAddNotification('Insumos cargados a su cuenta', 'success');
+      if (!loggedSupplier || !loggedSupplier.id || !loggedSupplier.name) {
+        return;
+      }
+      if (supplierCart.length === 0) {
+        return;
+      }
+      
+      let orderTotalUsd = 0;
+      const items = supplierCart.map(item => {
+        const product = (products || []).find(p => p.id === item.productId);
+        const itemTotal = (product?.sellingPrice || 0) * item.quantity;
+        orderTotalUsd += itemTotal;
+        return {
+          productId: item.productId,
+          productName: product?.name || 'Insumo',
+          quantity: item.quantity,
+          unitPrice: product?.sellingPrice || 0,
+          subtotal: itemTotal
+        };
+      });
+
+      const newOrder: MobileOrder = {
+        id: `ord_${Date.now()}`,
+        type: 'supplier',
+        entityId: loggedSupplier.id,
+        entityName: loggedSupplier.name,
+        date: new Date().toISOString(),
+        items: items.map(i => ({
+          productId: i.productId,
+          name: i.productName,
+          quantity: i.quantity,
+          price: i.unitPrice,
+          subtotal: i.subtotal,
+          unit: 'Und'
+        })),
+        total: orderTotalUsd,
+        paymentMethod: 'fiado',
+        status: 'Pendiente'
+      };
+
+      await addLocalDoc('mobileOrders', newOrder);
+      onAddNotification('Pedido enviado a caja exitosamente', 'success');
       setSupplierCart([]);
+      setInputQuantities({});
+      setIsCartModalOpen(false);
       setProducerActiveTab('perfil');
     } catch (err) {
-      console.error(err);
-      onAddNotification('Error procesando orden', 'warning');
+      console.error("ERROR CRÍTICO AL ENVIAR PEDIDO:", err);
+      alert("Error real en el código: " + (err as Error).message);
     }
   };
 
@@ -309,6 +334,7 @@ export default function ProducerPortal({
 
   const producerTxs = (transactions || []).filter(t => t.clientId === loggedSupplier?.id || t.entity === loggedSupplier?.name);
   const producerArrimes = (producerTxs || []).filter(t => t.category === 'compras');
+  const producerMobileOrders = (mobileOrders || []).filter(o => String(o.entityId) === String(loggedSupplier?.id));
 
   return (
     <div className={!isolatedType ? "flex flex-col items-center bg-slate-500/5 border border-slate-500/20 rounded-xl p-6 shadow-sm" : "w-full min-h-screen bg-black text-white flex flex-col"}>
@@ -676,8 +702,8 @@ export default function ProducerPortal({
                           })}
                         </div>
                         
-                        <form onSubmit={(e) => { submitSupplierOrder(e); setIsCartModalOpen(false); }} className="space-y-4 pt-4 border-t border-slate-800/50 shrink-0">
-                          <div className="flex justify-between items-end">
+                        <div className="space-y-4 pt-4 border-t border-slate-800/50 shrink-0">
+                          <div className="flex justify-between items-end mb-2">
                             <span className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Total a Pagar</span>
                             <div className="text-right">
                               <span className="font-mono font-black text-2xl text-emerald-400 block leading-none">
@@ -695,15 +721,14 @@ export default function ProducerPortal({
                             </div>
                           </div>
                           
-                          <div className="grid grid-cols-2 gap-2">
-                            <button type="button" onClick={() => setSupplierPayment('fiado')} className={`py-2.5 text-[10px] rounded-xl font-bold transition-colors ${supplierPayment === 'fiado' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50' : 'bg-slate-900 border border-slate-800 text-slate-400'}`}>A LIBRETA (CRÉDITO)</button>
-                            <button type="button" onClick={() => setSupplierPayment('contado')} className={`py-2.5 text-[10px] rounded-xl font-bold transition-colors ${supplierPayment === 'contado' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50' : 'bg-slate-900 border border-slate-800 text-slate-400'}`}>EFECTIVO (CONTADO)</button>
-                          </div>
-                          
-                          <button type="submit" className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-xl text-xs flex items-center justify-center gap-2 transition-all uppercase tracking-wider shadow-[0_4px_14px_rgb(16,185,129,0.2)]">
+                          <button 
+                            type="button" 
+                            onClick={submitSupplierOrder} 
+                            className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-xl text-xs flex items-center justify-center gap-2 transition-all uppercase tracking-wider shadow-[0_4px_14px_rgb(16,185,129,0.2)]"
+                          >
                             Confirmar Pedido
                           </button>
-                        </form>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -752,8 +777,8 @@ export default function ProducerPortal({
                             <p className="text-[10px] text-slate-500 font-bold uppercase">Teléfono</p>
                             <p className="font-mono text-slate-200 font-bold tracking-wider mt-0.5">04243068286</p>
                           </div>
-                          <button onClick={() => handleCopy('04243068286')} className="p-2 text-slate-500 hover:text-emerald-400 transition-colors">
-                            <Copy className="w-4 h-4" />
+                          <button onClick={() => handleCopy('04243068286', 'phone')} className="p-2 text-slate-500 hover:text-emerald-400 transition-colors">
+                            {copiedField === 'phone' ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                           </button>
                         </div>
                         <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex justify-between items-center">
@@ -761,8 +786,8 @@ export default function ProducerPortal({
                             <p className="text-[10px] text-slate-500 font-bold uppercase">Cédula de Identidad</p>
                             <p className="font-mono text-slate-200 font-bold tracking-wider mt-0.5">V-11120033</p>
                           </div>
-                          <button onClick={() => handleCopy('V11120033')} className="p-2 text-slate-500 hover:text-emerald-400 transition-colors">
-                            <Copy className="w-4 h-4" />
+                          <button onClick={() => handleCopy('V11120033', 'id')} className="p-2 text-slate-500 hover:text-emerald-400 transition-colors">
+                            {copiedField === 'id' ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                           </button>
                         </div>
                       </div>
@@ -805,22 +830,22 @@ export default function ProducerPortal({
                           />
                         </div>
                         
-                        <label htmlFor="pago-capture-file" className="border-2 border-dashed border-slate-800 rounded-xl p-6 flex flex-col items-center justify-center text-slate-500 hover:text-emerald-400 hover:border-emerald-500/50 transition-colors cursor-pointer bg-slate-900/50 relative overflow-hidden">
+                        <label htmlFor="pago-capture-file" className="border-2 border-dashed border-slate-800 rounded-xl p-6 flex flex-col items-center justify-center text-slate-500 hover:text-emerald-400 hover:border-emerald-500/50 transition-colors bg-slate-900/50 relative overflow-hidden">
                           {paymentImagePreview ? (
                             <>
-                              <img src={paymentImagePreview} alt="Captura de pantalla de pago" className="absolute inset-0 w-full h-full object-cover opacity-60" />
-                              <div className="relative z-10 bg-slate-950/80 px-4 py-2 rounded-xl text-emerald-400 text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 border border-emerald-500/30">
+                              <img src={paymentImagePreview} alt="Captura de pantalla de pago" className="absolute inset-0 w-full h-full object-cover opacity-60 pointer-events-none" />
+                              <div className="relative z-10 bg-slate-950/80 px-4 py-2 rounded-xl text-emerald-400 text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 border border-emerald-500/30 pointer-events-none">
                                 <ImageIcon className="w-4 h-4" /> Cambiar Captura
                               </div>
                             </>
                           ) : (
                             <>
-                              <ImageIcon className="w-8 h-8 mb-2 opacity-50" />
-                              <p className="text-xs font-bold">Adjuntar Captura de Pantalla</p>
-                              <p className="text-[9px] font-mono mt-1 opacity-70">JPG, PNG</p>
+                              <ImageIcon className="w-8 h-8 mb-2 opacity-50 pointer-events-none" />
+                              <p className="text-xs font-bold pointer-events-none">Adjuntar Captura de Pantalla</p>
+                              <p className="text-[9px] font-mono mt-1 opacity-70 pointer-events-none">JPG, PNG</p>
                             </>
                           )}
-                          <input type="file" id="pago-capture-file" accept="image/*" className="hidden" onChange={handleImageChange} />
+                          <input type="file" id="pago-capture-file" accept="image/*" className="absolute inset-0 opacity-0 w-full h-full z-20 cursor-pointer" onChange={handleImageChange} />
                         </label>
                         
                         <button className="w-full py-4 mt-2 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-500 hover:text-slate-950 font-bold uppercase tracking-widest text-[11px] rounded-xl transition-colors border border-emerald-500/20 flex items-center justify-center gap-2">
@@ -835,7 +860,36 @@ export default function ProducerPortal({
               {producerActiveTab === 'perfil' && (
                 <div className="px-4 flex-1 overflow-y-auto pb-4 space-y-2">
                   <h4 className="text-xs font-bold text-emerald-400 mb-3 border-b border-slate-800 pb-2">Historial y Perfil</h4>
-                  <p className="text-[10px] text-slate-400 mb-2 mt-4 font-bold uppercase tracking-widest border-b border-slate-800 pb-1">Movimientos Recientes</p>
+                  
+                  <p className="text-[10px] text-slate-400 mb-2 mt-4 font-bold uppercase tracking-widest border-b border-slate-800 pb-1">Pedidos Activos</p>
+                  {producerMobileOrders.length === 0 ? (
+                    <p className="text-slate-500 text-[10px] text-center mt-4">No tienes pedidos activos</p>
+                  ) : (
+                    producerMobileOrders.map(order => (
+                      <div key={order.id} className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex flex-col gap-2">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <p className="font-bold text-slate-200 text-[10px]">Pedido {order.id.slice(-6)}</p>
+                            <span className="text-[8px] text-slate-400">{new Date(order.date).toLocaleDateString()}</span>
+                          </div>
+                          <div className="text-right flex flex-col items-end">
+                            <span className="font-mono font-bold text-[11px] text-amber-400">${Number(order.total).toFixed(2)}</span>
+                            <span className={`text-[8px] px-1.5 py-0.5 rounded mt-1 font-bold uppercase ${order.status === 'Entregado' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>{order.status}</span>
+                          </div>
+                        </div>
+                        {order.status === 'Entregado' && (
+                          <button 
+                            onClick={() => setProducerActiveTab('pagar')}
+                            className="w-full mt-1 bg-emerald-500 hover:bg-emerald-600 text-black font-bold uppercase tracking-widest text-[9px] rounded py-1.5 transition-colors"
+                          >
+                            Pagar Pedido
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+
+                  <p className="text-[10px] text-slate-400 mb-2 mt-6 font-bold uppercase tracking-widest border-b border-slate-800 pb-1">Movimientos Recientes</p>
                   {(producerTxs || []).length === 0 ? <p className="text-slate-500 text-[10px] text-center mt-4">No hay movimientos</p> : (producerTxs || []).map(tx => (
                     <div key={tx.id} className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex justify-between items-center">
                       <div>

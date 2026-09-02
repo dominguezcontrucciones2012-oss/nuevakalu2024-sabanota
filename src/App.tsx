@@ -236,6 +236,10 @@ export default function App() {
       setUsers(data as UserIdentity[]);
     });
 
+    const unsubMobileOrders = onCollectionSnapshot('mobileOrders', (data) => {
+      setMobileOrders(data as MobileOrder[]);
+    });
+
     return () => {
       unsubTransactions();
       unsubClients();
@@ -243,6 +247,7 @@ export default function App() {
       unsubSettings();
       unsubUsers();
       unsubCheeseTrips();
+      unsubMobileOrders();
     };
   }, []);
 

@@ -83,6 +83,7 @@ export default function CheesePOSView({
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isChangeModalOpen, setIsChangeModalOpen] = useState(false);
+  const [isPedidosModalOpen, setIsPedidosModalOpen] = useState(false);
   const [changeCurrency, setChangeCurrency] = useState<'USD' | 'BS' | 'PAGO_MOVIL' | 'MIXED'>('USD');
   const [changeReference, setChangeReference] = useState('');
     const [isWaitingForApproval, setIsWaitingForApproval] = useState(false);
@@ -1086,43 +1087,28 @@ export default function CheesePOSView({
         >
           Historial de Cierres
         </button>
-      </div>
 
-      {/* Early Warning System for Mobile Orders */}
-      {mobileOrders.filter(o => o.status === 'Pendiente' && o.type === 'client').map(order => (
-        <div key={order.id} className="bg-rose-500/10 border-l-4 border-rose-500 p-4 rounded shadow-xl flex items-center justify-between animate-pulse">
-          <div className="flex items-center gap-3">
-            <Smartphone className="w-6 h-6 text-rose-500" />
-            <div>
-              <p className="text-sm font-bold text-rose-400">¡NUEVO PEDIDO MÓVIL ENTRANTE!</p>
-              <p className="text-xs text-editorial-text-muted">El cliente {order.entityName} ha solicitado {order.items.length} producto(s) por un total de ${(order.total || 0).toLocaleString()} USD.</p>
-            </div>
-          </div>
-          <button
-            onClick={() => {
-              // Load mobile order into POS cart
-              const newCart: CheeseSaleItem[] = order.items.map((item) => ({
-                productId: item.productId,
-                name: item.name,
-                pricePerKg: item.price,
-                quantityKg: item.quantity,
-                subtotal: item.subtotal,
-                unit: item.unit
-              }));
-              setCart(newCart);
-              setCustomerType('client');
-              setSelectedClientId(order.entityId);
-              const c = clients.find(cl => cl.id === order.entityId);
-              setClientSearchText(c ? (c.name || '') : '');
-              setActiveTab('pos');
-              onAddNotification(`Pedido de ${order.entityName} cargado a caja. Listo para facturar.`, 'info');
-            }}
-            className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold font-mono uppercase rounded transition-colors"
-          >
-            <Zap className="w-4 h-4" /> Facturar Pedido
-          </button>
+        <div className="ml-auto">
+          {(() => {
+            const pendingOrders = mobileOrders.filter(o => o.status === 'Pendiente');
+            const hasPending = pendingOrders.length > 0;
+            return (
+              <button
+                onClick={() => setIsPedidosModalOpen(true)}
+                className={`flex items-center gap-2 px-4 py-2 font-mono text-xs font-bold uppercase rounded transition-colors ${
+                  hasPending 
+                    ? 'bg-rose-500/10 text-rose-500 border border-rose-500/30 animate-pulse'
+                    : 'bg-editorial-bg text-editorial-text-muted border border-editorial-border hover:text-editorial-text-primary'
+                }`}
+              >
+                <Smartphone className="w-4 h-4" />
+                <span>Pedidos</span>
+                {hasPending && <span>({pendingOrders.length})</span>}
+              </button>
+            );
+          })()}
         </div>
-      ))}
+      </div>
 
       {activeTab === 'pos' && (
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-8">
@@ -3115,6 +3101,88 @@ export default function CheesePOSView({
         </div>
       )}
 
+      {/* Pedidos Pendientes Modal */}
+      {isPedidosModalOpen && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-editorial-bg border border-editorial-border rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl animate-scale-in relative overflow-hidden">
+            <div className="p-6 border-b border-editorial-border flex justify-between items-center bg-editorial-card">
+              <h2 className="text-xl font-serif font-bold text-white flex items-center gap-3 tracking-tight">
+                <Smartphone className="w-6 h-6 text-emerald-400" />
+                Pedidos Pendientes
+              </h2>
+              <button 
+                onClick={() => setIsPedidosModalOpen(false)}
+                className="w-10 h-10 rounded hover:bg-editorial-border flex items-center justify-center transition-colors text-editorial-text-muted hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto space-y-4">
+              {(() => {
+                const pendingOrders = mobileOrders.filter(o => o.status === 'Pendiente');
+                if (pendingOrders.length === 0) {
+                  return (
+                    <div className="text-center py-12 text-editorial-text-muted">
+                      <CheckCircle className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                      <p className="font-mono text-sm uppercase">No hay pedidos pendientes en este momento.</p>
+                    </div>
+                  );
+                }
+                
+                return pendingOrders.map(order => (
+                  <div key={order.id} className="bg-editorial-card border border-editorial-border hover:border-emerald-500/30 p-4 rounded-xl flex items-center justify-between transition-colors">
+                    <div>
+                      <p className="text-sm font-bold text-white mb-1 uppercase tracking-wider">{order.entityName}</p>
+                      <p className="text-xs text-editorial-text-muted font-mono">
+                        {order.items.length} producto(s) • Total: <span className="text-emerald-400">${(order.total || 0).toLocaleString()} USD</span>
+                      </p>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        // Load mobile order into POS cart
+                        const newCart: CheeseSaleItem[] = order.items.map((item) => ({
+                          productId: item.productId,
+                          name: item.name,
+                          pricePerKg: item.price,
+                          quantityKg: item.quantity,
+                          subtotal: item.subtotal,
+                          unit: item.unit
+                        }));
+                        setCart(newCart);
+                        setCustomerType(order.type === 'supplier' ? 'supplier' : 'client');
+                        if (order.type === 'supplier') {
+                          setSelectedSupplierId(String(order.entityId));
+                          const s = suppliers.find(su => String(su.id) === String(order.entityId));
+                          setSupplierSearchText(s ? (s.name || '') : order.entityName);
+                        } else {
+                          setSelectedClientId(String(order.entityId));
+                          const c = clients.find(cl => String(cl.id) === String(order.entityId));
+                          setClientSearchText(c ? (c.name || '') : order.entityName);
+                        }
+                        
+                        // Marcar orden como entregada en la base de datos
+                        try {
+                          await updateLocalDoc('mobileOrders', order.id, { status: 'Entregado' });
+                        } catch (err) {
+                          console.error("Error updating mobile order status", err);
+                        }
+
+                        setActiveTab('pos');
+                        setIsPedidosModalOpen(false);
+                        onAddNotification(`Pedido de ${order.entityName} cargado a caja. Listo para facturar.`, 'success');
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-emerald-500/10 hover:bg-emerald-500 hover:text-black text-emerald-400 text-xs font-bold font-mono uppercase rounded transition-colors border border-emerald-500/20"
+                    >
+                      <Zap className="w-4 h-4" /> Cargar Venta
+                    </button>
+                  </div>
+                ));
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
