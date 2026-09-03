@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Store, Home, Package, Truck, Wallet, LogOut, Search, Shield, ChevronRight, LogIn,
-  ShoppingCart, X, Trash2, Copy, Image as ImageIcon, Banknote, Check
+  Store, Home, Package, Truck, Wallet, LogOut, Search, Shield, ChevronRight, LogIn, User,
+  ShoppingCart, X, Trash2, Copy, Image as ImageIcon, Banknote, Check,
+  Key, ArrowLeft, Gift, MapPin, Mail, MessageCircle, Info, Star
 } from 'lucide-react';
 import { MobilePortalsViewProps } from '../MobilePortalsView';
 import { SupplierProfile, Transaction, CheeseProduct, MobileOrder } from '../../types';
@@ -80,6 +81,58 @@ export default function ProducerPortal({
   
   const [supplierPhoneInput, setSupplierPhoneInput] = useState('');
   const [supplierPinInput, setSupplierPinInput] = useState('');
+
+  // Lockout States
+  const [loginAttempts, setLoginAttempts] = useState(() => parseInt(localStorage.getItem('kaluProducerLoginAttempts') || '0'));
+  const [lockoutUntil, setLockoutUntil] = useState(() => parseInt(localStorage.getItem('kaluProducerLockoutUntil') || '0'));
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [countdown, setCountdown] = useState(0);
+
+  useEffect(() => {
+    localStorage.setItem('kaluProducerLoginAttempts', loginAttempts.toString());
+    localStorage.setItem('kaluProducerLockoutUntil', lockoutUntil.toString());
+  }, [loginAttempts, lockoutUntil]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = Date.now();
+      if (lockoutUntil > now && lockoutUntil !== Infinity) {
+        setCountdown(Math.ceil((lockoutUntil - now) / 1000));
+      } else if (lockoutUntil <= now && lockoutUntil !== 0) {
+        setCountdown(0);
+        setLockoutUntil(0);
+        setLoginAttempts(0);
+        setLoginError(null);
+      } else {
+        setCountdown(0);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [lockoutUntil]);
+
+  const handleFailedLogin = () => {
+    const attempts = loginAttempts + 1;
+    let lockout = lockoutUntil;
+    let errorMsg = '';
+    
+    if (attempts === 1) {
+      errorMsg = 'PIN o Usuario incorrecto. Quedan 2 intentos.';
+    } else if (attempts === 2) {
+      errorMsg = 'PIN incorrecto. Queda 1 intento.';
+    } else if (attempts === 3) {
+      errorMsg = 'Último intento antes del bloqueo de seguridad.';
+    } else if (attempts === 4) {
+      lockout = Date.now() + 300000; // 5 minutos
+      errorMsg = 'Demasiados intentos. Bloqueo temporal de 5 minutos.';
+    } else if (attempts > 4) {
+      lockout = Infinity;
+      errorMsg = 'Acceso bloqueado permanentemente por seguridad.';
+    }
+
+    setLoginAttempts(attempts);
+    setLockoutUntil(lockout);
+    setLoginError(errorMsg);
+  };
   
   const STORE_BANNERS = [
     { id: 'b1', title: 'Nueva Línea de Repuestos Bera', image: 'bg-emerald-900', desc: 'Amortiguadores, tripas y cauchos con crédito Kalu a 4 cuotas.' },
@@ -124,7 +177,9 @@ export default function ProducerPortal({
   };
   
   const [producerActiveTab, setProducerActiveTab] = useState<'inicio' | 'tienda' | 'pagar' | 'perfil'>('inicio');
-  
+  const [profileSubView, setProfileSubView] = useState<'main' | 'mis-datos' | 'info-personal' | 'mis-direcciones' | 'seguridad' | 'recuperar-identidad' | 'recuperar-canales'>('main');
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+
   const [supplierSearch, setSupplierSearch] = useState('');
   const [supplierCategory, setSupplierCategory] = useState<'Todos' | 'Víveres' | 'Insumos/Repuestos'>('Todos');
   const [supplierCart, setSupplierCart] = useState<{ productId: string; quantity: number }[]>([]);
@@ -181,8 +236,13 @@ export default function ProducerPortal({
 
   const handleSupplierLogin = (e: React.FormEvent | React.MouseEvent) => {
     e.preventDefault();
+    if (lockoutUntil > Date.now()) return;
     
     const cleanInput = supplierPhoneInput.replace(/\D/g, '');
+    if (!cleanInput) {
+      setLoginError('Por favor ingrese su cédula o teléfono.');
+      return;
+    }
     
     const supplier = suppliers.find(s => {
       const phoneDigits = (s.phone || '').toString().replace(/\D/g, '');
@@ -191,30 +251,25 @@ export default function ProducerPortal({
     });
 
     if (!supplier) {
-      alert("No se encontró ningún productor con esa Cédula o Teléfono.");
+      handleFailedLogin();
       return;
     }
 
-    let expectedPin = '0000';
-    if (supplier.pin) {
-      expectedPin = String(supplier.pin);
-    } else if (supplier.rfc && supplier.rfc.toString().length >= 4) {
-      expectedPin = supplier.rfc.toString().replace(/\D/g, '').slice(-4);
-    } else if (supplier.cedula && supplier.cedula.toString().length >= 4) {
-      expectedPin = supplier.cedula.toString().replace(/\D/g, '').slice(-4);
-    } else if (supplier.phone && supplier.phone.toString().length >= 4) {
-      expectedPin = supplier.phone.toString().replace(/\D/g, '').slice(-4);
-    }
+    const base = supplier.pin || supplier.cedula || supplier.rfc || supplier.phone || '000000';
+    const expectedPin = String(base).replace(/\D/g, '').slice(-4).padEnd(6, '0');
 
-    if (supplierPinInput === expectedPin || supplierPinInput === '0000') {
+    if (supplierPinInput === expectedPin) {
       setLoggedSupplier(supplier);
       localStorage.setItem('kaluMobileSupplierData', JSON.stringify(supplier));
       localStorage.setItem('kaluMobileSupplierId', supplier.id);
       setSupplierPhoneInput('');
       setSupplierPinInput('');
+      setLoginAttempts(0);
+      setLockoutUntil(0);
+      setLoginError(null);
       onAddNotification(`¡Bienvenido, ${supplier.name}!`, 'success');
     } else {
-      alert(`PIN incorrecto. (Si no has configurado PIN, prueba con los últimos 4 dígitos de tu cédula: ${expectedPin})`);
+      handleFailedLogin();
     }
   };
 
@@ -377,16 +432,21 @@ export default function ProducerPortal({
 
               <form className="bg-slate-900/50 backdrop-blur-md p-5 rounded-3xl border border-slate-800/50 shadow-xl relative overflow-hidden">
                 <div className="space-y-4 relative z-10">
+                  {loginError && (
+                    <div className="bg-red-500/10 border border-red-500/50 text-red-500 p-3 rounded-xl text-xs text-center animate-pulse font-bold">
+                      {loginError}
+                    </div>
+                  )}
                   <div className="space-y-1.5">
                     <label className="text-[9px] font-bold uppercase tracking-widest text-slate-500 ml-1">Cédula o Teléfono</label>
-                    <input type="tel" placeholder="04141234567" value={supplierPhoneInput} onChange={e => setSupplierPhoneInput(e.target.value)} className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500 transition-colors" />
+                    <input disabled={lockoutUntil > Date.now()} type="tel" placeholder="04141234567" value={supplierPhoneInput} onChange={e => setSupplierPhoneInput(e.target.value)} className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" />
                   </div>
                   <div className="space-y-1.5">
-                    <label className="text-[9px] font-bold uppercase tracking-widest text-slate-500 ml-1">PIN de Seguridad</label>
-                    <input type="password" placeholder="••••" value={supplierPinInput} onChange={e => setSupplierPinInput(e.target.value)} maxLength={4} className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl px-4 py-3 text-sm text-white text-center tracking-[0.5em] focus:outline-none focus:border-emerald-500 transition-colors" />
+                    <label className="text-[9px] font-bold uppercase tracking-widest text-slate-500 ml-1">PIN de Seguridad (6 DÍGITOS)</label>
+                    <input disabled={lockoutUntil > Date.now()} type="password" placeholder="••••••" value={supplierPinInput} onChange={e => setSupplierPinInput(e.target.value.replace(/\D/g, ''))} maxLength={6} className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl px-4 py-3 text-sm text-white text-center tracking-[0.5em] focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" />
                   </div>
-                  <button type="button" onClick={(e) => { e.preventDefault(); handleSupplierLogin(e); }} className="w-full mt-2 py-3.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black uppercase rounded-2xl text-xs tracking-wider transition-all flex items-center justify-center gap-2">
-                    <LogIn className="w-4 h-4" /> Entrar al Portal
+                  <button disabled={lockoutUntil > Date.now()} type="button" onClick={(e) => { e.preventDefault(); handleSupplierLogin(e); }} className={`w-full mt-2 py-3.5 font-black uppercase rounded-2xl text-xs tracking-wider transition-all flex items-center justify-center gap-2 ${lockoutUntil > Date.now() ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'}`}>
+                    <LogIn className="w-4 h-4" /> {lockoutUntil === Infinity ? 'BLOQUEADO' : lockoutUntil > Date.now() ? `BLOQUEADO (${Math.floor(countdown / 60).toString().padStart(2, '0')}:${(countdown % 60).toString().padStart(2, '0')})` : 'Entrar al Portal'}
                   </button>
                 </div>
               </form>
@@ -496,7 +556,7 @@ export default function ProducerPortal({
 
                     {/* Mi Libreta / Movimientos */}
                     <button 
-                      onClick={() => setProducerActiveTab('perfil')}
+                      onClick={() => setIsHistoryModalOpen(true)}
                       className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex flex-col justify-between hover:bg-emerald-500/20 transition-all text-left group"
                     >
                       <div className="flex justify-between items-center mb-2">
@@ -858,60 +918,364 @@ export default function ProducerPortal({
               )}
 
               {producerActiveTab === 'perfil' && (
-                <div className="px-4 flex-1 overflow-y-auto pb-4 space-y-2">
-                  <h4 className="text-xs font-bold text-emerald-400 mb-3 border-b border-slate-800 pb-2">Historial y Perfil</h4>
-                  
-                  <p className="text-[10px] text-slate-400 mb-2 mt-4 font-bold uppercase tracking-widest border-b border-slate-800 pb-1">Pedidos Activos</p>
-                  {producerMobileOrders.length === 0 ? (
-                    <p className="text-slate-500 text-[10px] text-center mt-4">No tienes pedidos activos</p>
-                  ) : (
-                    producerMobileOrders.map(order => (
-                      <div key={order.id} className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex flex-col gap-2">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <p className="font-bold text-slate-200 text-[10px]">Pedido {order.id.slice(-6)}</p>
-                            <span className="text-[8px] text-slate-400">{new Date(order.date).toLocaleDateString()}</span>
-                          </div>
-                          <div className="text-right flex flex-col items-end">
-                            <span className="font-mono font-bold text-[11px] text-amber-400">${Number(order.total).toFixed(2)}</span>
-                            <span className={`text-[8px] px-1.5 py-0.5 rounded mt-1 font-bold uppercase ${order.status === 'Entregado' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>{order.status}</span>
+                <div className="flex-1 flex flex-col bg-slate-950 overflow-hidden relative">
+                  {/* MAIN PROFILE VIEW */}
+                  {profileSubView === 'main' && (
+                    <div className="flex-1 overflow-y-auto px-4 py-6 space-y-5 animate-fade-in">
+                      {/* Cabecera Nivel Kalu */}
+                      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 relative overflow-hidden flex items-center justify-between">
+                        <div className="relative z-10">
+                          <h2 className="text-xl font-bold text-white mb-1">Nivel K 1</h2>
+                          <div className="flex items-center gap-1.5 text-amber-400">
+                            <span className="text-xs font-semibold">Tienes 3 pts</span>
+                            <Star className="w-3.5 h-3.5 fill-amber-400" />
                           </div>
                         </div>
-                        {order.status === 'Entregado' && (
-                          <button 
-                            onClick={() => setProducerActiveTab('pagar')}
-                            className="w-full mt-1 bg-emerald-500 hover:bg-emerald-600 text-black font-bold uppercase tracking-widest text-[9px] rounded py-1.5 transition-colors"
-                          >
-                            Pagar Pedido
-                          </button>
-                        )}
+                        <div className="relative z-10 bg-emerald-500/10 border border-emerald-500/30 px-3 py-1.5 rounded-full">
+                          <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-400">Mundo Kalu</span>
+                        </div>
                       </div>
-                    ))
+
+                      {/* Información (Menú) */}
+                      <div>
+                        <h3 className="text-sm font-bold text-white mb-3">Información</h3>
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+                          <button onClick={() => {}} className="w-full flex items-center justify-between p-4 border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
+                            <div className="flex items-center gap-3 text-emerald-400">
+                              <Gift className="w-5 h-5" />
+                              <span className="text-sm font-semibold text-slate-100">Tus recompensas</span>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-500" />
+                          </button>
+                          
+                          <button onClick={() => setProfileSubView('seguridad')} className="w-full flex items-center justify-between p-4 border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
+                            <div className="flex items-center gap-3 text-emerald-400">
+                              <Shield className="w-5 h-5" />
+                              <span className="text-sm font-semibold text-slate-100">Seguridad de tu cuenta</span>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-500" />
+                          </button>
+
+                          <button onClick={() => setProfileSubView('mis-datos')} className="w-full flex items-center justify-between p-4 border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
+                            <div className="flex items-center gap-3 text-emerald-400">
+                              <User className="w-5 h-5" />
+                              <span className="text-sm font-semibold text-slate-100">Mis datos</span>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-500" />
+                          </button>
+
+                          <button onClick={() => {}} className="w-full flex items-center justify-between p-4 hover:bg-slate-800/50 transition-colors">
+                            <div className="flex items-center gap-3 text-emerald-400">
+                              <Info className="w-5 h-5" />
+                              <span className="text-sm font-semibold text-slate-100">Sobre Mundo Kalu</span>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-500" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Invita y suma puntos */}
+                      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 flex items-center justify-between">
+                        <div>
+                          <h3 className="text-sm font-bold text-white mb-1">Invita y suma puntos</h3>
+                          <div className="flex items-center gap-1.5 text-amber-400">
+                            <span className="text-[10px] font-bold uppercase tracking-widest">Gana hasta 200</span>
+                            <Star className="w-3 h-3 fill-amber-400" />
+                            <ChevronRight className="w-3 h-3" />
+                          </div>
+                        </div>
+                        <div className="w-10 h-10 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                          <Gift className="w-5 h-5" />
+                        </div>
+                      </div>
+
+                      {/* Cerrar Sesión */}
+                      <button 
+                        onClick={() => { setLoggedSupplier(null); setSupplierCart([]); setProfileSubView('main'); setProducerActiveTab('inicio'); }}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between hover:bg-rose-500/10 hover:border-rose-500/30 group transition-colors"
+                      >
+                        <span className="text-sm font-semibold text-slate-100 group-hover:text-rose-400">Cerrar sesión</span>
+                        <LogOut className="w-5 h-5 text-slate-500 group-hover:text-rose-400" />
+                      </button>
+                      
+                      <div className="text-center pt-4">
+                        <span className="text-[8px] font-mono tracking-[0.3em] uppercase text-slate-600">Versión 3.2.0</span>
+                      </div>
+                    </div>
                   )}
 
-                  <p className="text-[10px] text-slate-400 mb-2 mt-6 font-bold uppercase tracking-widest border-b border-slate-800 pb-1">Movimientos Recientes</p>
-                  {(producerTxs || []).length === 0 ? <p className="text-slate-500 text-[10px] text-center mt-4">No hay movimientos</p> : (producerTxs || []).map(tx => (
-                    <div key={tx.id} className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex justify-between items-center">
-                      <div>
-                        <p className="font-bold text-slate-200 text-[10px]">{tx.notes || tx.entity}</p>
-                        <span className="text-[8px] text-slate-400">{new Date(tx.date).toLocaleDateString()}</span>
+                  {/* MIS DATOS */}
+                  {profileSubView === 'mis-datos' && (
+                    <div className="absolute inset-0 bg-slate-950 flex flex-col z-10 animate-slide-in-right">
+                      <div className="flex items-center gap-4 px-4 py-5 border-b border-slate-900 shrink-0">
+                        <button onClick={() => setProfileSubView('main')} className="p-1 rounded-full bg-slate-800 text-slate-300 hover:text-white">
+                          <ArrowLeft className="w-5 h-5" />
+                        </button>
+                        <h2 className="text-lg font-bold text-white">Mis datos</h2>
                       </div>
-                      <span className={`font-mono font-bold text-[11px] ${tx.isIncome ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {tx.isIncome ? '+' : '-'}${Number(tx.amount).toFixed(2)}
-                      </span>
-                    </div>
-                  ))}
-                  
-                  <p className="text-[10px] text-slate-400 mb-2 mt-6 font-bold uppercase tracking-widest border-b border-slate-800 pb-1">Arrimes Anteriores</p>
-                  {(producerArrimes || []).length === 0 ? <p className="text-slate-500 text-[10px] text-center mt-4">No hay registros de arrime</p> : (producerArrimes || []).map(arrime => (
-                    <div key={arrime.id} className="bg-slate-900 border border-slate-800 rounded-lg p-3">
-                      <div className="flex justify-between items-center mb-1">
-                        <span className="text-[9px] text-slate-400">{new Date(arrime.date).toLocaleDateString()}</span>
-                        <span className={`text-[8px] px-1.5 py-0.5 rounded ${arrime.status === 'Completado' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>{arrime.status}</span>
+                      
+                      <div className="p-4 space-y-4">
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+                          <button onClick={() => setProfileSubView('info-personal')} className="w-full flex items-center justify-between p-4 border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
+                            <div className="flex items-center gap-3 text-emerald-400">
+                              <User className="w-5 h-5" />
+                              <span className="text-sm font-semibold text-slate-100">Información personal</span>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-500" />
+                          </button>
+                          <button onClick={() => setProfileSubView('mis-direcciones')} className="w-full flex items-center justify-between p-4 hover:bg-slate-800/50 transition-colors">
+                            <div className="flex items-center gap-3 text-emerald-400">
+                              <MapPin className="w-5 h-5" />
+                              <span className="text-sm font-semibold text-slate-100">Mis direcciones</span>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-500" />
+                          </button>
+                        </div>
                       </div>
-                      <p className="font-bold text-slate-200 text-[11px]">{arrime.notes || 'Recepción de Queso'}</p>
                     </div>
-                  ))}
+                  )}
+
+                  {/* INFORMACIÓN PERSONAL */}
+                  {profileSubView === 'info-personal' && (
+                    <div className="absolute inset-0 bg-slate-950 flex flex-col z-20 animate-slide-in-right">
+                      <div className="flex items-center gap-4 px-4 py-5 border-b border-slate-900 shrink-0">
+                        <button onClick={() => setProfileSubView('mis-datos')} className="p-1 rounded-full bg-slate-800 text-slate-300 hover:text-white">
+                          <ArrowLeft className="w-5 h-5" />
+                        </button>
+                        <h2 className="text-lg font-bold text-white">Información personal</h2>
+                      </div>
+                      
+                      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">Nombre y Apellido</p>
+                          <p className="text-sm font-semibold text-slate-100">{loggedSupplier.name}</p>
+                        </div>
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">Cédula o Documento</p>
+                          <p className="text-sm font-semibold text-slate-100">{loggedSupplier.cedula || loggedSupplier.rfc || loggedSupplier.idNumber || 'No registrado'}</p>
+                        </div>
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex justify-between items-center">
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">Número de celular</p>
+                            <p className="text-sm font-semibold text-slate-100">{loggedSupplier.phone || 'Sin número registrado'}</p>
+                          </div>
+                          <button className="text-[10px] font-bold uppercase tracking-widest text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-full">Actualizar</button>
+                        </div>
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex justify-between items-center">
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">Correo electrónico</p>
+                            <p className="text-sm font-semibold text-slate-100">{(loggedSupplier as any)?.email || 'Sin correo registrado'}</p>
+                          </div>
+                          <button className="text-[10px] font-bold uppercase tracking-widest text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-full">Actualizar</button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* MIS DIRECCIONES (PLACEHOLDER) */}
+                  {profileSubView === 'mis-direcciones' && (
+                    <div className="absolute inset-0 bg-slate-950 flex flex-col z-20 animate-slide-in-right">
+                      <div className="flex items-center gap-4 px-4 py-5 border-b border-slate-900 shrink-0">
+                        <button onClick={() => setProfileSubView('mis-datos')} className="p-1 rounded-full bg-slate-800 text-slate-300 hover:text-white">
+                          <ArrowLeft className="w-5 h-5" />
+                        </button>
+                        <h2 className="text-lg font-bold text-white">Mis direcciones</h2>
+                      </div>
+                      
+                      <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-slate-500">
+                        <MapPin className="w-12 h-12 mb-4 opacity-50" />
+                        <p className="text-sm font-semibold mb-2 text-slate-300">Aún no tienes direcciones</p>
+                        <p className="text-xs">Podrás agregar direcciones de entrega o fincas próximamente.</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* SEGURIDAD */}
+                  {profileSubView === 'seguridad' && (
+                    <div className="absolute inset-0 bg-slate-950 flex flex-col z-10 animate-slide-in-right">
+                      <div className="flex items-center gap-4 px-4 py-5 border-b border-slate-900 shrink-0">
+                        <button onClick={() => setProfileSubView('main')} className="p-1 rounded-full bg-slate-800 text-slate-300 hover:text-white">
+                          <ArrowLeft className="w-5 h-5" />
+                        </button>
+                        <h2 className="text-lg font-bold text-white">Seguridad</h2>
+                      </div>
+                      
+                      <div className="p-4">
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+                          <button onClick={() => setProfileSubView('recuperar-identidad')} className="w-full flex items-center justify-between p-4 border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
+                            <div className="flex items-center gap-3 text-emerald-400">
+                              <Key className="w-5 h-5" />
+                              <span className="text-sm font-semibold text-slate-100">Cambiar clave de seguridad</span>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-500" />
+                          </button>
+                          
+                          <div className="w-full flex items-center justify-between p-4">
+                            <div className="flex items-start gap-3">
+                              <Shield className="w-5 h-5 text-emerald-400 shrink-0" />
+                              <div className="text-left">
+                                <p className="text-sm font-semibold text-slate-100">Usar datos biométricos</p>
+                                <p className="text-[10px] text-slate-500 mt-0.5">Aumenta la seguridad de la aplicación.</p>
+                              </div>
+                            </div>
+                            {/* Toggle Switch UI */}
+                            <div className="w-10 h-6 bg-slate-700 rounded-full flex items-center px-1 cursor-pointer ml-3 shrink-0">
+                              <div className="w-4 h-4 bg-white rounded-full"></div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* RECUPERAR IDENTIDAD (MODAL FLOTANTE ESTILO) */}
+                  {profileSubView === 'recuperar-identidad' && (
+                    <div className="absolute inset-0 bg-slate-950 flex flex-col z-30 animate-fade-in">
+                      {/* Fondo oscurecido para simular modal, aunque ocupa toda la pantalla en este diseño */}
+                      <div className="absolute inset-0 bg-slate-950/80"></div>
+                      
+                      <div className="relative z-10 bg-slate-900 rounded-t-3xl border-t border-slate-800 mt-auto px-6 py-8 pb-10 flex flex-col items-center animate-slide-up text-center">
+                        <div className="w-12 h-1 bg-slate-700 rounded-full mb-8"></div>
+                        
+                        <div className="w-20 h-20 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center mb-6">
+                          <Key className="w-8 h-8 text-emerald-400" />
+                        </div>
+                        
+                        <h2 className="text-xl font-bold text-white mb-2">Validemos tu identidad</h2>
+                        <p className="text-xs text-slate-400 mb-8 max-w-[250px] mx-auto">
+                          Necesitamos verificar que seas tú. Este paso no te llevará mucho tiempo.
+                        </p>
+                        
+                        <button 
+                          onClick={() => setProfileSubView('recuperar-canales')}
+                          className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold uppercase tracking-wider text-sm rounded-xl py-4 mb-4 transition-colors"
+                        >
+                          Comenzar
+                        </button>
+                        
+                        <button 
+                          onClick={() => setProfileSubView('seguridad')}
+                          className="text-sm font-bold text-slate-400 hover:text-white transition-colors"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* SELECCIÓN DE CANALES DE RECUPERACIÓN */}
+                  {profileSubView === 'recuperar-canales' && (
+                    <div className="absolute inset-0 bg-slate-950 flex flex-col z-40 animate-slide-in-right">
+                      <div className="flex items-center gap-4 px-4 py-5 shrink-0">
+                        <button onClick={() => setProfileSubView('recuperar-identidad')} className="p-1 rounded-full bg-slate-800 text-slate-300 hover:text-white">
+                          <ArrowLeft className="w-5 h-5" />
+                        </button>
+                        <h2 className="text-lg font-bold text-white">Seguridad</h2>
+                      </div>
+                      
+                      <div className="p-6">
+                        <h2 className="text-2xl font-bold text-white leading-tight mb-2">Te enviaremos un código de<br/>recuperación</h2>
+                        <p className="text-xs text-slate-400 mb-8">Elige dónde quieres recibirlo.</p>
+                        
+                        <div className="space-y-4">
+                          <button className="w-full flex items-center justify-between p-4 bg-slate-900 border border-slate-800 rounded-2xl hover:bg-slate-800/80 transition-colors text-left group">
+                            <div className="flex items-center gap-4">
+                              <div className="w-10 h-10 rounded-full bg-slate-950 flex items-center justify-center">
+                                <MessageCircle className="w-5 h-5 text-emerald-400" />
+                              </div>
+                              <div>
+                                <p className="text-sm font-bold text-slate-100">WhatsApp</p>
+                                <p className="text-[10px] text-slate-400 mt-0.5">Enviar a +58***{String(loggedSupplier.phone || '0000').slice(-4)}</p>
+                              </div>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-emerald-400 transition-colors" />
+                          </button>
+                          
+                          <button className="w-full flex items-center justify-between p-4 bg-slate-900 border border-slate-800 rounded-2xl hover:bg-slate-800/80 transition-colors text-left group">
+                            <div className="flex items-center gap-4">
+                              <div className="w-10 h-10 rounded-full bg-slate-950 flex items-center justify-center">
+                                <Mail className="w-5 h-5 text-slate-300" />
+                              </div>
+                              <div>
+                                <p className="text-sm font-bold text-slate-100">Correo</p>
+                                <p className="text-[10px] text-slate-400 mt-0.5">Enviar a ad***@g***.com</p>
+                              </div>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-slate-300 transition-colors" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {isHistoryModalOpen && (
+                <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end animate-fade-in">
+                  <div className="bg-slate-900 border-t border-slate-800 rounded-t-3xl p-5 flex flex-col max-h-[85vh] relative z-50 animate-slide-up shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
+                    <div className="flex justify-between items-center mb-4 shrink-0">
+                      <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                        <Wallet className="w-5 h-5 text-emerald-400" /> Movimientos y Deudas
+                      </h3>
+                      <button onClick={() => setIsHistoryModalOpen(false)} className="w-8 h-8 bg-slate-800 rounded-full flex items-center justify-center text-slate-400 hover:text-white transition-colors">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                    
+                    <div className="flex-1 overflow-y-auto pr-1 pb-4">
+                      <p className="text-[10px] text-slate-400 mb-2 font-bold uppercase tracking-widest border-b border-slate-800 pb-1">Pedidos Activos</p>
+                      {producerMobileOrders.length === 0 ? (
+                        <p className="text-slate-500 text-[10px] text-center mt-4">No tienes pedidos activos</p>
+                      ) : (
+                        producerMobileOrders.map(order => (
+                          <div key={order.id} className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex flex-col gap-2 mb-2">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <p className="font-bold text-slate-200 text-[10px]">Pedido {order.id.slice(-6)}</p>
+                                <span className="text-[8px] text-slate-400">{new Date(order.date).toLocaleDateString()}</span>
+                              </div>
+                              <div className="text-right flex flex-col items-end">
+                                <span className="font-mono font-bold text-[11px] text-amber-400">${Number(order.total).toFixed(2)}</span>
+                                <span className={`text-[8px] px-1.5 py-0.5 rounded mt-1 font-bold uppercase ${order.status === 'Entregado' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>{order.status}</span>
+                              </div>
+                            </div>
+                            {order.status === 'Entregado' && (
+                              <button 
+                                onClick={() => { setIsHistoryModalOpen(false); setProducerActiveTab('pagar'); }}
+                                className="w-full mt-1 bg-emerald-500 hover:bg-emerald-600 text-black font-bold uppercase tracking-widest text-[9px] rounded py-1.5 transition-colors"
+                              >
+                                Pagar Pedido
+                              </button>
+                            )}
+                          </div>
+                        ))
+                      )}
+
+                      <p className="text-[10px] text-slate-400 mb-2 mt-6 font-bold uppercase tracking-widest border-b border-slate-800 pb-1">Movimientos Recientes</p>
+                      {(producerTxs || []).length === 0 ? <p className="text-slate-500 text-[10px] text-center mt-4">No hay movimientos</p> : (producerTxs || []).map(tx => (
+                        <div key={tx.id} className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex justify-between items-center mb-2">
+                          <div>
+                            <p className="font-bold text-slate-200 text-[10px]">{tx.notes || tx.entity}</p>
+                            <span className="text-[8px] text-slate-400">{new Date(tx.date).toLocaleDateString()}</span>
+                          </div>
+                          <span className={`font-mono font-bold text-[11px] ${tx.isIncome ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {tx.isIncome ? '+' : '-'}${Number(tx.amount).toFixed(2)}
+                          </span>
+                        </div>
+                      ))}
+                      
+                      <p className="text-[10px] text-slate-400 mb-2 mt-6 font-bold uppercase tracking-widest border-b border-slate-800 pb-1">Arrimes Anteriores</p>
+                      {(producerArrimes || []).length === 0 ? <p className="text-slate-500 text-[10px] text-center mt-4">No hay registros de arrime</p> : (producerArrimes || []).map(arrime => (
+                        <div key={arrime.id} className="bg-slate-950 border border-slate-800 rounded-lg p-3 mb-2">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-[9px] text-slate-400">{new Date(arrime.date).toLocaleDateString()}</span>
+                            <span className={`text-[8px] px-1.5 py-0.5 rounded ${arrime.status === 'Completado' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>{arrime.status}</span>
+                          </div>
+                          <p className="font-bold text-slate-200 text-[11px]">{arrime.notes || 'Recepción de Queso'}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
 

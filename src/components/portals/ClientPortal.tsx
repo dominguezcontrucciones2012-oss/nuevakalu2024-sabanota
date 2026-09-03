@@ -76,6 +76,92 @@ export default function ClientPortal({
   const [clientPinInput, setClientPinInput] = useState<string>('');
   const [supplierPinInput, setSupplierPinInput] = useState<string>('');
 
+  // Lockout States
+  const [clientLoginAttempts, setClientLoginAttempts] = useState(() => parseInt(localStorage.getItem('kaluClientLoginAttempts') || '0'));
+  const [clientLockoutUntil, setClientLockoutUntil] = useState(() => parseInt(localStorage.getItem('kaluClientLockoutUntil') || '0'));
+  const [clientLoginError, setClientLoginError] = useState<string | null>(null);
+  const [clientCountdown, setClientCountdown] = useState(0);
+
+  const [supplierLoginAttempts, setSupplierLoginAttempts] = useState(() => parseInt(localStorage.getItem('kaluSupplierLoginAttempts') || '0'));
+  const [supplierLockoutUntil, setSupplierLockoutUntil] = useState(() => parseInt(localStorage.getItem('kaluSupplierLockoutUntil') || '0'));
+  const [supplierLoginError, setSupplierLoginError] = useState<string | null>(null);
+  const [supplierCountdown, setSupplierCountdown] = useState(0);
+
+  React.useEffect(() => {
+    localStorage.setItem('kaluClientLoginAttempts', clientLoginAttempts.toString());
+    localStorage.setItem('kaluClientLockoutUntil', clientLockoutUntil.toString());
+  }, [clientLoginAttempts, clientLockoutUntil]);
+
+  React.useEffect(() => {
+    localStorage.setItem('kaluSupplierLoginAttempts', supplierLoginAttempts.toString());
+    localStorage.setItem('kaluSupplierLockoutUntil', supplierLockoutUntil.toString());
+  }, [supplierLoginAttempts, supplierLockoutUntil]);
+
+  React.useEffect(() => {
+    const timer = setInterval(() => {
+      const now = Date.now();
+      
+      if (clientLockoutUntil > now && clientLockoutUntil !== Infinity) {
+        setClientCountdown(Math.ceil((clientLockoutUntil - now) / 1000));
+      } else if (clientLockoutUntil <= now && clientLockoutUntil !== 0) {
+        setClientCountdown(0);
+        setClientLockoutUntil(0);
+        setClientLoginAttempts(0);
+        setClientLoginError(null);
+      } else {
+        setClientCountdown(0);
+      }
+      
+      if (supplierLockoutUntil > now && supplierLockoutUntil !== Infinity) {
+        setSupplierCountdown(Math.ceil((supplierLockoutUntil - now) / 1000));
+      } else if (supplierLockoutUntil <= now && supplierLockoutUntil !== 0) {
+        setSupplierCountdown(0);
+        setSupplierLockoutUntil(0);
+        setSupplierLoginAttempts(0);
+        setSupplierLoginError(null);
+      } else {
+        setSupplierCountdown(0);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [clientLockoutUntil, supplierLockoutUntil]);
+
+  const handleFailedLogin = (type: 'client' | 'supplier') => {
+    const attempts = type === 'client' ? clientLoginAttempts + 1 : supplierLoginAttempts + 1;
+    let lockout = type === 'client' ? clientLockoutUntil : supplierLockoutUntil;
+    let errorMsg = '';
+    
+    if (attempts === 1) {
+      errorMsg = 'PIN o Usuario incorrecto. Quedan 2 intentos.';
+    } else if (attempts === 2) {
+      errorMsg = 'PIN incorrecto. Queda 1 intento.';
+    } else if (attempts === 3) {
+      errorMsg = 'Último intento antes del bloqueo de seguridad.';
+    } else if (attempts === 4) {
+      lockout = Date.now() + 300000; // 5 minutos
+      errorMsg = 'Demasiados intentos. Bloqueo temporal de 5 minutos.';
+    } else if (attempts > 4) {
+      lockout = Infinity;
+      errorMsg = 'Acceso bloqueado permanentemente por seguridad.';
+    }
+
+    if (type === 'client') {
+      setClientLoginAttempts(attempts);
+      setClientLockoutUntil(lockout);
+      setClientLoginError(errorMsg);
+    } else {
+      setSupplierLoginAttempts(attempts);
+      setSupplierLockoutUntil(lockout);
+      setSupplierLoginError(errorMsg);
+    }
+  };
+
+  const get6DigitPin = (user: any) => {
+    const base = user.pin || user.cedula || user.rfc || user.ci || user.ciRif || user.idNumber || user.phone || '000000';
+    return String(base).replace(/\D/g, '').slice(-4).padEnd(6, '0');
+  };
+
+
   // Auto-login logic for isolated mode
   React.useEffect(() => {
     if (isolatedId) {
@@ -240,9 +326,11 @@ export default function ClientPortal({
   // Handlers for Client Portal Login
   const handleClientLoginSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (clientLockoutUntil > Date.now()) return;
+
     const phoneClean = clientPhoneInput.trim();
     if (!phoneClean) {
-      onAddNotification('Por favor ingrese su usuario o teléfono.', 'warning');
+      setClientLoginError('Por favor ingrese su usuario o teléfono.');
       return;
     }
     
@@ -257,40 +345,31 @@ export default function ClientPortal({
     );
 
     if (found) {
-      // PIN Check
-      let expectedPin = '0000';
-      if (found.pin) expectedPin = found.pin;
-      else if (found.cedula && found.cedula.length >= 4) expectedPin = found.cedula.slice(-4);
-      else if (found.rfc && found.rfc.length >= 4) expectedPin = found.rfc.slice(-4);
-      else if (found.ci && found.ci.length >= 4) expectedPin = found.ci.slice(-4);
-      else if (found.ciRif && found.ciRif.length >= 4) expectedPin = found.ciRif.slice(-4);
-      else if (found.idNumber && found.idNumber.length >= 4) expectedPin = found.idNumber.slice(-4);
-      else if (found.phone) {
-         const ph = found.phone.replace(/\D/g, '');
-         if (ph.length >= 4) expectedPin = ph.slice(-4);
-      }
+      const expectedPin = get6DigitPin(found);
       
       if (clientPinInput === expectedPin) {
-        alert('¡Login correcto! Entrando al portal...');
         setLoggedClient(found);
         setClientCart([]);
+        setClientLoginAttempts(0);
+        setClientLockoutUntil(0);
+        setClientLoginError(null);
         onAddNotification(`¡Sesión iniciada como Cliente: ${found.name}!`, 'success');
       } else {
-         alert('El PIN ingresado es incorrecto. Esperado: ' + expectedPin + ' / Ingresado: ' + clientPinInput);
-         onAddNotification('El PIN ingresado es incorrecto.', 'warning');
+        handleFailedLogin('client');
       }
     } else {
-      alert('No se encontró ningún cliente registrado con la cédula/celular: ' + phoneClean);
-      onAddNotification('No se encontró ningún cliente registrado con esos datos.', 'warning');
+      handleFailedLogin('client');
     }
   };
 
   // Handlers for Supplier Portal Login (Libreta de Queso)
   const handleSupplierLoginSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (supplierLockoutUntil > Date.now()) return;
+
     const phoneClean = supplierPhoneInput.trim();
     if (!phoneClean) {
-      onAddNotification('Por favor ingrese su usuario o teléfono.', 'warning');
+      setSupplierLoginError('Por favor ingrese su usuario o teléfono.');
       return;
     }
     const found = suppliers.find(
@@ -301,25 +380,20 @@ export default function ClientPortal({
     );
 
     if (found) {
-      // PIN Check
-      let expectedPin = '0000';
-      if (found.pin) expectedPin = found.pin;
-      else if (found.cedula && found.cedula.length >= 4) expectedPin = found.cedula.slice(-4);
-      else if (found.rfc && found.rfc.length >= 4) expectedPin = found.rfc.slice(-4);
-      else if (found.phone) {
-         const ph = found.phone.replace(/\D/g, '');
-         if (ph.length >= 4) expectedPin = ph.slice(-4);
-      }
+      const expectedPin = get6DigitPin(found);
 
       if (supplierPinInput === expectedPin) {
         setLoggedSupplier(found);
         setSupplierCart([]);
+        setSupplierLoginAttempts(0);
+        setSupplierLockoutUntil(0);
+        setSupplierLoginError(null);
         onAddNotification(`¡Sesión iniciada como Productor: ${found.name}!`, 'success');
       } else {
-        onAddNotification('El PIN ingresado es incorrecto.', 'warning');
+        handleFailedLogin('supplier');
       }
     } else {
-      onAddNotification('No se encontró ningún productor con esos datos.', 'warning');
+      handleFailedLogin('supplier');
     }
   };
 
@@ -547,14 +621,20 @@ export default function ClientPortal({
                   </div>
 
                   <form onSubmit={handleClientLoginSubmit} className="space-y-5 bg-slate-900/40 p-6 rounded-3xl border border-slate-800">
+                    {clientLoginError && (
+                      <div className="bg-red-500/10 border border-red-500/50 text-red-500 p-3 rounded-xl text-xs text-center animate-pulse font-bold">
+                        {clientLoginError}
+                      </div>
+                    )}
                     <div className="space-y-1.5">
                       <label className="text-[9px] font-mono uppercase text-slate-400 block ml-1">CÉDULA, CELULAR O NOMBRE</label>
                       <input
                         type="text"
+                        disabled={clientLockoutUntil > Date.now()}
                         placeholder="Ingresa tu cédula, celular o nombre"
                         value={clientPhoneInput}
                         onChange={(e) => setClientPhoneInput(e.target.value)}
-                        className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/60 font-mono"
+                        className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/60 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
                       />
                     </div>
                     <div className="space-y-1.5">
@@ -562,20 +642,22 @@ export default function ClientPortal({
                       <input
                         type="password"
                         maxLength={6}
+                        disabled={clientLockoutUntil > Date.now()}
                         placeholder="······"
                         value={clientPinInput}
-                        onChange={(e) => setClientPinInput(e.target.value)}
-                        className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/60 font-mono tracking-[0.5em] text-center"
+                        onChange={(e) => setClientPinInput(e.target.value.replace(/\D/g, ''))}
+                        className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/60 font-mono tracking-[0.5em] text-center disabled:opacity-50 disabled:cursor-not-allowed"
                       />
                     </div>
                     
                     <div className="pt-2">
                       <button
                         type="submit"
-                        className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-3.5 rounded-2xl uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2"
+                        disabled={clientLockoutUntil > Date.now()}
+                        className={`w-full font-bold py-3.5 rounded-2xl uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2 ${clientLockoutUntil > Date.now() ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' : 'bg-amber-500 hover:bg-amber-400 text-slate-950'}`}
                       >
                         <User className="w-4 h-4" />
-                        INGRESAR A MI CUENTA
+                        {clientLockoutUntil === Infinity ? 'BLOQUEADO' : clientLockoutUntil > Date.now() ? `BLOQUEADO (${Math.floor(clientCountdown / 60).toString().padStart(2, '0')}:${(clientCountdown % 60).toString().padStart(2, '0')})` : 'INGRESAR A MI CUENTA'}
                       </button>
                     </div>
                   </form>
@@ -930,40 +1012,49 @@ export default function ClientPortal({
                     <p className="text-xs tracking-widest text-emerald-500 font-semibold uppercase">Acceso Seguro</p>
                   </div>
 
-                  <form onSubmit={handleSupplierLoginSubmit} className="space-y-4 bg-slate-950/80 p-5 rounded-3xl border border-slate-800 shadow-xl mt-4">
+                  <form onSubmit={handleSupplierLoginSubmit} className="space-y-5 bg-slate-900/40 p-6 rounded-3xl border border-slate-800">
+                    {supplierLoginError && (
+                      <div className="bg-red-500/10 border border-red-500/50 text-red-500 p-3 rounded-xl text-xs text-center animate-pulse font-bold">
+                        {supplierLoginError}
+                      </div>
+                    )}
                     <div className="space-y-1.5">
                       <label className="text-[9px] font-mono uppercase text-slate-400 block ml-1">CÉDULA O TELÉFONO</label>
                       <input
                         type="text"
-                        placeholder="Ingresa tu número de cédula"
+                        disabled={supplierLockoutUntil > Date.now()}
+                        placeholder="Ingresa tu cédula o teléfono"
                         value={supplierPhoneInput}
                         onChange={(e) => setSupplierPhoneInput(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/60 font-mono text-center"
+                        className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/60 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[9px] font-mono uppercase text-slate-400 block ml-1">PIN DE ACCESO (ÚLTIMOS 4 DÍGITOS)</label>
+                      <label className="text-[9px] font-mono uppercase text-slate-400 block ml-1">PIN DE ACCESO (6 DÍGITOS)</label>
                       <input
                         type="password"
-                        maxLength={4}
-                        placeholder="• • • •"
+                        maxLength={6}
+                        disabled={supplierLockoutUntil > Date.now()}
+                        placeholder="······"
                         value={supplierPinInput}
-                        onChange={(e) => setSupplierPinInput(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/60 font-mono tracking-[0.5em] text-center"
+                        onChange={(e) => setSupplierPinInput(e.target.value.replace(/\D/g, ''))}
+                        className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/60 font-mono tracking-[0.5em] text-center disabled:opacity-50 disabled:cursor-not-allowed"
                       />
                     </div>
                     
                     <div className="pt-2">
                       <button
                         type="submit"
-                        className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold uppercase rounded-xl text-[11px] tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2"
+                        disabled={supplierLockoutUntil > Date.now()}
+                        className={`w-full font-bold py-3.5 rounded-2xl uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2 ${supplierLockoutUntil > Date.now() ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'}`}
                       >
-                        <LogIn className="w-4 h-4" />
-                        Ingresar al Portal
+                        <Store className="w-4 h-4" />
+                        {supplierLockoutUntil === Infinity ? 'BLOQUEADO' : supplierLockoutUntil > Date.now() ? `BLOQUEADO (${Math.floor(supplierCountdown / 60).toString().padStart(2, '0')}:${(supplierCountdown % 60).toString().padStart(2, '0')})` : 'Ingresar al Portal'}
                       </button>
                     </div>
+                  </form>
 
-                    <div className="pt-3 text-center">
+                  <div className="pt-3 text-center">
                       <span className="text-[8px] text-slate-500 block">Demos disponibles:</span>
                       <div className="flex flex-wrap gap-1.5 justify-center mt-1.5">
                         {suppliers.slice(0, 3).map(s => (
@@ -978,7 +1069,6 @@ export default function ClientPortal({
                         ))}
                       </div>
                     </div>
-                  </form>
 
                   <div className="text-center text-[9px] text-slate-500 space-y-1.5 mt-8 flex flex-col items-center">
                     <Shield className="w-4 h-4 text-slate-600 mb-1" />
