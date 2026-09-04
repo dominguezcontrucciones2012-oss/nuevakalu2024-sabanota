@@ -39,6 +39,8 @@ import PaymentsTab from '../PaymentsTab';
 import ProfileTab from '../ProfileTab';
 import StoreTab from '../StoreTab';
 import { QrScannerTab } from '../QrScannerTab';
+import KaluLoader from '../KaluLoader';
+import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
 interface MobilePortalsViewProps {
   products: CheeseProduct[];
   clients: ClientProfile[];
@@ -162,8 +164,12 @@ export default function ClientPortal({
   };
 
 
+  // Initialization splash
+  const [isInitializing, setIsInitializing] = useState(true);
+
   // Auto-login logic for isolated mode
   React.useEffect(() => {
+    let timer: any = null;
     if (isolatedId) {
       if (isolatedType === 'cliente') {
         const client = clients.find(c => c.id === isolatedId);
@@ -172,6 +178,7 @@ export default function ClientPortal({
         const supplier = suppliers.find(s => s.id === isolatedId);
         if (supplier) setLoggedSupplier(supplier);
       }
+      timer = setTimeout(() => setIsInitializing(false), 800);
     } else {
       // Local persistence for non-isolated mode
       const savedClientId = localStorage.getItem('kaluMobileClientId');
@@ -184,7 +191,9 @@ export default function ClientPortal({
         const supplier = suppliers.find(s => s.id === savedSupplierId);
         if (supplier) setLoggedSupplier(supplier);
       }
+      timer = setTimeout(() => setIsInitializing(false), 800);
     }
+    return () => { if (timer) clearTimeout(timer); };
   }, [isolatedId, isolatedType, clients, suppliers]);
 
   React.useEffect(() => {
@@ -213,6 +222,14 @@ export default function ClientPortal({
   
   // Real-Time Sync: Aprobación de Crédito (Cashea Style)
   const [pendingCreditRequest, setPendingCreditRequest] = useState<any>(null);
+
+  // Swipe Navigation for Client Mobile Tabs (Inicio <-> Tienda <-> QR <-> Pagos <-> Perfil)
+  const clientSwipeHandlers = useSwipeNavigation({
+    tabs: ['inicio', 'tienda', 'qr', 'pagos', 'perfil'],
+    activeTab: clientActiveTab,
+    onTabChange: (newTab) => setClientActiveTab(newTab),
+    disabled: !loggedClient || showClientCartModal || showQrPaymentModal || pendingCreditRequest !== null
+  });
 
   const [pwaBcvRate, setPwaBcvRate] = useState<number>(0);
   
@@ -609,7 +626,9 @@ export default function ClientPortal({
             {/* Screen Content */}
             <div className={`flex-1 overflow-y-auto bg-zinc-900 text-zinc-100 flex flex-col text-xs ${!isolatedType ? 'p-4 pt-7' : 'px-4 py-6'}`}>
               
-              {!loggedClient ? (
+              {isInitializing ? (
+                <KaluLoader message="Mundo Kalu" subMessage="CARGANDO SESIÓN..." />
+              ) : !loggedClient ? (
                 /* CLIENT PORTAL: LOCK / LOGIN SCREEN */
                 <div className="flex-1 flex flex-col justify-between py-6">
                   <div className="text-center mt-6 space-y-2">
@@ -674,7 +693,10 @@ export default function ClientPortal({
                 </div>
               ) : (
                 /* CLIENT PORTAL: LOGGED IN STORE & ACCOUNT */
-                <div className="flex-1 flex flex-col min-h-0 relative pb-16">
+                <div 
+                  {...clientSwipeHandlers}
+                  className="flex-1 flex flex-col min-h-0 relative pb-16 touch-pan-y"
+                >
                   {clientActiveTab === 'inicio' && (
                     <div className="p-4 space-y-6 flex-1 overflow-y-auto animate-fade-in pb-24">
                       {/* Top Bar / Customer Level Pill */}

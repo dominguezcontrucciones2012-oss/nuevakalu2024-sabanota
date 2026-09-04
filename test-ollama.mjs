@@ -1,0 +1,1 @@
+import ollama from 'ollama'; async function test() { const response = await ollama.chat({ model: 'llama3.1', messages: [{ role: 'user', content: '¡Hola! Saluda en español y dime que estás listo para trabajar.' }] }); console.log(response.message.content); } test();

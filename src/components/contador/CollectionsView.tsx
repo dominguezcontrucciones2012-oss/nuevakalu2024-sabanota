@@ -1,5 +1,6 @@
 import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
 import React, { useState, useEffect } from 'react';
+import KaluLoader from '../KaluLoader';
 
 
 import { Receipt, CheckCircle, XCircle, Clock, Bot, ShieldCheck } from 'lucide-react';
@@ -208,7 +209,7 @@ export default function CollectionsView({
           <Clock className="w-4 h-4" /> Pagos Reportados (PWA)
         </h2>
         {isLoading ? (
-          <div className="text-center py-10 text-neutral-500">Cargando pagos...</div>
+          <KaluLoader message="Mundo Kalu" subMessage="CARGANDO PAGOS..." size="sm" />
         ) : payments.length === 0 ? (
           <div className="text-center py-10 text-neutral-500">No hay pagos reportados.</div>
         ) : (

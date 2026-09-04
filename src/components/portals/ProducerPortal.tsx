@@ -7,6 +7,8 @@ import {
 import { MobilePortalsViewProps } from '../MobilePortalsView';
 import { SupplierProfile, Transaction, CheeseProduct, MobileOrder } from '../../types';
 import { addLocalDoc, onCollectionSnapshot } from '../../services/localApi';
+import KaluLoader from '../KaluLoader';
+import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
 
 export default function ProducerPortal({ 
   products, suppliers, onAddNotification, isolatedType, isolatedId,
@@ -87,6 +89,14 @@ export default function ProducerPortal({
   const [lockoutUntil, setLockoutUntil] = useState(() => parseInt(localStorage.getItem('kaluProducerLockoutUntil') || '0'));
   const [loginError, setLoginError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
+
+  // Recovery States
+  const [sendingRecoveryEmail, setSendingRecoveryEmail] = useState(false);
+  const [sendingRecoveryWhatsapp, setSendingRecoveryWhatsapp] = useState(false);
+  const [recoverySentVia, setRecoverySentVia] = useState<'email' | 'whatsapp'>('email');
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryCodeInput, setRecoveryCodeInput] = useState('');
+  const [recoveryErrorMsg, setRecoveryErrorMsg] = useState('');
 
   useEffect(() => {
     localStorage.setItem('kaluProducerLoginAttempts', loginAttempts.toString());
@@ -179,6 +189,14 @@ export default function ProducerPortal({
   const [producerActiveTab, setProducerActiveTab] = useState<'inicio' | 'tienda' | 'pagar' | 'perfil'>('inicio');
   const [profileSubView, setProfileSubView] = useState<'main' | 'mis-datos' | 'info-personal' | 'mis-direcciones' | 'seguridad' | 'recuperar-identidad' | 'recuperar-canales'>('main');
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+
+  // Swipe Navigation for Mobile Tabs (Inicio <-> Tienda <-> Pagar <-> Perfil)
+  const producerSwipeHandlers = useSwipeNavigation({
+    tabs: ['inicio', 'tienda', 'pagar', 'perfil'],
+    activeTab: producerActiveTab,
+    onTabChange: (newTab) => setProducerActiveTab(newTab),
+    disabled: !loggedSupplier || isHistoryModalOpen || profileSubView !== 'main'
+  });
 
   const [supplierSearch, setSupplierSearch] = useState('');
   const [supplierCategory, setSupplierCategory] = useState<'Todos' | 'Víveres' | 'Insumos/Repuestos'>('Todos');
@@ -412,14 +430,7 @@ export default function ProducerPortal({
 
         <div className={`flex-1 overflow-hidden bg-slate-950 text-slate-100 flex flex-col text-xs relative ${!isolatedType ? 'pt-7' : ''}`}>
           {isInitializing ? (
-            <div className="flex-1 flex flex-col justify-center items-center px-8 relative z-10 animate-fade-in bg-slate-950">
-              <div className="w-20 h-20 bg-emerald-500/10 border border-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-6 relative">
-                <div className="absolute inset-0 rounded-full border-t-2 border-emerald-500 animate-spin"></div>
-                <span className="text-4xl font-black text-emerald-500 leading-none font-serif">K</span>
-              </div>
-              <h2 className="text-xl font-bold tracking-widest text-slate-300 uppercase">Mundo Kalu</h2>
-              <p className="text-[10px] text-slate-500 font-mono tracking-widest mt-2 animate-pulse">CARGANDO SESIÓN...</p>
-            </div>
+            <KaluLoader message="Mundo Kalu" subMessage="CARGANDO SESIÓN..." />
           ) : !loggedSupplier ? (
             <div className="flex-1 flex flex-col justify-center px-8 relative z-10 animate-fade-in">
               <div className="mb-8 text-center space-y-2">
@@ -452,7 +463,10 @@ export default function ProducerPortal({
               </form>
             </div>
           ) : (
-            <div className="flex-1 flex flex-col min-h-0 relative pb-16">
+            <div 
+              {...producerSwipeHandlers}
+              className="flex-1 flex flex-col min-h-0 relative pb-16 touch-pan-y"
+            >
               {producerActiveTab !== 'tienda' && (
                 <div className="flex justify-between items-center border-b border-slate-800 pb-2 mb-3 px-4 mt-2 shrink-0">
                   <div className="flex items-center gap-1.5">
@@ -571,7 +585,7 @@ export default function ProducerPortal({
                   </div>
 
                   {/* Carrusel */}
-                  <div className="flex-1 min-h-0 relative rounded-2xl overflow-hidden shadow-2xl mb-1 mt-1">
+                  <div data-no-swipe="true" className="flex-1 min-h-0 relative rounded-2xl overflow-hidden shadow-2xl mb-1 mt-1">
                     <div 
                       className="w-full h-full relative"
                       onTouchStart={handleTouchStart}
@@ -1178,30 +1192,156 @@ export default function ProducerPortal({
                         <p className="text-xs text-slate-400 mb-8">Elige dónde quieres recibirlo.</p>
                         
                         <div className="space-y-4">
-                          <button className="w-full flex items-center justify-between p-4 bg-slate-900 border border-slate-800 rounded-2xl hover:bg-slate-800/80 transition-colors text-left group">
+                          <button 
+                            disabled={sendingRecoveryWhatsapp || sendingRecoveryEmail}
+                            onClick={async () => {
+                              setSendingRecoveryWhatsapp(true);
+                              const code = Math.floor(100000 + Math.random() * 900000).toString();
+                              setRecoveryCode(code);
+                              const targetPhone = loggedSupplier.phone || loggedSupplier.telefono || '04140000000';
+                              const hostname = window.location.hostname || 'localhost';
+
+                              try {
+                                const res = await fetch(`http://${hostname}:3001/api/send-recovery`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ 
+                                    channel: 'whatsapp', 
+                                    phone: targetPhone, 
+                                    code, 
+                                    name: loggedSupplier.name 
+                                  })
+                                });
+                                if (res.ok) {
+                                  setRecoverySentVia('whatsapp');
+                                  setProfileSubView('ingresar-codigo');
+                                  setRecoveryCodeInput('');
+                                  setRecoveryErrorMsg('');
+                                } else {
+                                  const errData = await res.json().catch(() => ({}));
+                                  alert(`Error en WhatsApp: ${errData.details || errData.error || 'No se pudo enviar'}`);
+                                }
+                              } catch (e: any) {
+                                console.error(e);
+                                alert(`Error de conexión al enviar WhatsApp (${e.message})`);
+                              } finally {
+                                setSendingRecoveryWhatsapp(false);
+                              }
+                            }}
+                            className={`w-full flex items-center justify-between p-4 bg-slate-900 border border-slate-800 rounded-2xl hover:bg-slate-800/80 transition-colors text-left group ${sendingRecoveryWhatsapp ? 'opacity-50 cursor-not-allowed' : ''}`}>
                             <div className="flex items-center gap-4">
                               <div className="w-10 h-10 rounded-full bg-slate-950 flex items-center justify-center">
-                                <MessageCircle className="w-5 h-5 text-emerald-400" />
+                                {sendingRecoveryWhatsapp ? <div className="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div> : <MessageCircle className="w-5 h-5 text-emerald-400" />}
                               </div>
                               <div>
-                                <p className="text-sm font-bold text-slate-100">WhatsApp</p>
+                                <p className="text-sm font-bold text-slate-100">{sendingRecoveryWhatsapp ? 'Enviando WhatsApp...' : 'WhatsApp'}</p>
                                 <p className="text-[10px] text-slate-400 mt-0.5">Enviar a +58***{String(loggedSupplier.phone || '0000').slice(-4)}</p>
                               </div>
                             </div>
                             <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-emerald-400 transition-colors" />
                           </button>
                           
-                          <button className="w-full flex items-center justify-between p-4 bg-slate-900 border border-slate-800 rounded-2xl hover:bg-slate-800/80 transition-colors text-left group">
+                          <button 
+                            disabled={sendingRecoveryEmail || sendingRecoveryWhatsapp}
+                            onClick={async () => {
+                              setSendingRecoveryEmail(true);
+                              const code = Math.floor(100000 + Math.random() * 900000).toString();
+                              setRecoveryCode(code);
+                              const targetEmail = loggedSupplier.email || loggedSupplier.correo || 'cherokejd566@gmail.com';
+                              const hostname = window.location.hostname || 'localhost';
+                              
+                              try {
+                                const res = await fetch(`http://${hostname}:3001/api/send-recovery`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ 
+                                    channel: 'email', 
+                                    email: targetEmail, 
+                                    code, 
+                                    name: loggedSupplier.name 
+                                  })
+                                });
+                                if (res.ok) {
+                                  setRecoverySentVia('email');
+                                  setProfileSubView('ingresar-codigo');
+                                  setRecoveryCodeInput('');
+                                  setRecoveryErrorMsg('');
+                                } else {
+                                  const errData = await res.json().catch(() => ({}));
+                                  alert(`Error en Correo: ${errData.details || errData.error || 'No se pudo enviar'}`);
+                                }
+                              } catch (e: any) {
+                                console.error(e);
+                                alert(`Error de conexión al enviar correo (${e.message})`);
+                              } finally {
+                                setSendingRecoveryEmail(false);
+                              }
+                            }}
+                            className={`w-full flex items-center justify-between p-4 bg-slate-900 border border-slate-800 rounded-2xl hover:bg-slate-800/80 transition-colors text-left group ${sendingRecoveryEmail ? 'opacity-50 cursor-not-allowed' : ''}`}>
                             <div className="flex items-center gap-4">
                               <div className="w-10 h-10 rounded-full bg-slate-950 flex items-center justify-center">
-                                <Mail className="w-5 h-5 text-slate-300" />
+                                {sendingRecoveryEmail ? <div className="w-5 h-5 border-2 border-slate-400 border-t-slate-100 rounded-full animate-spin"></div> : <Mail className="w-5 h-5 text-slate-300" />}
                               </div>
                               <div>
-                                <p className="text-sm font-bold text-slate-100">Correo</p>
-                                <p className="text-[10px] text-slate-400 mt-0.5">Enviar a ad***@g***.com</p>
+                                <p className="text-sm font-bold text-slate-100">{sendingRecoveryEmail ? 'Enviando Correo...' : 'Correo'}</p>
+                                <p className="text-[10px] text-slate-400 mt-0.5">Enviar a {loggedSupplier.email || 'cherokejd566@gmail.com'}</p>
                               </div>
                             </div>
                             <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-slate-300 transition-colors" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* INGRESAR CÓDIGO DE RECUPERACIÓN */}
+                  {profileSubView === 'ingresar-codigo' && (
+                    <div className="absolute inset-0 bg-slate-950 flex flex-col z-40 animate-slide-in-right">
+                      <div className="flex items-center gap-4 px-4 py-5 shrink-0">
+                        <button onClick={() => setProfileSubView('recuperar-canales')} className="p-1 rounded-full bg-slate-800 text-slate-300 hover:text-white">
+                          <ArrowLeft className="w-5 h-5" />
+                        </button>
+                        <h2 className="text-lg font-bold text-white">Verificación</h2>
+                      </div>
+                      
+                      <div className="p-6">
+                        <h2 className="text-2xl font-bold text-white leading-tight mb-2">Ingresa el código</h2>
+                        <p className="text-xs text-slate-400 mb-8">
+                          {recoverySentVia === 'whatsapp' 
+                            ? 'Escribe el código de 6 dígitos que enviamos a tu WhatsApp.' 
+                            : 'Escribe el código de 6 dígitos que enviamos a tu correo.'}
+                        </p>
+                        
+                        <div className="space-y-4">
+                          {recoveryErrorMsg && (
+                            <div className="bg-rose-500/20 border border-rose-500/50 rounded-lg p-3">
+                              <p className="text-rose-500 text-xs font-bold text-center">{recoveryErrorMsg}</p>
+                            </div>
+                          )}
+                          <input 
+                            type="text" 
+                            placeholder="      " 
+                            value={recoveryCodeInput} 
+                            onChange={e => {
+                              const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+                              setRecoveryCodeInput(val);
+                            }} 
+                            maxLength={6} 
+                            className="w-full bg-slate-900 border border-slate-800 rounded-2xl px-4 py-4 text-xl text-white text-center tracking-[0.75em] focus:outline-none focus:border-emerald-500 transition-colors" 
+                          />
+                          <button 
+                            onClick={() => {
+                              if (recoveryCodeInput === recoveryCode) {
+                                // Aquí puedes mandar a otra vista para crear PIN.
+                                alert('¡Código Correcto! Aquí irá el formulario para cambiar tu PIN.');
+                                setProfileSubView('main');
+                              } else {
+                                setRecoveryErrorMsg('El código es incorrecto.');
+                              }
+                            }}
+                            className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold uppercase tracking-wider text-sm rounded-xl py-4 transition-colors"
+                          >
+                            Verificar Código
                           </button>
                         </div>
                       </div>

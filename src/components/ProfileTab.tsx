@@ -43,6 +43,15 @@ export default function ProfileTab({
   const [useBiometrics, setUseBiometrics] = useState(false);
   const [showIdentityModal, setShowIdentityModal] = useState(false);
 
+  // Recovery Dispatch States (Connected to dual backend robot)
+  const [sendingRecoveryEmail, setSendingRecoveryEmail] = useState(false);
+  const [sendingRecoveryWhatsapp, setSendingRecoveryWhatsapp] = useState(false);
+  const [recoverySentVia, setRecoverySentVia] = useState<'email' | 'whatsapp'>('email');
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryCodeInput, setRecoveryCodeInput] = useState('');
+  const [recoveryErrorMsg, setRecoveryErrorMsg] = useState('');
+  const [isVerifyingCode, setIsVerifyingCode] = useState(false);
+
   const renderMainView = () => (
     <>
       {/* 1. Cabecera y Accesos Rápidos */}
@@ -538,57 +547,169 @@ export default function ProfileTab({
   const renderSeguridadCodigo = () => (
     <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col overflow-y-auto animate-in slide-in-from-right duration-300">
       <div className="sticky top-0 z-50 bg-slate-950/80 backdrop-blur-md border-b border-slate-900 p-4 flex items-center gap-3">
-        <button onClick={() => setActiveSubView('seguridad')} className="w-8 h-8 rounded-full bg-slate-900 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
+        <button onClick={() => {
+          if (isVerifyingCode) {
+            setIsVerifyingCode(false);
+          } else {
+            setActiveSubView('seguridad');
+          }
+        }} className="w-8 h-8 rounded-full bg-slate-900 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h2 className="text-base font-black text-white">Seguridad</h2>
       </div>
 
       <div className="p-5 flex-1">
-        <h3 className="text-2xl font-extrabold text-slate-100 mt-4 leading-tight">Te enviaremos un código de recuperación</h3>
-        <p className="text-sm text-slate-400 mt-1 mb-6">Elige dónde quieres recibirlo.</p>
+        {!isVerifyingCode ? (
+          <>
+            <h3 className="text-2xl font-extrabold text-slate-100 mt-4 leading-tight">Te enviaremos un código de recuperación</h3>
+            <p className="text-sm text-slate-400 mt-1 mb-6">Elige dónde quieres recibirlo.</p>
 
-        {/* WhatsApp Option */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex items-center justify-between cursor-pointer hover:border-slate-700 active:scale-[0.99] transition-all mb-3">
-          <div className="flex items-center gap-4">
-            <div className="w-10 h-10 rounded-full bg-[#25D366]/10 flex items-center justify-center">
-              <MessageCircle className="w-5 h-5 text-[#25D366]" />
-            </div>
-            <div>
-              <p className="text-sm font-bold text-slate-200">WhatsApp</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">Enviar a +58***2054</p>
-            </div>
-          </div>
-          <ChevronRight className="w-4 h-4 text-slate-500" />
-        </div>
+            {/* WhatsApp Option */}
+            <div 
+              onClick={async () => {
+                if (sendingRecoveryWhatsapp || sendingRecoveryEmail) return;
+                setSendingRecoveryWhatsapp(true);
+                const code = Math.floor(100000 + Math.random() * 900000).toString();
+                setRecoveryCode(code);
+                const targetPhone = clientData?.phone || (clientData as any)?.telefono || '04140000000';
+                const hostname = window.location.hostname || 'localhost';
 
-        {/* SMS Option */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex items-center justify-between cursor-pointer hover:border-slate-700 active:scale-[0.99] transition-all mb-3">
-          <div className="flex items-center gap-4">
-            <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center">
-              <MessageSquare className="w-5 h-5 text-amber-500" />
+                try {
+                  const res = await fetch(`http://${hostname}:3001/api/send-recovery`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      channel: 'whatsapp',
+                      phone: targetPhone,
+                      code,
+                      name: clientData?.name || 'Cliente'
+                    })
+                  });
+                  if (res.ok) {
+                    setRecoverySentVia('whatsapp');
+                    setIsVerifyingCode(true);
+                    setRecoveryCodeInput('');
+                    setRecoveryErrorMsg('');
+                  } else {
+                    const errData = await res.json().catch(() => ({}));
+                    alert(`Error en WhatsApp: ${errData.details || errData.error || 'No se pudo enviar'}`);
+                  }
+                } catch (e: any) {
+                  console.error(e);
+                  alert(`Error de conexión al enviar WhatsApp (${e.message})`);
+                } finally {
+                  setSendingRecoveryWhatsapp(false);
+                }
+              }}
+              className={`bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex items-center justify-between cursor-pointer hover:border-slate-700 active:scale-[0.99] transition-all mb-3 ${sendingRecoveryWhatsapp ? 'opacity-50' : ''}`}
+            >
+              <div className="flex items-center gap-4">
+                <div className="w-10 h-10 rounded-full bg-[#25D366]/10 flex items-center justify-center">
+                  {sendingRecoveryWhatsapp ? <div className="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div> : <MessageCircle className="w-5 h-5 text-[#25D366]" />}
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-slate-200">{sendingRecoveryWhatsapp ? 'Enviando WhatsApp...' : 'WhatsApp'}</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">Enviar a +58***{String(clientData?.phone || (clientData as any)?.telefono || '2054').slice(-4)}</p>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-500" />
             </div>
-            <div>
-              <p className="text-sm font-bold text-slate-200">SMS</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">Enviar a +58***2054</p>
-            </div>
-          </div>
-          <ChevronRight className="w-4 h-4 text-slate-500" />
-        </div>
 
-        {/* Mail Option */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex items-center justify-between cursor-pointer hover:border-slate-700 active:scale-[0.99] transition-all mb-3">
-          <div className="flex items-center gap-4">
-            <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center">
-              <Mail className="w-5 h-5 text-slate-300" />
+            {/* Mail Option */}
+            <div 
+              onClick={async () => {
+                if (sendingRecoveryEmail || sendingRecoveryWhatsapp) return;
+                setSendingRecoveryEmail(true);
+                const code = Math.floor(100000 + Math.random() * 900000).toString();
+                setRecoveryCode(code);
+                const targetEmail = clientData?.email || (clientData as any)?.correo || 'cherokejd566@gmail.com';
+                const hostname = window.location.hostname || 'localhost';
+
+                try {
+                  const res = await fetch(`http://${hostname}:3001/api/send-recovery`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      channel: 'email',
+                      email: targetEmail,
+                      code,
+                      name: clientData?.name || 'Cliente'
+                    })
+                  });
+                  if (res.ok) {
+                    setRecoverySentVia('email');
+                    setIsVerifyingCode(true);
+                    setRecoveryCodeInput('');
+                    setRecoveryErrorMsg('');
+                  } else {
+                    const errData = await res.json().catch(() => ({}));
+                    alert(`Error en Correo: ${errData.details || errData.error || 'No se pudo enviar'}`);
+                  }
+                } catch (e: any) {
+                  console.error(e);
+                  alert(`Error de conexión al enviar correo (${e.message})`);
+                } finally {
+                  setSendingRecoveryEmail(false);
+                }
+              }}
+              className={`bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex items-center justify-between cursor-pointer hover:border-slate-700 active:scale-[0.99] transition-all mb-3 ${sendingRecoveryEmail ? 'opacity-50' : ''}`}
+            >
+              <div className="flex items-center gap-4">
+                <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center">
+                  {sendingRecoveryEmail ? <div className="w-5 h-5 border-2 border-slate-400 border-t-slate-100 rounded-full animate-spin"></div> : <Mail className="w-5 h-5 text-slate-300" />}
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-slate-200">{sendingRecoveryEmail ? 'Enviando Correo...' : 'Correo'}</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">Enviar a {clientData?.email || 'cherokejd566@gmail.com'}</p>
+                </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-500" />
             </div>
-            <div>
-              <p className="text-sm font-bold text-slate-200">Mail</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">Enviar a d***@g***.com</p>
-            </div>
+          </>
+        ) : (
+          <div className="space-y-4 animate-in fade-in">
+            <h3 className="text-2xl font-extrabold text-slate-100 mt-4 leading-tight">Ingresa el código</h3>
+            <p className="text-sm text-slate-400 mt-1 mb-6">
+              {recoverySentVia === 'whatsapp' 
+                ? 'Escribe el código de 6 dígitos que enviamos a tu WhatsApp.' 
+                : 'Escribe el código de 6 dígitos que enviamos a tu correo.'}
+            </p>
+
+            {recoveryErrorMsg && (
+              <div className="bg-rose-500/20 border border-rose-500/50 rounded-lg p-3">
+                <p className="text-rose-500 text-xs font-bold text-center">{recoveryErrorMsg}</p>
+              </div>
+            )}
+
+            <input 
+              type="text" 
+              placeholder="••••••" 
+              value={recoveryCodeInput} 
+              onChange={e => {
+                const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+                setRecoveryCodeInput(val);
+              }} 
+              maxLength={6} 
+              className="w-full bg-slate-900 border border-slate-800 rounded-2xl px-4 py-4 text-xl text-white text-center tracking-[0.75em] focus:outline-none focus:border-emerald-500 transition-colors" 
+            />
+
+            <button 
+              onClick={() => {
+                if (recoveryCodeInput === recoveryCode) {
+                  alert('¡Código Verificado con éxito! Ahora puedes cambiar tu clave.');
+                  setIsVerifyingCode(false);
+                  setActiveSubView('main');
+                } else {
+                  setRecoveryErrorMsg('El código ingresado es incorrecto.');
+                }
+              }}
+              className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black uppercase tracking-widest text-sm rounded-xl py-4 transition-colors"
+            >
+              Verificar Código
+            </button>
           </div>
-          <ChevronRight className="w-4 h-4 text-slate-500" />
-        </div>
+        )}
       </div>
     </div>
   );

@@ -3,6 +3,7 @@ import { fetchCollection, onCollectionSnapshot } from '../services/localApi';
 import { SupplierProfile, AccountBill, Transaction, CheeseProduct } from '../types';
 import { Truck, Store, Phone, Plus, BadgeAlert, FileCheck, CheckCircle, ExternalLink, Calendar, Eye, Wallet, CreditCard, Inbox, X, Search, Trash2 } from 'lucide-react';
 import { parseSafeDecimal } from '../utils';
+import KaluLoader from './KaluLoader';
 
 const parseCustomDate = (dateStr: string): number => {
   if (!dateStr) return 0;
@@ -684,7 +685,9 @@ export default function SuppliersDebtsView({
                         <tbody className="divide-y divide-neutral-800/50">
                           {isLoadingHistorial ? (
                             <tr>
-                              <td colSpan={7} className="py-12 text-center text-neutral-500">Cargando movimientos...</td>
+                              <td colSpan={7} className="py-8 text-center bg-neutral-950/40">
+                                <KaluLoader message="MUNDO KALU" subMessage="CARGANDO MOVIMIENTOS..." size="sm" />
+                              </td>
                             </tr>
                           ) : filteredTx.length === 0 ? (
                             <tr>

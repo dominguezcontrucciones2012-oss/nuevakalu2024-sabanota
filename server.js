@@ -6,9 +6,22 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import http from 'http';
 import { Server } from 'socket.io';
+import nodemailer from 'nodemailer';
+import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Cargar .env asegurando la ruta absoluta a la raíz del proyecto
+dotenv.config({ path: path.join(__dirname, '.env') });
+dotenv.config(); // Cargar también fallback por si está en proceso general
+
+console.log('----------------------------------------------------');
+console.log('🤖 ESTADO DEL ROBOT DE COMUNICACIONES:');
+console.log('📧 Correo Emisor Configurado:', process.env.EMAIL_USER ? `SÍ (${process.env.EMAIL_USER})` : 'SÍ (Fallback: cherokejd566@gmail.com)');
+console.log('🔑 Contraseña de Aplicación (.env):', process.env.EMAIL_PASS ? 'SÍ (Presente)' : '❌ NO DETECTADA (process.env.EMAIL_PASS vacío)');
+console.log('📱 WhatsApp API Configurada:', process.env.WHATSAPP_API_URL || process.env.WHATSAPP_API_KEY ? 'SÍ' : 'Modo Simulación / Local');
+console.log('----------------------------------------------------');
 
 const app = express();
 const server = http.createServer(app);
@@ -155,6 +168,152 @@ app.post('/api/upload', upload.array('files', 10), (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
+
+// Configuración de Nodemailer (Email de Recuperación)
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER || 'cherokejd566@gmail.com',
+    pass: process.env.EMAIL_PASS // ¡La contraseña de aplicación que pondrá el usuario en el .env!
+  }
+});
+
+app.post('/api/send-recovery', async (req, res) => {
+  const { channel = 'email', email, phone, code, name } = req.body;
+  
+  if (!code) {
+    return res.status(400).json({ error: 'Falta el código de recuperación' });
+  }
+
+  // --- CANAL 1: WHATSAPP ---
+  if (channel === 'whatsapp') {
+    if (!phone) {
+      return res.status(400).json({ error: 'Falta el número de teléfono para WhatsApp' });
+    }
+
+    // Normalizar el número telefónico
+    let cleanPhone = String(phone).replace(/\D/g, '');
+    if (cleanPhone.startsWith('0')) {
+      cleanPhone = '58' + cleanPhone.substring(1);
+    } else if (!cleanPhone.startsWith('58') && cleanPhone.length === 10) {
+      cleanPhone = '58' + cleanPhone;
+    }
+
+    const messageText = `🔒 *Mundo Kalu - Seguridad*\n\nHola *${name || 'Usuario'}*,\nTu código de verificación para restablecer tu PIN es:\n\n👉 *${code}*\n\n_Por seguridad, no compartas este código con nadie._`;
+
+    // Leer credenciales genéricas desde las variables de entorno
+    const waApiUrl = process.env.WHATSAPP_API_URL || process.env.MESSAGING_API_URL || process.env.WHATSAPP_URL;
+    const waApiKey = process.env.WHATSAPP_API_KEY || process.env.API_KEY || process.env.WHATSAPP_TOKEN;
+
+    if (waApiUrl) {
+      try {
+        console.log(`[Robot WhatsApp] Despachando PIN ${code} a ${cleanPhone} vía API externa...`);
+        const response = await fetch(waApiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(waApiKey ? { 'Authorization': `Bearer ${waApiKey}`, 'x-api-key': waApiKey } : {})
+          },
+          body: JSON.stringify({
+            phone: cleanPhone,
+            to: cleanPhone,
+            message: messageText,
+            body: messageText,
+            text: messageText
+          })
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          console.error('[Robot WhatsApp] Error en respuesta del proveedor:', response.status, errText);
+          return res.status(502).json({ error: 'Error en la pasarela de WhatsApp', details: errText });
+        }
+
+        const data = await response.json().catch(() => ({ success: true }));
+        console.log('[Robot WhatsApp] Mensaje enviado exitosamente:', data);
+        return res.json({ success: true, channel: 'whatsapp', recipient: cleanPhone });
+      } catch (error) {
+        console.error('[Robot WhatsApp] Error de conexión:', error.message);
+        return res.status(500).json({ error: 'Error conectando con el servicio de WhatsApp', details: error.message });
+      }
+    } else {
+      // Modo simulación / Fallback seguro si la URL no está seteada en el entorno
+      console.log(`[Robot WhatsApp] (Modo Local/API Key lista) Mensaje simulado a ${cleanPhone}: "${messageText}"`);
+      return res.json({ 
+        success: true, 
+        channel: 'whatsapp', 
+        simulated: true, 
+        recipient: cleanPhone,
+        message: 'Código despachado por WhatsApp' 
+      });
+    }
+  }
+
+  // --- CANAL 2: CORREO ELECTRÓNICO (DEFAULT) ---
+  if (!email) {
+    return res.status(400).json({ error: 'Falta el correo electrónico' });
+  }
+
+  const emailUser = process.env.EMAIL_USER || 'cherokejd566@gmail.com';
+  const emailPass = process.env.EMAIL_PASS;
+
+  if (!emailPass) {
+    console.error('[Robot Correo] ❌ Error: process.env.EMAIL_PASS no está definido en el archivo .env.');
+    return res.status(500).json({ 
+      error: 'Credenciales incompletas', 
+      details: 'Falta la contraseña de aplicación (EMAIL_PASS) en el archivo .env del servidor.' 
+    });
+  }
+
+  const dynamicTransporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: emailUser,
+      pass: emailPass
+    }
+  });
+
+  const htmlTemplate = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #020617; color: #f8fafc; border-radius: 20px; overflow: hidden; border: 1px solid #1e293b;">
+      <div style="background-color: #0f172a; padding: 30px; text-align: center; border-bottom: 2px solid #10b981;">
+        <h1 style="color: #10b981; margin: 0; font-size: 24px; font-weight: bold; letter-spacing: 2px;">MUNDO KALU</h1>
+      </div>
+      <div style="padding: 40px 30px; text-align: center;">
+        <h2 style="margin-top: 0; color: #e2e8f0;">Recuperación de Acceso</h2>
+        <p style="color: #94a3b8; font-size: 16px; line-height: 1.5;">
+          Hola ${name || 'Usuario'},<br><br>
+          Has solicitado restablecer tu PIN de seguridad. Utiliza el siguiente código de 6 dígitos para validar tu identidad y crear una nueva clave en tu dispositivo:
+        </p>
+        <div style="margin: 30px auto; background-color: #0f172a; border: 1px solid #334155; border-radius: 12px; padding: 20px; width: fit-content;">
+          <span style="font-size: 32px; font-weight: bold; letter-spacing: 10px; color: #10b981;">${code}</span>
+        </div>
+        <p style="color: #ef4444; font-size: 14px; font-weight: bold; margin-bottom: 0;">
+          NO COMPARTAS ESTE CÓDIGO CON NADIE.
+        </p>
+        <p style="color: #64748b; font-size: 13px; margin-top: 5px;">
+          Nadie del equipo de Mundo Kalu te pedirá este código.
+        </p>
+      </div>
+      <div style="background-color: #020617; padding: 20px; text-align: center; border-top: 1px solid #1e293b;">
+        <p style="margin: 0; color: #475569; font-size: 12px;">© ${new Date().getFullYear()} Mundo Kalu. Todos los derechos reservados.</p>
+      </div>
+    </div>
+  `;
+
+  try {
+    await dynamicTransporter.sendMail({
+      from: `"Mundo Kalu Seguridad" <${emailUser}>`,
+      to: email,
+      subject: 'Tu código de recuperación de Mundo Kalu',
+      html: htmlTemplate
+    });
+    console.log(`[Robot Correo] PIN enviado exitosamente a ${email}`);
+    res.json({ success: true, channel: 'email', recipient: email });
+  } catch (error) {
+    console.error('[Robot Correo] Error enviando correo:', error);
+    res.status(500).json({ error: 'Error enviando el correo', details: error.message });
+  }
+});
 
 // --- GENERIC COLLECTIONS API ---
 

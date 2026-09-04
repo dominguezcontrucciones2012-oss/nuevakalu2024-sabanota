@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { KardexMovement } from '../types';
 import { fetchCollection, onCollectionSnapshot } from '../services/localApi';
+import KaluLoader from './KaluLoader';
 import { Search, Filter, BookOpen, ArrowUpRight, ArrowDownRight, AlertTriangle, Edit3, RefreshCw, DownloadCloud } from 'lucide-react';
 
 const CACHE_KEY = 'kalu_kardex_cache';
@@ -140,7 +141,9 @@ export default function KardexView() {
           <tbody className="font-mono text-sm">
             {movements.length === 0 && loading ? (
               <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-editorial-text-muted">CARGANDO KARDEX...</td>
+                <td colSpan={8} className="px-4 py-8 text-center bg-slate-950/50">
+                  <KaluLoader message="MUNDO KALU" subMessage="CARGANDO KARDEX..." size="sm" />
+                </td>
               </tr>
             ) : filteredMovements.length === 0 ? (
               <tr>
