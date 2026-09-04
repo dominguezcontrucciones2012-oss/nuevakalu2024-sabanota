@@ -173,23 +173,39 @@ export default function ClientsCreditView({
       // 1. Update Transaction
       await updateLocalDoc('transactions', tx.id, { status: 'approved' });
       
+      let pointsToAward = 0;
       if ((tx.kaluCreditData as any)?.installmentIds) {
         for (const iId of (tx.kaluCreditData as any).installmentIds) {
+          const matchingInst = allInstallments.find(inst => String(inst.id) === String(iId));
+          const isOverdue = matchingInst && (matchingInst.status === 'overdue' || (matchingInst.dueDate && new Date(matchingInst.dueDate).getTime() < Date.now()));
+          
+          // Regla: Si pagó a tiempo (no en mora), se le abona 1 punto por cada $1 de la cuota
+          const installmentPts = matchingInst ? Math.round(Number(matchingInst.amount || 0)) : 0;
+          if (!isOverdue && installmentPts > 0) {
+            pointsToAward += installmentPts;
+          }
+
           await updateLocalDoc('installments', iId, {
             status: 'paid',
-            paidAt: new Date().toISOString()
+            paidAt: new Date().toISOString(),
+            pointsAwarded: !isOverdue
           });
         }
       }
 
-      // 3. Update Client Outstanding Debt
+      // 3. Update Client Outstanding Debt and Loyalty Points
       const client = clients.find(c => c.id === tx.clientId);
       if (client && onUpdateClient) {
         const newDebt = Math.max(0, client.outstandingDebt - tx.amount);
-        onUpdateClient(client.id, { outstandingDebt: newDebt });
+        const newPoints = Number(client.loyaltyPoints || 0) + pointsToAward;
+        onUpdateClient(client.id, { 
+          outstandingDebt: newDebt,
+          loyaltyPoints: newPoints
+        });
       }
       
-      onAddNotification('Pago aprobado. Cuotas y balances actualizados.', 'success');
+      const ptsMsg = pointsToAward > 0 ? ` (+${pointsToAward} pts Mundo Kalu por pago a tiempo)` : ' (Sin puntos adicionales por mora en la cuota)';
+      onAddNotification(`Pago aprobado. Cuotas y balance actualizados.${ptsMsg}`, 'success');
     } catch (e) {
       console.error(e);
       onAddNotification('Error al aprobar el pago', 'warning');

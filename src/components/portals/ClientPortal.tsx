@@ -41,6 +41,7 @@ import StoreTab from '../StoreTab';
 import { QrScannerTab } from '../QrScannerTab';
 import KaluLoader from '../KaluLoader';
 import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
+import { getVIPLevelInfo, VIP_LEVELS_MATRIX, VIPLevelConfig } from '../../config/vipMatrix';
 interface MobilePortalsViewProps {
   products: CheeseProduct[];
   clients: ClientProfile[];
@@ -219,6 +220,9 @@ export default function ClientPortal({
   const [showClientCartModal, setShowClientCartModal] = useState(false);
   const [showQrPaymentModal, setShowQrPaymentModal] = useState(false);
   const [qrPaymentAmount, setQrPaymentAmount] = useState<string>('');
+  const [showBenefitsModal, setShowBenefitsModal] = useState(false);
+  const [showProgressModal, setShowProgressModal] = useState(false);
+  const [showCreditLineModal, setShowCreditLineModal] = useState(false);
   
   // Real-Time Sync: Aprobación de Crédito (Cashea Style)
   const [pendingCreditRequest, setPendingCreditRequest] = useState<any>(null);
@@ -322,13 +326,7 @@ export default function ClientPortal({
   }, [clientActiveTab]);
 
   const getClientLevelInfo = (points: number) => {
-    const p = Number(points || 0);
-    if (p < 200) return { level: 1, name: 'Kalu Vecino', nextGoal: 200, nextPrize: 'Premio de $5 + tickets', progress: (p / 200) * 100 };
-    if (p < 500) return { level: 2, name: 'Kalu Club Vecino', nextGoal: 500, nextPrize: 'Cupones dobles', progress: ((p - 200) / 300) * 100 };
-    if (p < 1200) return { level: 3, name: 'Kalu Bronce Plus', nextGoal: 1200, nextPrize: 'Sorteo Moto', progress: ((p - 500) / 700) * 100 };
-    if (p < 2500) return { level: 4, name: 'Kalu Plata', nextGoal: 2500, nextPrize: 'Micro-crédito', progress: ((p - 1200) / 1300) * 100 };
-    if (p < 5000) return { level: 5, name: 'Kalu Oro', nextGoal: 5000, nextPrize: 'Línea VIP', progress: ((p - 2500) / 2500) * 100 };
-    return { level: 6, name: 'Kalu Black VIP', nextGoal: 5000, nextPrize: 'Nivel Máximo', progress: 100 };
+    return getVIPLevelInfo(points);
   };
 
 
@@ -701,17 +699,27 @@ export default function ClientPortal({
                     <div className="p-4 space-y-6 flex-1 overflow-y-auto animate-fade-in pb-24">
                       {/* Top Bar / Customer Level Pill */}
                       <div className="flex justify-start mb-2">
-                        <button 
-                          onClick={() => setClientActiveTab('nivel')}
-                          className="flex items-center gap-3 bg-neutral-900 border border-neutral-800 rounded-full pl-1.5 pr-5 py-1.5 transition-colors hover:bg-neutral-800 cursor-pointer shadow-md"
-                        >
-                          <div className="w-9 h-9 rounded-full bg-emerald-500 flex items-center justify-center">
-                            <span className="text-neutral-900 font-black text-lg leading-none">K</span>
-                          </div>
-                          <span className="text-white text-base font-bold uppercase tracking-wider">
-                            Nivel K{getClientLevelInfo(loggedClient.loyaltyPoints).level}
-                          </span>
-                        </button>
+                        {(() => {
+                          const vip = getClientLevelInfo(loggedClient.loyaltyPoints);
+                          return (
+                            <button 
+                              onClick={() => setClientActiveTab('nivel')}
+                              className="flex items-center gap-2.5 bg-neutral-900 border border-neutral-800 rounded-full pl-1.5 pr-4 py-1.5 transition-colors hover:bg-neutral-800 cursor-pointer shadow-md"
+                            >
+                              <div className="w-8 h-8 rounded-full bg-emerald-500 flex items-center justify-center">
+                                <span className="text-neutral-900 font-black text-sm leading-none">{vip.code}</span>
+                              </div>
+                              <div className="text-left">
+                                <span className="text-white text-xs font-bold uppercase tracking-wider block">
+                                  {vip.name}
+                                </span>
+                                <span className="text-[9px] text-emerald-400 font-bold block">
+                                  Inicial {Math.round(vip.initialPct * 100)}%
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })()}
                       </div>
 
                       {/* Primer Bloque: Estado e Historial */}
@@ -760,30 +768,58 @@ export default function ClientPortal({
 
                       {/* Segundo Bloque: Tus líneas */}
                       <div>
-                        <h3 className="text-sm font-bold text-white mb-3 px-1">Tus líneas</h3>
+                        <div className="flex items-center justify-between mb-3 px-1">
+                          <h3 className="text-sm font-bold text-white">Tus líneas</h3>
+                          <button 
+                            onClick={() => setShowCreditLineModal(true)}
+                            className="text-[10px] font-bold text-emerald-400 hover:text-emerald-300 uppercase tracking-wider flex items-center gap-0.5"
+                          >
+                            Detalles <ChevronRight className="w-3 h-3" />
+                          </button>
+                        </div>
                         <div className="grid grid-cols-2 gap-3">
-                          <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl relative overflow-hidden shadow-md">
-                            <p className="text-[10px] font-bold text-zinc-400 uppercase mb-1">Línea Principal</p>
-                            <p className="text-lg font-black text-white">
-                              ${(() => {
-                                const totalPending = activeInstallments.reduce((sum, item) => sum + (Number(item.amountUSD) || Number(item.amount) || 0), 0);
-                                const limit = Number((loggedClient as any)?.creditLimit || 50);
-                                return Math.max(0, limit - totalPending).toFixed(2);
-                              })()}
-                            </p>
-                            <div className="absolute bottom-0 left-0 w-full h-1.5 bg-emerald-500"></div>
-                          </div>
-                          <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl relative overflow-hidden shadow-md">
-                            <p className="text-[10px] font-bold text-zinc-400 uppercase mb-1">Línea Comida</p>
-                            <p className="text-lg font-black text-white">
-                              ${(() => {
-                                // Food line is usually a specific limit, using foodCreditLimit or default fallback
-                                const foodLimit = Number((loggedClient as any)?.foodCreditLimit || 20); 
-                                return foodLimit.toFixed(2);
-                              })()}
-                            </p>
-                            <div className="absolute bottom-0 left-0 w-full h-1.5 bg-amber-500"></div>
-                          </div>
+                          {(() => {
+                            const vip = getClientLevelInfo(loggedClient.loyaltyPoints);
+                            const totalPending = activeInstallments.reduce((sum, item) => sum + (Number(item.amountUSD) || Number(item.amount) || 0), 0);
+                            
+                            // Línea Principal dinámica por clase (restando deuda activa si aplica)
+                            const mainLimit = Number((loggedClient as any)?.creditLimit) || vip.mainCreditLimit;
+                            const availableMain = Math.max(0, mainLimit - totalPending);
+
+                            // Línea Cotidiana / Comida dinámica por clase
+                            const dailyLimit = Number((loggedClient as any)?.foodCreditLimit) || vip.dailyCreditLimit;
+
+                            return (
+                              <>
+                                <div 
+                                  onClick={() => setShowCreditLineModal(true)}
+                                  className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl relative overflow-hidden shadow-md cursor-pointer hover:border-emerald-500/40 transition-colors"
+                                >
+                                  <div className="flex justify-between items-center mb-1">
+                                    <p className="text-[10px] font-bold text-zinc-400 uppercase">Línea Principal</p>
+                                    <span className="text-[8px] font-mono text-zinc-500">Tope ${mainLimit.toFixed(0)}</span>
+                                  </div>
+                                  <p className="text-lg font-black text-white">
+                                    ${availableMain.toFixed(2)}
+                                  </p>
+                                  <div className="absolute bottom-0 left-0 w-full h-1.5 bg-emerald-500"></div>
+                                </div>
+                                <div 
+                                  onClick={() => setShowCreditLineModal(true)}
+                                  className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl relative overflow-hidden shadow-md cursor-pointer hover:border-amber-500/40 transition-colors"
+                                >
+                                  <div className="flex justify-between items-center mb-1">
+                                    <p className="text-[10px] font-bold text-zinc-400 uppercase">Línea Comida</p>
+                                    <span className="text-[8px] font-mono text-zinc-500">15 días</span>
+                                  </div>
+                                  <p className="text-lg font-black text-white">
+                                    ${dailyLimit.toFixed(2)}
+                                  </p>
+                                  <div className="absolute bottom-0 left-0 w-full h-1.5 bg-amber-500"></div>
+                                </div>
+                              </>
+                            );
+                          })()}
                         </div>
                       </div>
 
@@ -819,7 +855,7 @@ export default function ClientPortal({
                             <ArrowLeft className="w-5 h-5" />
                           </button>
                           <h1 className="text-sm font-bold text-zinc-100 uppercase tracking-widest">Club Kalu Más</h1>
-                          <button className="w-8 h-8 flex items-center justify-center rounded-full bg-zinc-900 text-zinc-300 hover:text-white transition-colors shadow-sm">
+                          <button onClick={() => setShowBenefitsModal(true)} className="w-8 h-8 flex items-center justify-center rounded-full bg-zinc-900 text-zinc-300 hover:text-white transition-colors shadow-sm">
                             <HelpCircle className="w-5 h-5" />
                           </button>
                         </div>
@@ -831,9 +867,17 @@ export default function ClientPortal({
                             
                             <div className="flex justify-between items-start mb-6 relative z-10">
                               <div>
-                                <h2 className="text-3xl font-black text-white tracking-tight mb-1">Nivel K{levelInfo.level}</h2>
-                                <p className="text-sm font-medium text-emerald-400 mb-2">{levelInfo.name}</p>
-                                <button className="text-[10px] uppercase font-bold tracking-wider text-zinc-400 hover:text-emerald-400 flex items-center gap-1 transition-colors">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <h2 className="text-3xl font-black text-white tracking-tight">Nivel {levelInfo.code}</h2>
+                                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                    Nivel {levelInfo.level}
+                                  </span>
+                                </div>
+                                <p className="text-sm font-bold text-amber-400 mb-2">{levelInfo.name}</p>
+                                <button 
+                                  onClick={() => setShowBenefitsModal(true)}
+                                  className="text-[10px] uppercase font-bold tracking-wider text-zinc-400 hover:text-emerald-400 flex items-center gap-1 transition-colors"
+                                >
                                   Conocer beneficios <ChevronRight className="w-3 h-3" />
                                 </button>
                               </div>
@@ -845,18 +889,18 @@ export default function ClientPortal({
                             <div className="grid grid-cols-3 gap-2 pt-5 border-t border-zinc-800/80 relative z-10">
                               <div>
                                 <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Línea Principal</p>
-                                <p className="text-[8px] text-zinc-500 mb-1">Hasta 12 cuotas</p>
-                                <p className="text-sm font-black text-white">${Number((loggedClient as any)?.creditLimit || 5000).toFixed(0)}</p>
+                                <p className="text-[8px] text-zinc-500 mb-1">Máx. {levelInfo.mainMaxInstallments} cuotas</p>
+                                <p className="text-sm font-black text-white">${Number(levelInfo.mainCreditLimit).toFixed(2)}</p>
                               </div>
                               <div>
-                                <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Línea Mercado</p>
-                                <p className="text-[8px] text-zinc-500 mb-1">1 cuota / Corto plazo</p>
-                                <p className="text-sm font-black text-white">${Number(loggedClient?.outstandingDebt || 0).toFixed(0)}</p>
+                                <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Línea Cotidiana</p>
+                                <p className="text-[8px] text-zinc-500 mb-1">{levelInfo.dailyInstallments} cuota a {levelInfo.dailyTermDays}d</p>
+                                <p className="text-sm font-black text-white">${Number(levelInfo.dailyCreditLimit).toFixed(2)}</p>
                               </div>
                               <div>
                                 <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Inicial</p>
                                 <p className="text-[8px] text-zinc-500 mb-1">Desde</p>
-                                <p className="text-sm font-black text-emerald-400">20%</p>
+                                <p className="text-sm font-black text-emerald-400">{Math.round(levelInfo.initialPct * 100)}%</p>
                               </div>
                             </div>
                           </div>
@@ -866,19 +910,28 @@ export default function ClientPortal({
                             <div className="flex items-center justify-between bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-3">
                               <p className="text-sm font-bold text-zinc-200">
                                 <span className="text-amber-500 mr-1.5">⭐</span>
-                                {Number(loggedClient?.loyaltyPoints || 0)} puntos
+                                {Number(loggedClient?.loyaltyPoints || 0)} puntos acumulados
                               </p>
-                              <button className="bg-zinc-800 hover:bg-zinc-700 text-xs font-bold px-4 py-1.5 rounded-full transition-colors text-white">
+                              <button 
+                                onClick={() => setClientActiveTab('tienda')}
+                                className="bg-zinc-800 hover:bg-zinc-700 text-xs font-bold px-4 py-1.5 rounded-full transition-colors text-white"
+                              >
                                 Usar puntos
                               </button>
                             </div>
                             
                             <div className="grid grid-cols-2 gap-3">
-                              <button className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 flex flex-col gap-1 items-start hover:border-emerald-500/50 transition-colors group">
+                              <button 
+                                onClick={() => setShowCreditLineModal(true)}
+                                className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 flex flex-col gap-1 items-start hover:border-emerald-500/50 transition-colors group text-left"
+                              >
                                 <span className="text-lg">💸</span>
-                                <span className="text-xs font-bold text-zinc-300 group-hover:text-emerald-400 flex items-center gap-1">Subir línea <ChevronRight className="w-3 h-3" /></span>
+                                <span className="text-xs font-bold text-zinc-300 group-hover:text-emerald-400 flex items-center gap-1">Línea de Crédito <ChevronRight className="w-3 h-3" /></span>
                               </button>
-                              <button className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 flex flex-col gap-1 items-start hover:border-emerald-500/50 transition-colors group">
+                              <button 
+                                onClick={() => setShowProgressModal(true)}
+                                className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 flex flex-col gap-1 items-start hover:border-emerald-500/50 transition-colors group text-left"
+                              >
                                 <span className="text-lg">⏳</span>
                                 <span className="text-xs font-bold text-zinc-300 group-hover:text-emerald-400 flex items-center gap-1">Ver progreso <ChevronRight className="w-3 h-3" /></span>
                               </button>
@@ -888,30 +941,42 @@ export default function ClientPortal({
                           {/* Sección Inferior: Tu progreso */}
                           <div className="pt-2">
                             <div className="flex items-center justify-between mb-4">
-                              <h3 className="text-sm font-bold text-white">Tu progreso</h3>
-                              <button className="text-xs font-bold text-amber-500 hover:text-amber-400 px-3 py-1 bg-amber-500/10 rounded-full transition-colors">
+                              <h3 className="text-sm font-bold text-white">Tu progreso de Nivel</h3>
+                              <button 
+                                onClick={() => setShowProgressModal(true)}
+                                className="text-xs font-bold text-amber-500 hover:text-amber-400 px-3 py-1 bg-amber-500/10 rounded-full transition-colors"
+                              >
                                 Conocer más
                               </button>
                             </div>
 
-                            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 space-y-6 shadow-md">
+                            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 space-y-5 shadow-md">
                               <div>
                                 <div className="flex justify-between items-end mb-2">
-                                  <span className="text-[10px] font-bold text-zinc-400 uppercase">Cantidad pagada con tu línea</span>
-                                  <span className="text-sm font-black text-white">${Number((loggedClient as any)?.totalPaid || 0).toFixed(0)}</span>
+                                  <span className="text-[10px] font-bold text-zinc-400 uppercase">Compras Acumuladas ({Number(loggedClient?.loyaltyPoints || 0)} pts / ${Number(loggedClient?.loyaltyPoints || 0)})</span>
+                                  <span className="text-xs font-bold text-emerald-400">
+                                    {levelInfo.level < 6 ? `Meta: $${levelInfo.nextGoal}.00` : 'Nivel Máximo VIP'}
+                                  </span>
                                 </div>
-                                <div className="w-full bg-zinc-950 rounded-full h-2 overflow-hidden shadow-inner">
-                                  <div className="bg-cyan-400 h-2 rounded-full" style={{ width: '65%' }}></div>
+                                <div className="w-full bg-zinc-950 rounded-full h-2.5 overflow-hidden shadow-inner p-0.5">
+                                  <div className="bg-gradient-to-r from-emerald-500 to-amber-400 h-1.5 rounded-full transition-all duration-500" style={{ width: `${levelInfo.progress}%` }}></div>
+                                </div>
+                                <div className="flex justify-between items-center text-[10px] mt-2">
+                                  <span className="text-zinc-400">
+                                    Próximo ascenso: <span className="text-zinc-200 font-bold">{levelInfo.nextPrize}</span>
+                                  </span>
+                                  {levelInfo.level < 6 && (
+                                    <span className="text-amber-400 font-bold">
+                                      Faltan ${Math.max(0, levelInfo.nextGoal - Number(loggedClient?.loyaltyPoints || 0))}
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                               
-                              <div>
-                                <div className="flex justify-between items-end mb-2">
-                                  <span className="text-[10px] font-bold text-zinc-400 uppercase">Cuotas pagadas a tiempo</span>
-                                  <span className="text-sm font-black text-white">12 <span className="text-[10px] font-normal text-zinc-500">/ 15</span></span>
-                                </div>
-                                <div className="w-full bg-zinc-950 rounded-full h-2 overflow-hidden shadow-inner">
-                                  <div className="bg-cyan-400 h-2 rounded-full" style={{ width: '80%' }}></div>
+                              <div className="border-t border-zinc-800/80 pt-4">
+                                <div className="flex justify-between items-center text-xs">
+                                  <span className="text-zinc-400">Total financiado y pagado:</span>
+                                  <span className="font-bold text-white">${activeInstallments.filter((i: any) => i.status === 'paid').reduce((s: number, i: any) => s + (Number(i.amountUSD) || Number(i.amount) || 0), 0).toFixed(2)}</span>
                                 </div>
                               </div>
                             </div>
@@ -991,6 +1056,186 @@ export default function ClientPortal({
                       <span className="text-[7px] uppercase font-bold tracking-wider">Perfil</span>
                     </button>
                   </div>
+
+                  {/* MODAL: Beneficios VIP por Nivel */}
+                  {showBenefitsModal && (() => {
+                    const currentVip = getClientLevelInfo(loggedClient.loyaltyPoints);
+                    return (
+                      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center animate-fade-in p-0 md:p-4">
+                        <div className="w-full max-w-lg bg-zinc-950 border-t md:border border-zinc-800 rounded-t-3xl md:rounded-3xl p-6 text-white max-h-[85vh] overflow-y-auto animate-slide-up space-y-4">
+                          <div className="flex justify-between items-center border-b border-zinc-800 pb-3">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xl">👑</span>
+                              <div>
+                                <h3 className="text-base font-black text-white">Beneficios Club Kalu Más</h3>
+                                <p className="text-[10px] text-zinc-400">Escala niveles con tus compras y pagos puntuales</p>
+                              </div>
+                            </div>
+                            <button onClick={() => setShowBenefitsModal(false)} className="w-8 h-8 rounded-full bg-zinc-900 flex items-center justify-center text-zinc-400 hover:text-white">
+                              ✕
+                            </button>
+                          </div>
+
+                          <div className="space-y-3">
+                            {VIP_LEVELS_MATRIX.map((tier) => {
+                              const isCurrent = tier.level === currentVip.level;
+                              return (
+                                <div 
+                                  key={tier.level}
+                                  className={`p-4 rounded-2xl border transition-all ${isCurrent ? 'bg-gradient-to-r from-emerald-950/40 via-zinc-900 to-zinc-900 border-emerald-500/60 ring-1 ring-emerald-500/30' : 'bg-zinc-900/50 border-zinc-800/80 opacity-80'}`}
+                                >
+                                  <div className="flex justify-between items-start mb-2">
+                                    <div>
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs font-black text-white">{tier.name} ({tier.code})</span>
+                                        {isCurrent && (
+                                          <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-500 text-zinc-950">
+                                            Tu Nivel
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="text-[10px] text-zinc-400 mt-0.5">{tier.description}</p>
+                                    </div>
+                                    <div className="text-right">
+                                      <span className="text-xs font-black text-amber-400 block">
+                                        {tier.level < 6 ? `$${tier.minPoints} - $${tier.maxPoints}` : '+$1,200'}
+                                      </span>
+                                      <span className="text-[8px] text-zinc-500 uppercase font-bold">en compras</span>
+                                    </div>
+                                  </div>
+
+                                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-zinc-800/60 text-center">
+                                    <div className="bg-zinc-950/60 p-2 rounded-xl">
+                                      <span className="text-[8px] text-zinc-500 uppercase block font-bold">Inicial</span>
+                                      <span className="text-xs font-black text-emerald-400">{Math.round(tier.initialPct * 100)}%</span>
+                                    </div>
+                                    <div className="bg-zinc-950/60 p-2 rounded-xl">
+                                      <span className="text-[8px] text-zinc-500 uppercase block font-bold">Línea Ppal</span>
+                                      <span className="text-xs font-black text-white">${tier.mainCreditLimit} <span className="text-[8px] text-zinc-400">({tier.mainMaxInstallments}c)</span></span>
+                                    </div>
+                                    <div className="bg-zinc-950/60 p-2 rounded-xl">
+                                      <span className="text-[8px] text-zinc-500 uppercase block font-bold">Cotidiana</span>
+                                      <span className="text-xs font-black text-white">${tier.dailyCreditLimit} <span className="text-[8px] text-zinc-400">(15d)</span></span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <button 
+                            onClick={() => setShowBenefitsModal(false)}
+                            className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black uppercase text-xs tracking-wider rounded-xl transition-colors"
+                          >
+                            Entendido
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* MODAL: Detalle de Progreso */}
+                  {showProgressModal && (() => {
+                    const currentVip = getClientLevelInfo(loggedClient.loyaltyPoints);
+                    return (
+                      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center animate-fade-in p-0 md:p-4">
+                        <div className="w-full max-w-md bg-zinc-950 border-t md:border border-zinc-800 rounded-t-3xl md:rounded-3xl p-6 text-white max-h-[85vh] overflow-y-auto animate-slide-up space-y-5">
+                          <div className="flex justify-between items-center border-b border-zinc-800 pb-3">
+                            <h3 className="text-base font-black text-white">Progreso hacia el siguiente nivel</h3>
+                            <button onClick={() => setShowProgressModal(false)} className="w-8 h-8 rounded-full bg-zinc-900 flex items-center justify-center text-zinc-400 hover:text-white">
+                              ✕
+                            </button>
+                          </div>
+
+                          <div className="text-center py-2">
+                            <div className="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center mx-auto mb-3">
+                              <span className="text-2xl font-black text-emerald-400">{currentVip.code}</span>
+                            </div>
+                            <h4 className="text-lg font-black text-white">{currentVip.name}</h4>
+                            <p className="text-xs text-zinc-400 mt-1">Has acumulado ${Number(loggedClient?.loyaltyPoints || 0)} en compras ({Number(loggedClient?.loyaltyPoints || 0)} pts)</p>
+                          </div>
+
+                          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 space-y-3">
+                            <div className="flex justify-between text-xs font-bold">
+                              <span className="text-zinc-400">Progreso de Compras</span>
+                              <span className="text-emerald-400">{Math.round(currentVip.progress)}%</span>
+                            </div>
+                            <div className="w-full bg-zinc-950 rounded-full h-3 overflow-hidden p-0.5">
+                              <div className="bg-gradient-to-r from-emerald-500 to-amber-400 h-2 rounded-full" style={{ width: `${currentVip.progress}%` }}></div>
+                            </div>
+                            <p className="text-[11px] text-zinc-300">
+                              {currentVip.level < 6 
+                                ? `Te faltan $${Math.max(0, currentVip.nextGoal - Number(loggedClient?.loyaltyPoints || 0))} en compras acumuladas (${Math.max(0, currentVip.nextGoal - Number(loggedClient?.loyaltyPoints || 0))} pts) para ascender a ${VIP_LEVELS_MATRIX[currentVip.level]?.name || 'siguiente nivel'}.`
+                                : '¡Felicidades! Has superado la meta máxima de $1,200 acumulados y perteneces a Clase Black Diamond.'}
+                            </p>
+                          </div>
+
+                          <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4">
+                            <p className="text-[10px] font-bold text-amber-400 uppercase tracking-wider mb-1">🎁 Próximo Beneficio</p>
+                            <p className="text-xs text-zinc-200">{currentVip.nextPrize}</p>
+                          </div>
+
+                          <button 
+                            onClick={() => setShowProgressModal(false)}
+                            className="w-full py-3.5 bg-zinc-800 hover:bg-zinc-700 text-white font-black uppercase text-xs tracking-wider rounded-xl transition-colors"
+                          >
+                            Cerrar
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* MODAL: Línea de Crédito */}
+                  {showCreditLineModal && (() => {
+                    const currentVip = getClientLevelInfo(loggedClient.loyaltyPoints);
+                    return (
+                      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center animate-fade-in p-0 md:p-4">
+                        <div className="w-full max-w-md bg-zinc-950 border-t md:border border-zinc-800 rounded-t-3xl md:rounded-3xl p-6 text-white max-h-[85vh] overflow-y-auto animate-slide-up space-y-5">
+                          <div className="flex justify-between items-center border-b border-zinc-800 pb-3">
+                            <h3 className="text-base font-black text-white">Línea de Crédito Kalu</h3>
+                            <button onClick={() => setShowCreditLineModal(false)} className="w-8 h-8 rounded-full bg-zinc-900 flex items-center justify-center text-zinc-400 hover:text-white">
+                              ✕
+                            </button>
+                          </div>
+
+                          <div className="space-y-4">
+                            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+                              <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest block mb-1">Línea Principal Asignada</span>
+                              <div className="flex justify-between items-baseline">
+                                <span className="text-2xl font-black text-white">${currentVip.mainCreditLimit.toFixed(2)}</span>
+                                <span className="text-xs text-emerald-400 font-bold">Hasta {currentVip.mainMaxInstallments} Cuotas</span>
+                              </div>
+                            </div>
+
+                            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+                              <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest block mb-1">Línea Cotidiana (Víveres y Quesos)</span>
+                              <div className="flex justify-between items-baseline">
+                                <span className="text-2xl font-black text-white">${currentVip.dailyCreditLimit.toFixed(2)}</span>
+                                <span className="text-xs text-amber-400 font-bold">1 Cuota a 15 días</span>
+                              </div>
+                            </div>
+
+                            <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-2xl p-4">
+                              <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest block mb-1">Inicial Requerida</span>
+                              <p className="text-lg font-black text-emerald-400">{Math.round(currentVip.initialPct * 100)}% de tu compra</p>
+                              <p className="text-[10px] text-zinc-400 mt-1">El resto se financia automáticamente según tu nivel.</p>
+                            </div>
+                          </div>
+
+                          <button 
+                            onClick={() => {
+                              setShowCreditLineModal(false);
+                              setClientActiveTab('tienda');
+                            }}
+                            className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black uppercase text-xs tracking-wider rounded-xl transition-colors"
+                          >
+                            Ir a la Tienda
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>

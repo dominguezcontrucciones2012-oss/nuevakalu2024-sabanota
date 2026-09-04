@@ -36,27 +36,16 @@ interface CheesePOSViewProps {
   onUpdateSettings?: (newSettings: Partial<any>) => void;
 }
 
+import { getVIPLevelInfo } from '../config/vipMatrix';
+
 const getClientLevelPct = (points: number): number => {
-  const p = Number(points || 0);
-  let level = 1;
-  if (p < 200) level = 1;
-  else if (p < 500) level = 2;
-  else if (p < 1200) level = 3;
-  else if (p < 2500) level = 4;
-  else if (p < 5000) level = 5;
-  else level = 6;
-  
-  if (level >= 6) return 0.20;
-  if (level === 5) return 0.50;
-  return 0.75; // Nivel 1 a 4
+  return getVIPLevelInfo(points).initialPct;
 };
 
 const getKaluInstallmentsCount = (type: 'cotidiano' | 'repuestos', points: number): number => {
-  if (type === 'repuestos') return 3;
-  
-  // Cotidiano: 1 cuota por defecto, 2 si el cliente tiene nivel 2 o superior (>= 200 puntos)
-  const p = Number(points || 0);
-  return p >= 200 ? 2 : 1;
+  const vip = getVIPLevelInfo(points);
+  if (type === 'repuestos') return vip.mainMaxInstallments;
+  return vip.dailyInstallments;
 };
 
 export default function CheesePOSView({
@@ -500,15 +489,18 @@ export default function CheesePOSView({
                      let nextDate = new Date();
                      nextDate.setDate(nextDate.getDate() + 15);
                      
+                     const cuotaVal = Number(updatedDoc.kaluCreditData.cuotas || 0);
                      for (let i = 0; i < updatedDoc.installmentsCount; i++) {
                        const installmentDoc = {
                          clientId: client.id,
                          transactionId: updatedDoc.id,
-                         amount: updatedDoc.kaluCreditData.cuotas,
+                         amount: cuotaVal,
                          dueDate: nextDate.toISOString().split('T')[0],
                          status: 'pending',
                          installmentNumber: i + 1,
                          totalInstallments: updatedDoc.installmentsCount,
+                         pointsEarned: Math.round(cuotaVal),
+                         pointsAwarded: false,
                          timestamp: new Date().toISOString()
                        };
                        await addLocalDoc('installments', installmentDoc);

@@ -405,9 +405,10 @@ export default function App() {
       setClients((prevClients) =>
         prevClients.map((c) => {
           if (c.id === clientId) {
-            const addedPoints = Math.round(saleTotal * 0.1);
+            const isCreditType = paymentMethodType === 'credit' || paymentMethodType === 'Crédito' || paymentMethodType === 'Crédito / Fiado' || paymentMethodType === 'Libreta de Queso' || paymentMethodType === 'Mundo Kalu';
+            // Regla: 1 punto por cada $1 pagado al contado / inicial de inmediato
+            const addedPoints = Math.round(Number(amountPaid || 0));
             let updatedClient;
-            const isCreditType = paymentMethodType === 'credit' || paymentMethodType === 'Crédito' || paymentMethodType === 'Crédito / Fiado' || paymentMethodType === 'Libreta de Queso';
             if (isCreditType) {
               updatedClient = {
                 ...c,
@@ -417,7 +418,7 @@ export default function App() {
             } else {
               updatedClient = {
                 ...c,
-                loyaltyPoints: Number(c.loyaltyPoints || 0) + addedPoints
+                loyaltyPoints: Number(c.loyaltyPoints || 0) + Math.round(Number(saleTotal || 0))
               };
             }
             // Persist client updates to Local API

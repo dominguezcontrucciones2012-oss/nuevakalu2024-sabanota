@@ -939,14 +939,15 @@ export default function ProducerPortal({
                       {/* Cabecera Nivel Kalu */}
                       <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 relative overflow-hidden flex items-center justify-between">
                         <div className="relative z-10">
-                          <h2 className="text-xl font-bold text-white mb-1">Nivel K 1</h2>
+                          <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Mundo Kalu • Nivel K1</span>
+                          <h2 className="text-xl font-bold text-white mb-1">Clase Estándar</h2>
                           <div className="flex items-center gap-1.5 text-amber-400">
-                            <span className="text-xs font-semibold">Tienes 3 pts</span>
+                            <span className="text-xs font-semibold">{loggedSupplier?.points || 0} pts</span>
                             <Star className="w-3.5 h-3.5 fill-amber-400" />
                           </div>
                         </div>
                         <div className="relative z-10 bg-emerald-500/10 border border-emerald-500/30 px-3 py-1.5 rounded-full">
-                          <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-400">Mundo Kalu</span>
+                          <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-400">Productor Activo</span>
                         </div>
                       </div>
 

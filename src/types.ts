@@ -55,6 +55,8 @@ export interface DebtInstallment {
   dueDate: string;
   status: 'pending' | 'paid' | 'overdue' | 'in_review';
   paidAt?: string;
+  pointsEarned?: number;
+  pointsAwarded?: boolean;
   timestamp?: any;
 }
 

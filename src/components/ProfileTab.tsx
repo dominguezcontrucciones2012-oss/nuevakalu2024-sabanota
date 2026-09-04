@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { User, ShoppingBag, HelpCircle, Gift, ShieldCheck, Info, LogOut, ChevronRight, ArrowLeft, MapPin, Calendar, Wind, Sparkles, Lock, Key, MessageCircle, MessageSquare, Mail, Trash2 } from 'lucide-react';
+import { User, ShoppingBag, HelpCircle, Gift, ShieldCheck, Info, LogOut, ChevronRight, ArrowLeft, MapPin, Calendar, Wind, Sparkles, Lock, Key, MessageCircle, MessageSquare, Mail, Trash2, Award, Zap } from 'lucide-react';
 import { ClientProfile } from '../types';
+import { getVIPLevelInfo, VIP_LEVELS_MATRIX } from '../config/vipMatrix';
 
 interface ProfileTabProps {
   clientData: ClientProfile | null;
@@ -11,7 +12,7 @@ interface ProfileTabProps {
   onNavigateTab?: (tab: 'inicio' | 'tienda' | 'qr' | 'pagos' | 'perfil') => void;
 }
 
-type SubViewType = 'main' | 'mis_datos' | 'info_personal' | 'mis_direcciones' | 'mis_compras' | 'mis_recompensas' | 'seguridad' | 'seguridad_codigo' | 'sobre_kalu';
+type SubViewType = 'main' | 'mis_datos' | 'info_personal' | 'mis_direcciones' | 'mis_compras' | 'mis_recompensas' | 'seguridad' | 'seguridad_codigo' | 'sobre_kalu' | 'mundo_kalu';
 type FilterTabType = 'por_pagar' | 'pagadas' | 'canceladas';
 type RewardTabType = 'disponibles' | 'utilizadas' | 'vencidas';
 
@@ -99,16 +100,37 @@ export default function ProfileTab({
       <div className="p-5 space-y-6">
 
         {/* 2. Tarjeta de Nivel Mundo Kalu */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex justify-between items-center shadow-lg relative overflow-hidden">
-          <div className="absolute top-0 right-0 -mr-4 -mt-4 w-24 h-24 bg-emerald-500/10 blur-2xl rounded-full"></div>
-          <div className="relative z-10">
-            <h3 className="font-black text-lg text-white mb-1">Nivel K{Number(clubLevel || 1)}</h3>
-            <p className="text-xs text-slate-400 font-bold">Tienes {Number(kaluPoints || 0)} pts ⭐</p>
-          </div>
-          <button className="relative z-10 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-3 py-1.5 rounded-xl font-bold text-xs uppercase tracking-wider hover:bg-emerald-500/30 transition-colors">
-            Mundo Kalu
-          </button>
-        </div>
+        {(() => {
+          const vip = getVIPLevelInfo(kaluPoints);
+          return (
+            <div 
+              onClick={() => setActiveSubView('mundo_kalu')}
+              className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex justify-between items-center shadow-lg relative overflow-hidden cursor-pointer hover:border-emerald-500/40 transition-colors"
+            >
+              <div className="absolute top-0 right-0 -mr-4 -mt-4 w-24 h-24 bg-emerald-500/10 blur-2xl rounded-full"></div>
+              <div className="relative z-10">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <h3 className="font-black text-lg text-white">{vip.name}</h3>
+                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                    {vip.code}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 font-bold">
+                  {Number(kaluPoints || 0)} pts ⭐ • Inicial {Math.round(vip.initialPct * 100)}%
+                </p>
+              </div>
+              <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveSubView('mundo_kalu');
+                }}
+                className="relative z-10 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-3 py-1.5 rounded-xl font-bold text-xs uppercase tracking-wider hover:bg-emerald-500/30 transition-colors"
+              >
+                Mundo Kalu
+              </button>
+            </div>
+          );
+        })()}
 
         {/* 3. Sección "Información" */}
         <div>
@@ -763,6 +785,121 @@ export default function ProfileTab({
     </div>
   );
 
+  const renderMundoKalu = () => {
+    const currentVip = getVIPLevelInfo(kaluPoints);
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col overflow-y-auto animate-in slide-in-from-right duration-300">
+        <div className="sticky top-0 z-50 bg-slate-950/80 backdrop-blur-md border-b border-slate-900 p-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button onClick={() => setActiveSubView('main')} className="w-8 h-8 rounded-full bg-slate-900 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div>
+              <h2 className="text-base font-black text-white">Club Kalu Más</h2>
+              <p className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider">Matriz de Categorías VIP</p>
+            </div>
+          </div>
+          <div className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/30 rounded-full">
+            <span className="text-xs font-black text-emerald-400">{currentVip.code}</span>
+          </div>
+        </div>
+
+        <div className="p-5 space-y-5 flex-1">
+          {/* Tarjeta de Nivel Actual */}
+          <div className="bg-gradient-to-br from-zinc-900 via-slate-900 to-emerald-950/50 border border-emerald-500/40 rounded-3xl p-5 relative overflow-hidden shadow-xl">
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-500/20 px-2.5 py-1 rounded-full">
+                  Nivel {currentVip.level} Actual
+                </span>
+                <h3 className="text-2xl font-black text-white mt-2">{currentVip.name}</h3>
+                <p className="text-xs text-slate-400 mt-0.5">{currentVip.description}</p>
+              </div>
+              <div className="w-12 h-12 rounded-2xl bg-emerald-500 flex items-center justify-center shadow-[0_0_20px_rgba(16,185,129,0.4)]">
+                <span className="text-slate-950 font-black text-xl">{currentVip.code}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 pt-4 border-t border-slate-800 text-center">
+              <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800/80">
+                <span className="text-[8px] text-slate-400 uppercase font-bold block mb-0.5">Inicial</span>
+                <span className="text-sm font-black text-emerald-400">{Math.round(currentVip.initialPct * 100)}%</span>
+              </div>
+              <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800/80">
+                <span className="text-[8px] text-slate-400 uppercase font-bold block mb-0.5">Línea Ppal</span>
+                <span className="text-sm font-black text-white">${currentVip.mainCreditLimit}</span>
+                <span className="text-[8px] text-slate-500 block">Máx {currentVip.mainMaxInstallments}c</span>
+              </div>
+              <div className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-800/80">
+                <span className="text-[8px] text-slate-400 uppercase font-bold block mb-0.5">Cotidiana</span>
+                <span className="text-sm font-black text-white">${currentVip.dailyCreditLimit}</span>
+                <span className="text-[8px] text-slate-500 block">15 días</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Lista Completa de Niveles */}
+          <div>
+            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Escalafón Oficial Club Kalu</h4>
+            <div className="space-y-3">
+              {VIP_LEVELS_MATRIX.map((tier) => {
+                const isSelected = tier.level === currentVip.level;
+                return (
+                  <div 
+                    key={tier.level}
+                    className={`p-4 rounded-2xl border transition-all ${isSelected ? 'bg-slate-900 border-emerald-500/70 ring-1 ring-emerald-500/40' : 'bg-slate-900/40 border-slate-800/80'}`}
+                  >
+                    <div className="flex justify-between items-center mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-black text-white">{tier.name}</span>
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300">{tier.code}</span>
+                        {isSelected && (
+                          <span className="text-[8px] font-bold px-2 py-0.5 rounded-full bg-emerald-500 text-slate-950 uppercase">
+                            Activo
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-xs font-mono font-bold text-amber-400">
+                        {tier.level < 6 ? `${tier.minPoints} - ${tier.maxPoints} pts` : '5000+ pts'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800/60 text-center text-xs">
+                      <div className="bg-slate-950/60 p-2 rounded-lg">
+                        <span className="text-[8px] text-slate-500 block uppercase font-bold">Inicial</span>
+                        <span className="font-bold text-emerald-400">{Math.round(tier.initialPct * 100)}%</span>
+                      </div>
+                      <div className="bg-slate-950/60 p-2 rounded-lg">
+                        <span className="text-[8px] text-slate-500 block uppercase font-bold">Línea Ppal</span>
+                        <span className="font-bold text-slate-200">${tier.mainCreditLimit} ({tier.mainMaxInstallments}c)</span>
+                      </div>
+                      <div className="bg-slate-950/60 p-2 rounded-lg">
+                        <span className="text-[8px] text-slate-500 block uppercase font-bold">Cotidiana</span>
+                        <span className="font-bold text-slate-200">${tier.dailyCreditLimit} (15d)</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="pt-2">
+            <button
+              onClick={() => {
+                setActiveSubView('main');
+                if (onNavigateTab) onNavigateTab('tienda');
+              }}
+              className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black uppercase text-xs tracking-wider rounded-2xl transition-all shadow-[0_0_20px_rgba(16,185,129,0.3)]"
+            >
+              Comprar en Tienda con mi Línea
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="flex-1 bg-slate-950 flex flex-col relative animate-fade-in text-slate-100 pb-20 overflow-y-auto">
       {/* Main flow routing */}
@@ -776,6 +913,7 @@ export default function ProfileTab({
       {activeSubView === 'seguridad' && renderSeguridad()}
       {activeSubView === 'seguridad_codigo' && renderSeguridadCodigo()}
       {activeSubView === 'sobre_kalu' && renderSobreKalu()}
+      {activeSubView === 'mundo_kalu' && renderMundoKalu()}
 
       {/* Modal de Identidad */}
       {showIdentityModal && (

@@ -484,7 +484,236 @@ app.delete('/api/collections/:name/:id', (req, res) => {
   }
 });
 
+// --- SERVICIOS AUXILIARES DE COMUNICACIÓN (WHATSAPP & CORREO) ---
+
+async function sendWhatsAppNotification({ phone, name, message }) {
+  if (!phone) return { success: false, reason: 'No phone' };
+  
+  let cleanPhone = String(phone).replace(/\D/g, '');
+  if (cleanPhone.startsWith('0')) {
+    cleanPhone = '58' + cleanPhone.substring(1);
+  } else if (!cleanPhone.startsWith('58') && cleanPhone.length === 10) {
+    cleanPhone = '58' + cleanPhone;
+  }
+
+  const waApiUrl = process.env.WHATSAPP_API_URL || process.env.MESSAGING_API_URL || process.env.WHATSAPP_URL;
+  const waApiKey = process.env.WHATSAPP_API_KEY || process.env.API_KEY || process.env.WHATSAPP_TOKEN;
+
+  if (waApiUrl) {
+    try {
+      console.log(`[Robot WhatsApp Cobranza] Enviando mensaje a ${cleanPhone}...`);
+      const response = await fetch(waApiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(waApiKey ? { 'Authorization': `Bearer ${waApiKey}`, 'x-api-key': waApiKey } : {})
+        },
+        body: JSON.stringify({
+          phone: cleanPhone,
+          to: cleanPhone,
+          message,
+          body: message,
+          text: message
+        })
+      });
+      if (response.ok) {
+        return { success: true, channel: 'whatsapp', recipient: cleanPhone };
+      } else {
+        const errText = await response.text();
+        console.error('[Robot WhatsApp Cobranza] Error en respuesta:', response.status, errText);
+        return { success: false, error: errText };
+      }
+    } catch (e) {
+      console.error('[Robot WhatsApp Cobranza] Error de conexión:', e.message);
+      return { success: false, error: e.message };
+    }
+  } else {
+    console.log(`[Robot WhatsApp Cobranza (Simulado)] A: ${cleanPhone}\nMensaje:\n${message}\n-----------------------------`);
+    return { success: true, simulated: true, recipient: cleanPhone };
+  }
+}
+
+async function sendEmailNotification({ email, name, subject, htmlContent }) {
+  if (!email) return { success: false, reason: 'No email' };
+  
+  const emailUser = process.env.EMAIL_USER || 'cherokejd566@gmail.com';
+  const emailPass = process.env.EMAIL_PASS;
+
+  if (!emailPass) {
+    console.warn('[Robot Correo Cobranza] No se puede enviar correo: process.env.EMAIL_PASS no configurado.');
+    return { success: false, reason: 'No email credentials' };
+  }
+
+  try {
+    const dynamicTransporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: emailUser, pass: emailPass }
+    });
+
+    await dynamicTransporter.sendMail({
+      from: `"Mundo Kalu Cobranzas" <${emailUser}>`,
+      to: email,
+      subject: subject || 'Notificación de Cuota Vencida - Mundo Kalu',
+      html: htmlContent
+    });
+    console.log(`[Robot Correo Cobranza] Correo de cobro enviado con éxito a ${email}`);
+    return { success: true, channel: 'email', recipient: email };
+  } catch (error) {
+    console.error('[Robot Correo Cobranza] Error enviando correo:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+// --- SERVICIO DE MONITOREO DIARIO DE CUOTAS Y VENCIMIENTO (COBRANZAS) ---
+
+async function checkOverdueInstallments() {
+  console.log('\n[Robot Cobranzas] 🔍 Iniciando inspección de cuotas y fechas de vencimiento...');
+  try {
+    const installments = readCollection('installments');
+    const clients = readCollection('clients');
+    const settings = readCollection('settings');
+    const generalSettings = settings.find(s => s.id === 'general') || {};
+    const bcvRate = Number(generalSettings.exchangeRate || 807.38);
+
+    if (!installments || installments.length === 0) {
+      console.log('[Robot Cobranzas] No hay cuotas registradas en la base de datos.');
+      return { checked: 0, markedOverdue: 0, notified: 0 };
+    }
+
+    const todayStr = new Date().toISOString().split('T')[0]; // 'YYYY-MM-DD'
+    const today = new Date(todayStr).getTime();
+
+    let markedOverdue = 0;
+    let notifiedCount = 0;
+    let hasChanges = false;
+
+    for (let i = 0; i < installments.length; i++) {
+      const inst = installments[i];
+      
+      // Evaluar solo cuotas pendientes de pago
+      if (inst.status === 'pending') {
+        const dueRaw = inst.dueDate ? String(inst.dueDate).split('T')[0] : '';
+        if (!dueRaw) continue;
+
+        const dueTime = new Date(dueRaw).getTime();
+
+        // Si la fecha actual alcanzó o superó la fecha de vencimiento
+        if (today >= dueTime) {
+          console.log(`[Robot Cobranzas] ⚠️ Cuota ${inst.id} vencida (Fecha: ${dueRaw}, Hoy: ${todayStr}). Marcando como 'overdue'...`);
+          inst.status = 'overdue';
+          inst.overdueNotifiedAt = new Date().toISOString();
+          inst.pointsEarned = 0; // Regla: Pierde los puntos de esta cuota por atraso (no afecta puntos históricos)
+          hasChanges = true;
+          markedOverdue++;
+
+          // Buscar cliente asociado para disparar la notificación
+          const client = clients.find(c => String(c.id) === String(inst.clientId));
+          if (client) {
+            const amountUsd = Number(inst.amountUSD || inst.amount || 0).toFixed(2);
+            const amountBs = (Number(amountUsd) * bcvRate).toFixed(2);
+            const clientName = client.name || 'Estimado(a) Cliente';
+
+            // 1. Notificación por WhatsApp
+            const waMessage = `🔔 *Mundo Kalu - Aviso de Cobro*\n\nHola *${clientName}*,\nTe informamos que tu cuota de crédito por *$${amountUsd} USD* (aprox. *Bs. ${amountBs}* a tasa oficial BCV) venció el día *${dueRaw}*.\n\n⚠️ *Nota de Beneficios:* Los puntos de esta cuota quedan pausados por mora hasta regularizar tu cuenta (tus puntos históricos acumulados se mantienen seguros).\n\n📌 *Para realizar tu pago y mantener tu historial activo:*\n- Entra a tu Portal del Cliente: Mundo Kalu > Pagos\n- O acude a caja en tienda central para liquidar en efectivo o punto.\n\n_¡Gracias por tu preferencia y compromiso!_`;
+
+            sendWhatsAppNotification({
+              phone: client.phone,
+              name: clientName,
+              message: waMessage
+            });
+
+            // 2. Notificación por Correo Electrónico
+            if (client.email) {
+              const emailHtml = `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #020617; color: #f8fafc; border-radius: 20px; overflow: hidden; border: 1px solid #1e293b;">
+                  <div style="background-color: #0f172a; padding: 25px; text-align: center; border-bottom: 2px solid #eab308;">
+                    <h1 style="color: #eab308; margin: 0; font-size: 22px; font-weight: bold; letter-spacing: 2px;">MUNDO KALU</h1>
+                    <p style="color: #94a3b8; font-size: 11px; margin: 4px 0 0 0; text-transform: uppercase;">Aviso de Cobranza y Vencimiento</p>
+                  </div>
+                  <div style="padding: 35px 25px;">
+                    <h2 style="margin-top: 0; color: #f8fafc; font-size: 18px;">Estimado(a) ${clientName},</h2>
+                    <p style="color: #94a3b8; font-size: 14px; line-height: 1.6;">
+                      Le recordamos que su cuota pendiente de financiamiento ha alcanzado su fecha límite de pago el <strong>${dueRaw}</strong>.
+                    </p>
+                    <div style="margin: 25px 0; background-color: #0f172a; border: 1px solid #334155; border-radius: 14px; padding: 20px;">
+                      <div style="display: flex; justify-content: space-between; margin-bottom: 10px; border-bottom: 1px solid #1e293b; padding-bottom: 8px;">
+                        <span style="color: #94a3b8; font-size: 13px;">Monto en Dólares:</span>
+                        <span style="color: #10b981; font-weight: bold; font-size: 16px;">$${amountUsd} USD</span>
+                      </div>
+                      <div style="display: flex; justify-content: space-between; margin-bottom: 10px; border-bottom: 1px solid #1e293b; padding-bottom: 8px;">
+                        <span style="color: #94a3b8; font-size: 13px;">Equivalente en Bolívares (BCV):</span>
+                        <span style="color: #f8fafc; font-weight: bold; font-size: 14px;">Bs. ${amountBs}</span>
+                      </div>
+                      <div style="display: flex; justify-content: space-between;">
+                        <span style="color: #94a3b8; font-size: 13px;">Estado actual:</span>
+                        <span style="color: #ef4444; font-weight: bold; font-size: 13px; text-transform: uppercase;">Vencida / En Mora</span>
+                      </div>
+                    </div>
+                    <div style="background-color: #451a03; border: 1px solid #b45309; border-radius: 10px; padding: 12px; margin-bottom: 20px;">
+                      <p style="color: #fde68a; font-size: 12px; margin: 0; line-height: 1.4;">
+                        🛡️ <strong>Política Club Kalu Más:</strong> Sus puntos acumulados históricos no se pierden, pero los puntos correspondientes a esta cuota vencida no serán acreditados.
+                      </p>
+                    </div>
+                    <p style="color: #94a3b8; font-size: 13px; line-height: 1.5;">
+                      Por favor, reporte su transferencia o Pago Móvil ingresando a su <strong>Portal del Cliente</strong> en la sección <em>Pagos</em>, o acérquese a nuestra sede principal para abonar en caja.
+                    </p>
+                  </div>
+                  <div style="background-color: #020617; padding: 18px; text-align: center; border-top: 1px solid #1e293b;">
+                    <p style="margin: 0; color: #475569; font-size: 11px;">© ${new Date().getFullYear()} Mundo Kalu. Departamento de Créditos y Finanzas.</p>
+                  </div>
+                </div>
+              `;
+
+              sendEmailNotification({
+                email: client.email,
+                name: clientName,
+                subject: `⚠️ Recordatorio de Pago - Cuota Vencida ($${amountUsd} USD) - Mundo Kalu`,
+                htmlContent: emailHtml
+              });
+            }
+            notifiedCount++;
+          }
+        }
+      }
+    }
+
+    if (hasChanges) {
+      writeCollection('installments', installments);
+      console.log(`[Robot Cobranzas] ✅ Se actualizaron ${markedOverdue} cuotas a estatus 'overdue' y se despacharon ${notifiedCount} avisos.`);
+    } else {
+      console.log('[Robot Cobranzas] ✨ Todo al día: No se encontraron cuotas vencidas pendientes por actualizar.');
+    }
+
+    return { checked: installments.length, markedOverdue, notified: notifiedCount };
+  } catch (error) {
+    console.error('[Robot Cobranzas] ❌ Error durante la inspección de cuotas:', error);
+    return { error: error.message };
+  }
+}
+
+// Endpoint para disparar la revisión manualmente desde el CRM/Contador
+app.post('/api/run-debt-check', async (req, res) => {
+  try {
+    const result = await checkOverdueInstallments();
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 server.listen(PORT, () => {
   console.log(`Backend server (Uploader & WS) running on port ${PORT}`);
   console.log(`Saving databases and files to: ${uploadDir}`);
+  
+  // Ejecución inicial al arrancar el backend (tras 5 segundos de gracia)
+  setTimeout(() => {
+    checkOverdueInstallments();
+  }, 5000);
+
+  // Intervalo de revisión programada: Cada 12 Horas (12 * 60 * 60 * 1000 ms)
+  const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
+  setInterval(() => {
+    checkOverdueInstallments();
+  }, CHECK_INTERVAL_MS);
 });
+

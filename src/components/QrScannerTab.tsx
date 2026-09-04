@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { Camera, TerminalSquare, AlertCircle } from 'lucide-react';
+import { getVIPLevelInfo } from '../config/vipMatrix';
 
 interface QrScannerTabProps {
   loggedClient: any;
@@ -208,16 +209,21 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }
             
             {Number(qrPaymentAmount || 0) > 0 && !fetchedTx && (() => {
               const amount = Number(qrPaymentAmount || 0);
-              const level = getClientLevelInfo((loggedClient as any)?.loyaltyPoints || 0).level;
-              const inicialPct = level >= 5 ? 0.10 : level >= 3 ? 0.15 : 0.20;
+              const vip = getVIPLevelInfo((loggedClient as any)?.loyaltyPoints || 0);
+              const inicialPct = vip.initialPct;
               const inicial = amount * inicialPct;
               const aFinanciar = amount - inicial;
-              const cuotas = aFinanciar / 4; // 4 quincenas
+              const maxCuotas = vip.mainMaxInstallments;
+              const cuotaAmount = aFinanciar / maxCuotas;
               
               return (
                 <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-4 mb-6 space-y-3">
                   <div className="flex justify-between items-center">
-                    <span className="text-xs text-zinc-400">Inicial Requerida ({Math.round(inicialPct * 100)}%)</span>
+                    <span className="text-xs text-zinc-400">Nivel VIP: {vip.name}</span>
+                    <span className="text-xs font-bold text-amber-400">Inicial: {Math.round(inicialPct * 100)}%</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs text-zinc-400">Inicial Requerida</span>
                     <span className="text-sm font-black text-emerald-400">${Number(inicial || 0).toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between items-center">
@@ -226,7 +232,7 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }
                   </div>
                   <div className="border-t border-zinc-800 pt-3 flex justify-between items-center">
                     <span className="text-[10px] font-bold text-zinc-300 uppercase">Esquema Sugerido</span>
-                    <span className="text-[10px] font-black text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded uppercase">4 Cuotas de ${cuotas.toFixed(2)}</span>
+                    <span className="text-[10px] font-black text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded uppercase">{maxCuotas} Cuotas de ${cuotaAmount.toFixed(2)}</span>
                   </div>
                 </div>
               );
