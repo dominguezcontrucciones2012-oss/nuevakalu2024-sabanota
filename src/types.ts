@@ -14,6 +14,7 @@ export interface Transaction {
   isIncome: boolean;
   status: 'Completado' | 'Pendiente' | 'pending_approval' | 'approved' | 'rejected' | 'pending_verification';
   clientId?: string;
+  supplierId?: string;
   installmentIds?: string[];
   kaluCreditData?: {
     inicial: number;
@@ -42,6 +43,8 @@ export interface Transaction {
   bcvRateAtSettlement?: number;
   isVoided?: boolean;
   debtAmount?: number;
+  paidAmount?: number;
+  isAbono?: boolean;
   createdAt?: number;
   isClosed?: boolean;
   closureId?: string;

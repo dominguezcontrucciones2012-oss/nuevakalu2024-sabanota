@@ -152,7 +152,7 @@ export const deleteLocalDoc = async (collectionName: string, id: string) => {
 };
 
 export const clearCollection = async (collectionName: string) => {
-  const res = await fetch(`/api/collections/${collectionName}`, {
+  const res = await fetch(`${API_URL}/collections/${collectionName}`, {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error(`Failed to clear ${collectionName}`);

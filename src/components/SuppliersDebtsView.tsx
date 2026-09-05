@@ -56,6 +56,7 @@ interface SuppliersDebtsViewProps {
     supplierId: string;
     items: { productId: string; quantityKg: number; purchasePrice: number; sellingPrice: number; marginPercent: number; name: string; createNewItem?: boolean; }[];
     isCredit: boolean;
+    paymentMethod?: string;
   }) => Promise<void>;
   onAddNotification: (msg: string, type: 'success' | 'info' | 'warning') => void;
   isSidebarOpen?: boolean;
@@ -158,10 +159,11 @@ export default function SuppliersDebtsView({
         p.category?.toLowerCase().includes('lacteo') ||
         p.name?.toLowerCase().includes('queso')
       );
+      const initPrice = defaultCheese ? (defaultCheese.purchasePrice || defaultCheese.sellingPrice || 0) : 0;
       setReceiveProductId(defaultCheese ? defaultCheese.id : '');
       setCustomProductName('');
       setReceiveKg('');
-      setReceivePrice('');
+      setReceivePrice(initPrice > 0 ? String(initPrice) : '');
       setReceivePayment('A la Libreta');
       setCreateNewProduct(false);
     } else if (modal === 'pagar') {
@@ -184,81 +186,107 @@ export default function SuppliersDebtsView({
   useEffect(() => {
     if (activeModal === 'historial' && selectedSupplierId) {
       const s = suppliers.find(sup => sup.id === selectedSupplierId);
-      if (!s) return;
+      if (!s) {
+        setIsLoadingHistorial(false);
+        return;
+      }
 
       setIsLoadingHistorial(true);
-      
-      // We do not use the date filter automatically on open. We just fetch the last 15.
-      if (showAllTime || !historialStartDate || !historialEndDate) {
-        const unsub = onCollectionSnapshot('transactions', (data) => {
-          const allTxs = data.filter((d: any) => d.entity === s.name) as Transaction[];
-          allTxs.sort((a, b) => {
-            const getMs = (tx: any) => {
-              if (tx.timestamp && typeof tx.timestamp.toMillis === 'function') return tx.timestamp.toMillis();
-              if (tx.timestamp && typeof tx.timestamp === 'number') return tx.timestamp;
+
+      const processAndSetTransactions = (sourceTxs: Transaction[]) => {
+        try {
+          if (!Array.isArray(sourceTxs)) {
+            setLocalTransactions([]);
+            return;
+          }
+
+          const supNameClean = (s.name || '').trim().toLowerCase();
+          const supplierTxs = sourceTxs.filter((d: any) => {
+            if (!d) return false;
+            const entityMatch = d.entity && String(d.entity).trim().toLowerCase() === supNameClean;
+            const supplierIdMatch = d.supplierId && String(d.supplierId) === String(s.id);
+            const entityIdMatch = d.entityId && String(d.entityId) === String(s.id);
+            return entityMatch || supplierIdMatch || entityIdMatch;
+          });
+
+          let filtered = supplierTxs;
+          if (!showAllTime && historialStartDate && historialEndDate) {
+            const startMs = new Date(historialStartDate + 'T00:00:00').getTime();
+            const endMs = new Date(historialEndDate + 'T23:59:59.999').getTime();
+
+            filtered = supplierTxs.filter(tx => {
+              if (!tx) return false;
+              let txMs = 0;
+              if (tx.timestamp) {
+                if (typeof (tx.timestamp as any).toMillis === 'function') txMs = (tx.timestamp as any).toMillis();
+                else if (typeof tx.timestamp === 'number') txMs = tx.timestamp;
+              }
+              if (txMs === 0 && tx.id && typeof tx.id === 'string') {
+                const parts = tx.id.split('-');
+                for (const part of parts) {
+                  if (part.length >= 12 && !isNaN(Number(part))) {
+                    txMs = parseInt(part, 10);
+                    break;
+                  }
+                }
+              }
+              if (txMs > 0) {
+                return txMs >= startMs && txMs <= endMs;
+              }
+
+              const txTime = parseCustomDate(tx.date || '');
+              if (txTime === 0) return true; // Si no se puede parsear, no ocultar
+              return txTime >= startMs && txTime <= endMs;
+            });
+          }
+
+          const getTxTimeMs = (tx: any): number => {
+            if (!tx) return 0;
+            if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+            if (tx.timestamp) {
+              if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+              if (typeof tx.timestamp === 'number') return tx.timestamp;
+            }
+            if (tx.id && typeof tx.id === 'string') {
               const parts = tx.id.split('-');
               for (const part of parts) {
                 if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
               }
-              return new Date(tx.date || 0).getTime();
-            };
-            return getMs(b) - getMs(a);
-          });
-          // Limit to 50 locally
-          setLocalTransactions(allTxs.slice(0, 50));
-          setIsLoadingHistorial(false);
-        });
-        return () => unsub();
-      } else {
-        // Range query mode
-        const fetchRange = async () => {
-          setIsLoadingHistorial(true);
-          const startMs = new Date(historialStartDate + 'T00:00:00').getTime();
-          const endMs = new Date(historialEndDate + 'T23:59:59.999').getTime();
-          
-          const data = await fetchCollection('transactions');
-          const allTxs = data.filter((d: any) => d.entity === s.name) as Transaction[];
-          const filtered = allTxs.filter(tx => {
-            // Check by new ID pattern (TX-17000000 or similar)
-            const idParts = tx.id.split('-');
-            let txMs = 0;
-            for (const part of idParts) {
-              if (part.length >= 12 && !isNaN(Number(part))) {
-                txMs = parseInt(part, 10);
-                break;
-              }
             }
-            
-            if (txMs > 0) {
-               return txMs >= startMs && txMs <= endMs;
-            }
-            
-            // Fallback robusto de fechas
-            const txTime = parseCustomDate(tx.date);
-            if (txTime === 0) return true; // Si no se puede parsear, no la ocultes
-            return txTime >= startMs && txTime <= endMs;
-          });
-          
-          filtered.sort((a, b) => {
-            const getMs = (tx: any) => {
-              if (tx.timestamp && typeof tx.timestamp.toMillis === 'function') return tx.timestamp.toMillis();
-              if (tx.timestamp && typeof tx.timestamp === 'number') return tx.timestamp;
-              const parts = tx.id.split('-');
-              for (const part of parts) {
-                if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
-              }
-              return new Date(tx.date || 0).getTime();
-            };
-            return getMs(b) - getMs(a);
-          });
-          
-          setLocalTransactions(filtered);
+            return parseCustomDate(tx.date || '') || 0;
+          };
+
+          filtered.sort((a, b) => getTxTimeMs(b) - getTxTimeMs(a));
+
+          setLocalTransactions(filtered.slice(0, 100));
+        } catch (err) {
+          console.error('Error procesando transacciones de proveedor:', err);
+        } finally {
           setIsLoadingHistorial(false);
-        };
-        fetchRange();
+        }
+      };
+
+      // 1. Usar transacciones pasadas por props inmediatamente para eliminar cualquier tiempo de congelado
+      if (transactions && transactions.length > 0) {
+        processAndSetTransactions(transactions);
       }
+
+      // 2. Suscripción a eventos locales en tiempo real
+      const unsub = onCollectionSnapshot('transactions', (data) => {
+        if (data && data.length > 0) {
+          processAndSetTransactions(data as Transaction[]);
+        } else if (transactions && transactions.length > 0) {
+          processAndSetTransactions(transactions);
+        } else {
+          setIsLoadingHistorial(false);
+        }
+      });
+
+      return () => {
+        if (typeof unsub === 'function') unsub();
+      };
     }
-  }, [activeModal, selectedSupplierId, suppliers, showAllTime, historialStartDate, historialEndDate]);
+  }, [activeModal, selectedSupplierId, suppliers, showAllTime, historialStartDate, historialEndDate, transactions]);
 
 
   const openEditModal = (s: SupplierProfile) => {
@@ -597,11 +625,26 @@ export default function SuppliersDebtsView({
               if (activeModal === 'historial') {
                 const supTxRaw = localTransactions;
                 
-                // Parse dates and sort chronologically for balance calculation (oldest first)
-                // supTxRaw is sorted descending (newest first). We need it ascending (oldest first) to compute the running balance progressively.
-                const ascendingTx = [...supTxRaw].reverse();
+                const getTxTimeMs = (tx: any): number => {
+                  if (!tx) return 0;
+                  if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+                  if (tx.timestamp) {
+                    if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+                    if (typeof tx.timestamp === 'number') return tx.timestamp;
+                  }
+                  if (tx.id && typeof tx.id === 'string') {
+                    const parts = tx.id.split('-');
+                    for (const part of parts) {
+                      if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+                    }
+                  }
+                  return parseCustomDate(tx.date || '') || 0;
+                };
 
-                // Calculate running balance
+                // Sort strictly ascending (oldest first) to compute running progressive balance
+                const ascendingTx = [...supTxRaw].sort((a, b) => getTxTimeMs(a) - getTxTimeMs(b));
+
+                // Calculate progressive running balance
                 let currentBalance = 0;
                 const txWithBalance = ascendingTx.map(tx => {
                   let sum = 0;
@@ -623,7 +666,7 @@ export default function SuppliersDebtsView({
                   };
                 });
 
-                // Reverse back to descending for display (newest first at the top)
+                // Display descending (newest first at the top)
                 const filteredTx = txWithBalance.reverse();
 
                 return (
@@ -751,15 +794,10 @@ export default function SuppliersDebtsView({
               }
 
               if (activeModal === 'recibir') {
-                const cleanNumber = (val: string) => {
-                  if (!val) return 0;
-                  const cleaned = val.toString().replace(/[^0-9.,]/g, '').replace(',', '.');
-                  return Number(cleaned) || 0;
-                };
-                const currentKg = cleanNumber(receiveKg);
-                const currentPrice = cleanNumber(receivePrice);
+                const currentKg = parseSafeDecimal(receiveKg);
+                const currentPrice = parseSafeDecimal(receivePrice);
                 const calculatedSubtotal = currentKg * currentPrice;
-                const calculatedSubtotalBs = calculatedSubtotal * exchangeRate;
+                const calculatedSubtotalBs = calculatedSubtotal * (exchangeRate || 1);
 
                 return (
                   <div className="flex flex-col h-full overflow-hidden">
@@ -774,13 +812,27 @@ export default function SuppliersDebtsView({
                     <div className="p-5 space-y-5 flex-1 overflow-y-auto">
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-mono text-neutral-400 uppercase block">Concepto / Rubro</label>
-                        <select value={receiveProductId} onChange={e => {
-                          setReceiveProductId(e.target.value);
-                          if (e.target.value !== 'Otro') {
-                            setCustomProductName('');
-                            setCreateNewProduct(false);
-                          }
-                        }} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
+                        <select 
+                          value={receiveProductId} 
+                          onChange={e => {
+                            const selId = e.target.value;
+                            setReceiveProductId(selId);
+                            if (selId !== 'Otro') {
+                              setCustomProductName('');
+                              setCreateNewProduct(false);
+                              const prod = cheeseProducts.find(p => p.id === selId);
+                              if (prod) {
+                                const prodPrice = prod.purchasePrice || prod.sellingPrice || 0;
+                                if (prodPrice > 0) {
+                                  setReceivePrice(String(prodPrice));
+                                }
+                              }
+                            } else {
+                              setReceivePrice('');
+                            }
+                          }} 
+                          className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer"
+                        >
                           <option value="">Seleccione Producto a Arrimar</option>
                           {cheeseProducts
                             .filter(p => 
@@ -816,8 +868,9 @@ export default function SuppliersDebtsView({
                             inputMode="decimal" 
                             value={receiveKg} 
                             onChange={(e) => setReceiveKg(e.target.value)} 
-                            className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" 
-                            placeholder="0.00" 
+                            onFocus={(e) => e.target.select()}
+                            className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all font-mono" 
+                            placeholder="Ej. 50" 
                           />
                         </div>
                         <div className="space-y-1.5 flex-1">
@@ -827,8 +880,9 @@ export default function SuppliersDebtsView({
                             inputMode="decimal" 
                             value={receivePrice} 
                             onChange={(e) => setReceivePrice(e.target.value)} 
-                            className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" 
-                            placeholder="0.00" 
+                            onFocus={(e) => e.target.select()}
+                            className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all font-mono" 
+                            placeholder="Ej. 3.50" 
                           />
                         </div>
                       </div>
@@ -884,7 +938,8 @@ export default function SuppliersDebtsView({
                                     name: finalProductName,
                                     createNewItem: createNewProduct 
                                   }],
-                                  isCredit: receivePayment === 'A la Libreta'
+                                  isCredit: receivePayment === 'A la Libreta',
+                                  paymentMethod: receivePayment
                                 });
                               }
                               onAddNotification(`Recepción de ${finalProductName} registrada correctamente.`, 'success');
@@ -978,7 +1033,7 @@ export default function SuppliersDebtsView({
                       <div className="flex gap-4">
                         <div className="space-y-1.5 flex-[2]">
                           <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto a Pagar</label>
-                          <input type="text" inputMode="decimal" value={payToThemAmount} onChange={e => setPayToThemAmount(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" placeholder="0.00" />
+                          <input type="text" inputMode="decimal" value={payToThemAmount} onChange={e => setPayToThemAmount(e.target.value)} onFocus={(e) => e.target.select()} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all font-mono" placeholder="0.00" />
                         </div>
                         <div className="space-y-1.5 flex-[1]">
                           <label className="text-[10px] font-mono text-neutral-400 uppercase block">Moneda</label>
@@ -1101,7 +1156,7 @@ export default function SuppliersDebtsView({
                       <div className="flex gap-4">
                         <div className="space-y-1.5 flex-[2]">
                           <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto a Cobrar</label>
-                          <input type="text" inputMode="decimal" value={payToUsAmount} onChange={e => setPayToUsAmount(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all" placeholder="0.00" />
+                          <input type="text" inputMode="decimal" value={payToUsAmount} onChange={e => setPayToUsAmount(e.target.value)} onFocus={(e) => e.target.select()} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all font-mono" placeholder="0.00" />
                         </div>
                         <div className="space-y-1.5 flex-[1]">
                           <label className="text-[10px] font-mono text-neutral-400 uppercase block">Moneda</label>

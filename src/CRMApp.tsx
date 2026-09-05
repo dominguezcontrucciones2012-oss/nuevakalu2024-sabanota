@@ -50,7 +50,6 @@ import SuppliersDebtsView from './components/SuppliersDebtsView';
 import FinancesAnalysisView from './components/FinancesAnalysisView';
 import ComplaintBoxView from './components/ComplaintBoxView';
 import SettingsAdminView from './components/SettingsAdminView';
-import MobilePortalsView from './components/MobilePortalsView';
 import AccessControlView from './components/AccessControlView';
 import ContadorIAView from './components/ContadorIAView';
 import CollectionsView from './components/contador/CollectionsView';
@@ -500,10 +499,12 @@ export default function App() {
 
         // Generar asiento en el historial del quesero para el fiado de tienda
         if (selectedSup) {
-          const supTxId = `TX-POS-SUP-${Date.now()}`;
+          const nowMs = Date.now();
+          const supTxId = `TX-POS-SUP-${nowMs}`;
           const supTx: Transaction = {
             id: supTxId,
             entity: selectedSup.name,
+            supplierId: supplierId,
             category: 'credito',
             date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
             invoiceNumber: `POS-${Math.floor(Math.random() * 9000 + 1000)}`,
@@ -512,7 +513,8 @@ export default function App() {
             status: 'Completado',
             paymentMethod: 'Consumo de Tienda',
             notes: 'Consumo / Fiado de víveres en tienda',
-            items: saleItems
+            items: saleItems,
+            createdAt: nowMs
           };
           
           addLocalDoc('transactions', supTx).catch(e => console.error("Error al registrar fiado en historial de quesero", e));
@@ -759,197 +761,6 @@ export default function App() {
     }
   };
 
-  // Libreta de Queso Handlers
-  const handleRecordSupplierStorePayment = (supplierId: string, amount: number, method: string = 'Efectivo / Caja Chica', note: string = '', currency: 'USD' | 'VES' = 'USD') => {
-    setSuppliers((prev) =>
-      prev.map((s) => {
-        if (s.id === supplierId) {
-          const currentDebt = s.storeDebt || 0;
-          return { ...s, storeDebt: Math.max(0, currentDebt - amount) };
-        }
-        return s;
-      })
-    );
-
-    const sup = suppliers.find(s => s.id === supplierId);
-    if (sup) {
-      updateLocalDoc('suppliers', supplierId, {
-        storeDebt: Math.max(0, (sup.storeDebt || 0) - amount)
-      }).catch(e => console.error("Error updating supplier store debt", e));
-    }
-
-    const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
-    const updatedVault = { ...currentVault };
-    
-    if (currency === 'VES') {
-      const bsAmount = amount * (settings.exchangeRate || 42.50);
-      if (method === 'Efectivo / Caja Chica') {
-         updatedVault.bs = (updatedVault.bs || 0) + bsAmount;
-      } else {
-         updatedVault.bankBs = (updatedVault.bankBs || 0) + bsAmount;
-      }
-    } else {
-      if (method === 'Efectivo / Caja Chica') {
-         updatedVault.usd = (updatedVault.usd || 0) + amount;
-      } else {
-         updatedVault.bankUsd = (updatedVault.bankUsd || 0) + amount;
-      }
-    }
-    
-    handleUpdateSettings({ centralVaultBalance: updatedVault });
-
-    const newTx: Transaction = {
-      id: `TX-${Date.now().toString().slice(-4)}`,
-      entity: sup ? sup.name : 'Productor',
-      category: 'ingresos_cobranza',
-      date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-      invoiceNumber: `COB-PROD-${Math.floor(Math.random() * 9000 + 1000)}`,
-      amount: amount,
-      isIncome: true,
-      status: 'Completado',
-      paymentMethod: method,
-      notes: note || 'Abono a deuda de tienda'
-    };
-    
-    setTransactions((prev) => [newTx, ...prev]);
-
-    try {
-      addLocalDoc('transactions', newTx);
-    } catch (err) {
-      console.error("Error saving supplier transaction to Local API:", err);
-    }
-  };
-
-  const handleNetSupplierBalances = (supplierId: string) => {
-    const sup = suppliers.find(s => s.id === supplierId);
-    if (!sup) return;
-
-    const owedToThem = sup.balanceOwed;
-    const owedToUs = sup.storeDebt || 0;
-
-    if (owedToThem === 0 && owedToUs === 0) {
-      addNotification('No hay saldos pendientes en la libreta para compensar.', 'info');
-      return;
-    }
-
-    let newBalanceOwed = 0;
-    let newStoreDebt = 0;
-
-    if (owedToThem >= owedToUs) {
-      newBalanceOwed = owedToThem - owedToUs;
-      newStoreDebt = 0;
-    } else {
-      newBalanceOwed = 0;
-      newStoreDebt = owedToUs - owedToThem;
-    }
-
-    setSuppliers((prev) =>
-      prev.map((s) => {
-        if (s.id === supplierId) {
-          return {
-            ...s,
-            balanceOwed: newBalanceOwed,
-            storeDebt: newStoreDebt
-          };
-        }
-        return s;
-      })
-    );
-    
-    // Save to Firestore
-    try {
-      updateLocalDoc('suppliers', supplierId, {
-        balanceOwed: newBalanceOwed,
-        storeDebt: newStoreDebt
-      });
-    } catch (err) {
-      console.error("Error updating supplier net balances in Local API:", err);
-    }
-
-    // Adjust bills
-    setBills((prevBills) => {
-      // Create a copy of the bills, and set matched pending ones of both types as 'Pagado' or adjust them
-      // This is a simulation, let's mark equivalent bills as Paid or add an adjustment note
-      return prevBills;
-    });
-
-    const netAmount = Math.min(owedToThem, owedToUs);
-    const newTx: Transaction = {
-      id: `TX-${Date.now()}`,
-      entity: `Compensación Libreta: ${sup.name}`,
-      category: 'credito',
-      date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-      invoiceNumber: `NET-${Math.floor(Math.random() * 9000 + 1000)}`,
-      amount: netAmount,
-      isIncome: true,
-      status: 'Completado'
-    };
-    setTransactions((prev) => [newTx, ...prev]);
-
-    try {
-      addLocalDoc('transactions', newTx);
-    } catch (err) {
-      console.error("Error saving net transaction to Local API:", err);
-    }
-
-    addNotification(`Intercambio en Libreta de Queso: Se han compensado $${netAmount.toLocaleString()} M.N. de deudas cruzadas.`, 'success');
-  };
-
-  const handlePaySupplierRemainingBalance = async (supplierId: string, amount: number, paymentSource: string, note?: string, currency: 'USD' | 'VES' = 'USD') => {
-    const sup = suppliers.find(s => s.id === supplierId);
-    if (!sup) return;
-    const newBalance = Math.max(0, sup.balanceOwed - amount);
-    
-    setSuppliers(prev => prev.map(s => s.id === supplierId ? { ...s, balanceOwed: newBalance } : s));
-
-    try {
-      await updateLocalDoc('suppliers', supplierId, { balance: newBalance, debt: newBalance, balanceOwed: newBalance });
-    } catch (err) {
-      console.error("Error updating supplier balance in Local API:", err);
-    }
-
-    if (paymentSource !== 'Dejar como Saldo Pendiente') {
-      // Deduzca de bóveda central en Firestore
-      const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
-      const updatedVault = { ...currentVault };
-      
-      if (currency === 'VES') {
-        const bsAmount = amount * (settings.exchangeRate || 42.50);
-        if (paymentSource === 'Efectivo / Caja Chica') {
-           updatedVault.bs = (updatedVault.bs || 0) - bsAmount;
-        } else {
-           updatedVault.bankBs = (updatedVault.bankBs || 0) - bsAmount;
-        }
-      } else {
-        if (paymentSource === 'Efectivo / Caja Chica') {
-           updatedVault.usd = (updatedVault.usd || 0) - amount;
-        } else {
-           updatedVault.bankUsd = (updatedVault.bankUsd || 0) - amount;
-        }
-      }
-      
-      handleUpdateSettings({ centralVaultBalance: updatedVault });
-
-      const newTx: Transaction = {
-        id: `TX-${Date.now()}`,
-        entity: sup.name,
-        category: 'compras',
-        date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-        invoiceNumber: `PAG-NET-${Math.floor(Math.random() * 9000 + 1000)}`,
-        amount: amount,
-        isIncome: false,
-        status: 'Completado',
-        notes: note || `Pago de saldo. Fuente: ${paymentSource}`,
-        paymentMethod: paymentSource
-      };
-      setTransactions(prev => [newTx, ...prev]);
-      try {
-        addLocalDoc('transactions', newTx);
-      } catch (err) {
-        console.error("Error saving payment to Local API:", err);
-      }
-    }
-  };
 
   // Mobile Orders Handlers
   const handleAddMobileOrder = (order: MobileOrder) => {
@@ -1175,11 +986,37 @@ export default function App() {
         }
       }
 
-      // --- CUENTAS POR PAGAR (FIADO) - SIN CRUCES COMERCIALES ---
-      let newBalanceOwed = selectedSup.balanceOwed || 0;
-      const newStoreDebt = selectedSup.storeDebt || 0; // Se mantiene intacta
+      // --- CUENTAS POR PAGAR (FIADO / CONTADO) CON CRUCE AUTOMÁTICO DE SALDO ---
+      let newBalanceOwed = Number(selectedSup.balanceOwed || 0);
+      let newStoreDebt = Number(selectedSup.storeDebt || 0);
+      let autoDeductedDebt = 0;
 
-      newBalanceOwed += totalCost;
+      if (purchase.isCredit) {
+        if (newStoreDebt > 0) {
+          if (totalCost <= newStoreDebt) {
+            newStoreDebt = newStoreDebt - totalCost;
+            autoDeductedDebt = totalCost;
+          } else {
+            autoDeductedDebt = newStoreDebt;
+            const surplus = totalCost - newStoreDebt;
+            newStoreDebt = 0;
+            newBalanceOwed += surplus;
+          }
+        } else {
+          newBalanceOwed += totalCost;
+        }
+      } else {
+        // Si fue pagado de contado (Caja o Banco)
+        const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+        const updatedVault = { ...currentVault };
+        const payMethod = purchase.paymentMethod || 'Efectivo / Caja Chica';
+        if (payMethod.includes('Banco') || payMethod.includes('Pago Móvil')) {
+          updatedVault.bankUsd = Math.max(0, (updatedVault.bankUsd || 0) - totalCost);
+        } else {
+          updatedVault.usd = Math.max(0, (updatedVault.usd || 0) - totalCost);
+        }
+        handleUpdateSettings({ centralVaultBalance: updatedVault });
+      }
 
       setSuppliers((prev) =>
         prev.map((s) => {
@@ -1195,7 +1032,11 @@ export default function App() {
         storeDebt: newStoreDebt
       });
 
-      addNotification('Compra recibida, inventario actualizado y movimientos de Kardex registrados', 'success');
+      const noteMessage = autoDeductedDebt > 0 
+        ? `Compra de $${totalCost.toFixed(2)} procesada. Se descontaron automáticamente $${autoDeductedDebt.toFixed(2)} de la deuda en tienda.`
+        : (purchase.isCredit ? 'Compra cargada a Libreta de Proveedor con éxito' : 'Compra al contado registrada y cancelada');
+
+      addNotification(noteMessage, 'success');
     } catch (err) {
       console.error('Error saving purchase to DB:', err);
       addNotification('Error crítico al guardar la compra en base de datos', 'warning');
@@ -1228,18 +1069,20 @@ export default function App() {
     }));
 
     // Generate transaction for Ledger ('Entrega')
-    // Toda compra comercial va a cuentas por pagar obligatoriamente.
     const newTx: Transaction = {
       id: `TX-${Date.now()}`,
       entity: selectedSup.name,
+      supplierId: selectedSup.id,
       category: 'compras',
       date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
       invoiceNumber: purchaseTxId,
       amount: totalCost,
-      isIncome: true, // Mark as income so ledger reads it as sum (+)
+      isIncome: purchase.isCredit, // True si suma al haber del quesero
       status: 'Completado',
-      notes: `Recibido ${purchase.items.map(i=>i.quantityKg + 'kg').join(', ')}. Carga a Cuentas por Pagar.`,
-      items: txItems
+      paymentMethod: purchase.isCredit ? 'A la Libreta' : (purchase.paymentMethod || 'Efectivo / Caja Chica'),
+      notes: `Recibido ${purchase.items.map(i=>i.quantityKg + 'kg').join(', ')}. ${purchase.isCredit ? 'Carga a Cuentas por Pagar.' : 'Pagado al contado.'}`,
+      items: txItems,
+      createdAt: Date.now()
     };
     
     setTransactions((prev) => [newTx, ...prev]);
@@ -1277,13 +1120,13 @@ export default function App() {
     );
   };
 
-  // 5. Clients & Credit repayments
+  // 5. Clients & Debt repayments
   const handleAddClient = async (client: Omit<ClientProfile, 'id' | 'outstandingDebt' | 'loyaltyPoints'>) => {
     const newCli: ClientProfile = {
       ...client,
       id: `cli-${Date.now()}`,
       outstandingDebt: 0,
-      loyaltyPoints: 10
+      loyaltyPoints: 0
     };
     try {
       await addLocalDoc('clients', newCli);
@@ -1304,15 +1147,25 @@ export default function App() {
   };
 
   const handleRecordDebtPayment = async (clientId: string, amount: number, paymentMethod: string, notes?: string, paymentBreakdown?: any) => {
-    // Decrement client outstandingDebt
+    const selectedClient = clients.find(c => c.id === clientId);
+    const newDebt = Math.max(0, (selectedClient?.outstandingDebt || 0) - amount);
+
+    // Decrement client outstandingDebt in local state
     setClients((prev) =>
       prev.map((c) => {
         if (c.id === clientId) {
-          return { ...c, outstandingDebt: Math.max(0, c.outstandingDebt - amount) };
+          return { ...c, outstandingDebt: newDebt };
         }
         return c;
       })
     );
+
+    // Persist client outstandingDebt to local database
+    try {
+      await updateLocalDoc('clients', clientId, { outstandingDebt: newDebt });
+    } catch (err) {
+      console.error("Error al actualizar deuda del cliente en DB:", err);
+    }
 
     // Mark corresponding Client Bill as paid if it balances out
     setBills((prevBills) => {
@@ -1321,6 +1174,7 @@ export default function App() {
         if (b.type === 'receivable' && b.entityId === clientId && b.status === 'Pendiente') {
           if (remainingPayment >= b.amount) {
             remainingPayment -= b.amount;
+            updateLocalDoc('bills', b.id, { status: 'Pagado' }).catch(e => console.error(e));
             return { ...b, status: 'Pagado' };
           }
         }
@@ -1332,20 +1186,30 @@ export default function App() {
     setBalance((prev) => prev + amount);
 
     // Create a transaction record
-    const selectedClient = clients.find(c => c.id === clientId);
     const newTx: Transaction = {
       id: `TX-${Date.now().toString().slice(-4)}`,
       entity: selectedClient ? selectedClient.name : 'Cobro de Cuenta',
+      clientId: clientId,
       category: 'credito',
       date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
       invoiceNumber: `REC-${Math.floor(Math.random() * 9000 + 1000)}`,
       amount: amount,
+      paidAmount: amount as any,
       isIncome: true,
       status: 'Completado',
       paymentMethod: paymentMethod,
-      notes: notes || 'Abono de Cuenta por Cobrar'
+      notes: notes || 'Abono de Cuenta por Cobrar',
+      createdAt: Date.now()
     };
+    (newTx as any).isAbono = true;
+
     setTransactions((prev) => [newTx, ...prev]);
+
+    try {
+      await addLocalDoc('transactions', newTx);
+    } catch (err) {
+      console.error("Error al guardar transaccion en DB:", err);
+    }
 
     // CREATE ABONO RECORD IN 'sales' FOR ARQUEO DE CAJA
     try {
@@ -1381,7 +1245,8 @@ export default function App() {
     const newSup: SupplierProfile = {
       ...sup,
       id: `sup-${Date.now()}`,
-      balanceOwed: 0
+      balanceOwed: 0,
+      storeDebt: 0
     };
     try {
       await addLocalDoc('suppliers', newSup);
@@ -1411,7 +1276,9 @@ export default function App() {
     setSuppliers((prev) =>
       prev.map((s) => {
         if (s.id === supplierId) {
-          return { ...s, balanceOwed: Math.max(0, s.balanceOwed - amount) };
+          const newBal = Math.max(0, (s.balanceOwed || 0) - amount);
+          updateLocalDoc('suppliers', supplierId, { balanceOwed: newBal }).catch(e => console.error(e));
+          return { ...s, balanceOwed: newBal };
         }
         return s;
       })
@@ -1425,14 +1292,151 @@ export default function App() {
     const newTx: Transaction = {
       id: `TX-${Date.now().toString().slice(-4)}`,
       entity: selectedSup ? selectedSup.name : 'Pago a Proveedor',
+      supplierId: supplierId,
       category: 'compras',
       date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
       invoiceNumber: `PAGO-${Math.floor(Math.random() * 9000 + 1000)}`,
       amount: amount,
       isIncome: false,
-      status: 'Completado'
+      status: 'Completado',
+      createdAt: Date.now()
     };
     setTransactions((prev) => [newTx, ...prev]);
+    addLocalDoc('transactions', newTx).catch(e => console.error(e));
+  };
+
+  const handlePaySupplierRemainingBalance = async (supplierId: string, amount: number, paymentSource: string, note?: string, currency?: 'USD' | 'VES') => {
+    const selectedSup = suppliers.find(s => s.id === supplierId);
+    if (!selectedSup) return;
+
+    const newBalanceOwed = Math.max(0, (selectedSup.balanceOwed || 0) - amount);
+
+    setSuppliers(prev => prev.map(s => {
+      if (s.id === supplierId) {
+        return { ...s, balanceOwed: newBalanceOwed };
+      }
+      return s;
+    }));
+
+    try {
+      await updateLocalDoc('suppliers', supplierId, { balanceOwed: newBalanceOwed });
+    } catch (err) {
+      console.error('Error al actualizar balance proveedor en DB:', err);
+    }
+
+    const newTx: Transaction = {
+      id: `TX-${Date.now().toString().slice(-4)}`,
+      entity: selectedSup.name,
+      supplierId: supplierId,
+      category: 'compras',
+      date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+      invoiceNumber: `PAGO-${Math.floor(Math.random() * 9000 + 1000)}`,
+      amount: amount,
+      isIncome: false,
+      status: 'Completado',
+      paymentMethod: paymentSource || 'Efectivo / Caja Chica',
+      notes: note || `Pago de saldo pendiente a productor (${currency || 'USD'})`,
+      createdAt: Date.now()
+    };
+
+    setTransactions(prev => [newTx, ...prev]);
+    try {
+      await addLocalDoc('transactions', newTx);
+    } catch (err) {
+      console.error('Error al guardar transaccion de pago en DB:', err);
+    }
+  };
+
+  const handleRecordSupplierStorePayment = async (supplierId: string, amount: number, method: string, note: string, currency: 'USD' | 'VES') => {
+    const selectedSup = suppliers.find(s => s.id === supplierId);
+    if (!selectedSup) return;
+
+    const newStoreDebt = Math.max(0, (selectedSup.storeDebt || 0) - amount);
+
+    setSuppliers(prev => prev.map(s => {
+      if (s.id === supplierId) {
+        return { ...s, storeDebt: newStoreDebt };
+      }
+      return s;
+    }));
+
+    try {
+      await updateLocalDoc('suppliers', supplierId, { storeDebt: newStoreDebt });
+    } catch (err) {
+      console.error('Error al actualizar deuda tienda proveedor en DB:', err);
+    }
+
+    const newTx: Transaction = {
+      id: `TX-${Date.now().toString().slice(-4)}`,
+      entity: selectedSup.name,
+      supplierId: supplierId,
+      category: 'credito',
+      date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+      invoiceNumber: `ABONO-PROV-${Math.floor(Math.random() * 9000 + 1000)}`,
+      amount: amount,
+      paidAmount: amount,
+      isIncome: true,
+      isAbono: true,
+      status: 'Completado',
+      paymentMethod: method || 'Efectivo',
+      notes: note || `Cobro de deuda de tienda a productor (${currency || 'USD'})`,
+      createdAt: Date.now()
+    };
+
+    setTransactions(prev => [newTx, ...prev]);
+    try {
+      await addLocalDoc('transactions', newTx);
+    } catch (err) {
+      console.error('Error al guardar abono de proveedor en DB:', err);
+    }
+  };
+
+  const handleNetSupplierBalances = async (supplierId: string) => {
+    const selectedSup = suppliers.find(s => s.id === supplierId);
+    if (!selectedSup) return;
+
+    const bal = Number(selectedSup.balanceOwed || 0);
+    const debt = Number(selectedSup.storeDebt || 0);
+    if (bal <= 0 || debt <= 0) return;
+
+    const minAmt = Math.min(bal, debt);
+    const newBal = bal - minAmt;
+    const newDebt = debt - minAmt;
+
+    setSuppliers(prev => prev.map(s => {
+      if (s.id === supplierId) {
+        return { ...s, balanceOwed: newBal, storeDebt: newDebt };
+      }
+      return s;
+    }));
+
+    try {
+      await updateLocalDoc('suppliers', supplierId, { balanceOwed: newBal, storeDebt: newDebt });
+    } catch (err) {
+      console.error('Error al compensar saldos en DB:', err);
+    }
+
+    const newTx: Transaction = {
+      id: `TX-${Date.now().toString().slice(-4)}`,
+      entity: selectedSup.name,
+      supplierId: supplierId,
+      category: 'compras',
+      date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+      invoiceNumber: `CRUCE-${Math.floor(Math.random() * 9000 + 1000)}`,
+      amount: minAmt,
+      isIncome: false,
+      status: 'Completado',
+      paymentMethod: 'Compensación Interna',
+      notes: `Compensación automática de saldos. Se cruzaron $${minAmt.toFixed(2)} USD.`,
+      createdAt: Date.now()
+    };
+
+    setTransactions(prev => [newTx, ...prev]);
+    try {
+      await addLocalDoc('transactions', newTx);
+    } catch (err) {
+      console.error('Error al guardar cruce en DB:', err);
+    }
   };
 
   // 7. Operating expenses
@@ -1561,35 +1565,6 @@ export default function App() {
     await resetAccountingData();
   };
 
-
-  const urlParams = new URLSearchParams(window.location.search);
-  const portalParam = urlParams.get('portal');
-  const portalId = urlParams.get('id');
-  const adminParam = urlParams.get('admin');
-
-  // Show ERP if admin is explicitly requested, or if already authenticated and no portal was explicitly requested
-  const showErp = adminParam === 'true' || (isAuthenticated && !portalParam);
-
-  if (!showErp) {
-    const effectiveType = (portalParam === 'productor' || portalParam === 'proveedor' || portalParam === 'contador') ? portalParam : 'cliente';
-    return (
-      <div className="min-h-screen bg-black text-white">
-        <MobilePortalsView cheeseTrips={cheeseTrips} transactions={transactions} 
-          products={cheeseProducts}
-          clients={clients}
-          suppliers={suppliers}
-          mobileOrders={mobileOrders}
-          onAddMobileOrder={handleAddMobileOrder}
-          onDeliverMobileOrder={handleDeliverMobileOrder}
-          onCancelMobileOrder={handleCancelMobileOrder}
-          onAddNotification={addNotification}
-          isolatedType={effectiveType as any}
-          isolatedId={portalId || undefined}
-        />
-      </div>
-    );
-  }
-
   if (!isAuthenticated) {
     return (
       <LoginView
@@ -1705,6 +1680,8 @@ export default function App() {
           {currentView === 'clients' && (
             <ClientsCreditView
               clients={clients}
+              salesHistory={transactions}
+              exchangeRate={settings.exchangeRate || 42.50}
               onAddClient={handleAddClient}
               onUpdateClient={handleUpdateClient}
               onRecordDebtPayment={handleRecordDebtPayment}
@@ -1718,7 +1695,7 @@ export default function App() {
               transactions={transactions}
               cheeseProducts={cheeseProducts}
               businessBalance={balance}
-              exchangeRate={42.50}
+              exchangeRate={settings.exchangeRate || 42.50}
               onAddSupplier={handleAddSupplier}
               onUpdateSupplier={handleUpdateSupplier}
               onPaySupplierBill={handlePaySupplierBill}
@@ -1750,18 +1727,6 @@ export default function App() {
             />
           )}
 
-          {currentView === 'mobile-portals' && (
-            <MobilePortalsView cheeseTrips={cheeseTrips} transactions={transactions} 
-              products={cheeseProducts}
-              clients={clients}
-              suppliers={suppliers}
-              mobileOrders={mobileOrders}
-              onAddMobileOrder={handleAddMobileOrder}
-              onDeliverMobileOrder={handleDeliverMobileOrder}
-              onCancelMobileOrder={handleCancelMobileOrder}
-              onAddNotification={addNotification}
-            />
-          )}
 
           {currentView === 'settings' && (
             <SettingsAdminView

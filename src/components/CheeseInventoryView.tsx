@@ -504,7 +504,7 @@ export default function CheeseInventoryView({
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Sub-Tabs Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 border-b border-editorial-border/60 pb-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 max-w-2xl gap-2 border-b border-editorial-border/60 pb-4">
         {[
           { id: 'stock', label: 'Inventario Activo', icon: Package },
           { id: 'adjust', label: 'Ajuste de Precios', icon: TrendingUp },

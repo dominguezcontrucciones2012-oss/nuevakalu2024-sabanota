@@ -19,23 +19,13 @@ export const parseSafeDecimal = (val: any): number => {
   if (!str) return 0;
 
   if (str.includes('.') && str.includes(',')) {
-    if (str.indexOf('.') < str.indexOf(',')) {
+    if (str.lastIndexOf(',') > str.lastIndexOf('.')) {
       str = str.replace(/\./g, '').replace(',', '.');
     } else {
       str = str.replace(/,/g, '');
     }
   } else if (str.includes(',')) {
-    const parts = str.split(',');
-    if (parts.length === 2 && parts[1].length === 3 && parseInt(parts[0], 10) > 0) {
-      str = str.replace(',', '');
-    } else {
-      str = str.replace(',', '.');
-    }
-  } else if (str.includes('.')) {
-    const parts = str.split('.');
-    if (parts.length === 2 && parts[1].length === 3 && parseInt(parts[0], 10) > 0) {
-      str = str.replace('.', '');
-    }
+    str = str.replace(',', '.');
   }
 
   const num = parseFloat(str);

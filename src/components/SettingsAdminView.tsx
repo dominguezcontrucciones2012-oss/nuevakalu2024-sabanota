@@ -276,32 +276,52 @@ export default function SettingsAdminView({
     setMaintLogs(prev => [...prev, 'INICIANDO PURGA DE CONTABILIDAD...']);
     
     try {
-      setMaintLogs(prev => [...prev, 'Borrando transacciones (historial)...']);
-      const txRes = await fetchCollection('transactions');
-      const txs = await txRes.json();
-      for (const d of txs) {
-        await deleteLocalDoc('transactions', d.id);
+      setMaintLogs(prev => [...prev, 'Borrando transacciones y registros contables...']);
+      
+      const { clearCollection } = await import('../services/localApi');
+      const collectionsToClear = [
+        'transactions',
+        'invoices',
+        'shift_transactions',
+        'shift_sessions',
+        'expenses',
+        'payments',
+        'bills',
+        'installments',
+        'kardex'
+      ];
+      
+      for (const col of collectionsToClear) {
+        try {
+          await clearCollection(col);
+        } catch (e) {
+          console.warn(`Could not clear ${col}:`, e);
+        }
       }
-      setMaintLogs(prev => [...prev, `Borradas ${txs.length} transacciones.`]);
+      setMaintLogs(prev => [...prev, 'Colecciones contables vaciadas.']);
 
-      setMaintLogs(prev => [...prev, 'Reseteando saldos de proveedores...']);
-      const supRes = await fetchCollection('suppliers');
-      const sups = await supRes.json();
-      for (const d of sups) {
-        await updateLocalDoc('suppliers', d.id, { balanceOwed: 0, storeDebt: 0 });
+      setMaintLogs(prev => [...prev, 'Reseteando saldos de proveedores a $0.00...']);
+      const sups = await fetchCollection('suppliers');
+      if (Array.isArray(sups)) {
+        for (const d of sups) {
+          await updateLocalDoc('suppliers', d.id, { balanceOwed: 0, storeDebt: 0 });
+        }
       }
+      setMaintLogs(prev => [...prev, `Saldos de ${Array.isArray(sups) ? sups.length : 0} proveedores reseteados.`]);
 
-      setMaintLogs(prev => [...prev, 'Reseteando deudas de clientes...']);
-      const cliRes = await fetchCollection('clients');
-      const clis = await cliRes.json();
-      for (const d of clis) {
-        await updateLocalDoc('clients', d.id, { outstandingDebt: 0, loyaltyPoints: 0 });
+      setMaintLogs(prev => [...prev, 'Reseteando deudas de clientes a $0.00...']);
+      const clis = await fetchCollection('clients');
+      if (Array.isArray(clis)) {
+        for (const d of clis) {
+          await updateLocalDoc('clients', d.id, { outstandingDebt: 0, loyaltyPoints: 0 });
+        }
       }
+      setMaintLogs(prev => [...prev, `Deudas de ${Array.isArray(clis) ? clis.length : 0} clientes reseteadas.`]);
 
       setMaintLogs(prev => [...prev, '¡PURGA DE CONTABILIDAD COMPLETADA EXITOSAMENTE!']);
-      onAddNotification("Contabilidad reseteada a cero correctamente.", "success");
+      onAddNotification("Contabilidad y deudas reseteadas a cero correctamente en la base de datos.", "success");
     } catch (error) {
-      console.error(error);
+      console.error("Error al purgar contabilidad:", error);
       setMaintLogs(prev => [...prev, 'ERROR CRÍTICO AL PURGAR LA BD.']);
       onAddNotification("Ocurrió un error al limpiar la base de datos.", "warning");
     } finally {

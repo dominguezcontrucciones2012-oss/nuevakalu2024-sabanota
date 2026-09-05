@@ -69,23 +69,44 @@ export async function importFromJson(file: File): Promise<void> {
 }
 
 export async function resetAccountingData(): Promise<void> {
-  
   try {
-    const { clearCollection } = await import('./localApi');
+    const { clearCollection, fetchCollection, updateLocalDoc } = await import('./localApi');
     const collectionsToClear = [
       'transactions',
       'invoices',
       'shift_transactions',
       'shift_sessions',
       'expenses',
-      'payments'
+      'payments',
+      'bills',
+      'installments',
+      'kardex'
     ];
     for (const c of collectionsToClear) {
-      await clearCollection(c);
+      try {
+        await clearCollection(c);
+      } catch (e) {
+        console.warn(`Could not clear ${c}:`, e);
+      }
+    }
+
+    // Reset all clients debts in local database
+    const clis = await fetchCollection('clients');
+    if (Array.isArray(clis)) {
+      for (const d of clis) {
+        await updateLocalDoc('clients', d.id, { outstandingDebt: 0, loyaltyPoints: 0 });
+      }
+    }
+
+    // Reset all suppliers debts in local database
+    const sups = await fetchCollection('suppliers');
+    if (Array.isArray(sups)) {
+      for (const d of sups) {
+        await updateLocalDoc('suppliers', d.id, { balanceOwed: 0, storeDebt: 0 });
+      }
     }
   } catch (error) {
     console.error("Error resetting accounting:", error);
     throw error;
   }
-
 }

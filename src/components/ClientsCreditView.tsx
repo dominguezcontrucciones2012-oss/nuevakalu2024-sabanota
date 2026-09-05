@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { ClientProfile, Transaction, DebtInstallment } from '../types';
-import { Users, Search, Plus, CreditCard, Award, BadgeAlert, Coins, Phone, Mail, FileCheck, Eye, Clock, X, CheckCircle, XCircle } from 'lucide-react';
+import { Users, Search, Plus, CreditCard, Award, BadgeAlert, Coins, Phone, Mail, FileCheck, Eye, Clock, X, CheckCircle, XCircle, Zap, ArrowDownLeft } from 'lucide-react';
 import { fetchCollection, onCollectionSnapshot, updateLocalDoc } from '../services/localApi';
+import { parseSafeDecimal } from '../utils';
 
 interface ClientsCreditViewProps {
   clients: ClientProfile[];
@@ -91,14 +92,16 @@ export default function ClientsCreditView({
 
   const calculatedAmount = parseFloat(
     (
-      (parseFloat(payCashUsd) || 0) +
-      ((parseFloat(payCashBs) || 0) +
-        (parseFloat(payPagoMovil) || 0) +
-        (parseFloat(payPos) || 0) +
-        (parseFloat(payBiopago) || 0)) /
-        exchangeRate
+      (parseSafeDecimal(payCashUsd) || 0) +
+      ((parseSafeDecimal(payCashBs) || 0) +
+        (parseSafeDecimal(payPagoMovil) || 0) +
+        (parseSafeDecimal(payPos) || 0) +
+        (parseSafeDecimal(payBiopago) || 0)) /
+        (exchangeRate || 1)
     ).toFixed(2)
   );
+
+  const calculatedAmountBs = calculatedAmount * (exchangeRate || 1);
 
   const openEditModal = (c: ClientProfile) => {
     setEditingClient(c);
@@ -577,97 +580,238 @@ export default function ClientsCreditView({
           <div className="lg:col-span-4 bg-editorial-card border border-editorial-border rounded p-6 space-y-4">
             <h4 className="font-serif text-lg font-bold text-editorial-text-primary">Registrar Abono a Cuenta</h4>
 
-            {payingClientId ? (
-              <form onSubmit={handlePayDebtSubmit} className="space-y-4">
-                <div className="p-3.5 bg-editorial-bg border border-editorial-border rounded font-mono text-[11px] text-editorial-text-primary space-y-1">
-                  <span className="text-[9px] text-editorial-text-muted uppercase">Cliente Acreedor:</span>
-                  <p className="font-bold text-xs">{clients.find(c => c.id === payingClientId)?.name}</p>
-                  <p 
-                    className="text-rose-400 mt-1 font-bold cursor-pointer hover:text-rose-300 transition-colors"
-                    onClick={() => {
-                       const amt = clients.find(c => c.id === payingClientId)?.outstandingDebt || 0;
-                       setPayCashUsd(amt.toFixed(2));
-                       setPayCashBs('');
-                       setPayPagoMovil('');
-                       setPayPos('');
-                       setPayBiopago('');
-                    }}
-                  >
-                    Adeudo Pendiente: ${(clients.find(c => c.id === payingClientId)?.outstandingDebt || 0).toFixed(2)}
-                  </p>
-                </div>
+            {payingClientId ? (() => {
+              const activeClient = clients.find(c => c.id === payingClientId);
+              const debtUSD = activeClient?.outstandingDebt || 0;
+              const debtBs = debtUSD * (exchangeRate || 1);
 
-                <div className="space-y-4">
-                  {/* Tasa y Resumen */}
-                  <div className="flex justify-between items-center text-[10px] font-mono border-b border-editorial-border/40 pb-2">
-                    <span className="text-editorial-text-muted">Tasa del Día: Bs {exchangeRate}</span>
-                    <span className="text-amber-500 font-bold">Total a Abonar: ${calculatedAmount.toFixed(2)}</span>
-                  </div>
+              const fillAllIn = (method: 'usd' | 'cashBs' | 'pagoMovil' | 'pos' | 'biopago') => {
+                setPayCashUsd(method === 'usd' ? debtUSD.toFixed(2) : '');
+                setPayCashBs(method === 'cashBs' ? debtBs.toFixed(2) : '');
+                setPayPagoMovil(method === 'pagoMovil' ? debtBs.toFixed(2) : '');
+                setPayPos(method === 'pos' ? debtBs.toFixed(2) : '');
+                setPayBiopago(method === 'biopago' ? debtBs.toFixed(2) : '');
+              };
 
-                  {/* Multipago Grid */}
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <label className="text-[9px] font-mono text-amber-400 uppercase">Efectivo USD</label>
-                        <input type="number" value={payCashUsd} onChange={e => setPayCashUsd(e.target.value)} className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none" placeholder="$0.00" />
+              return (
+                <form onSubmit={handlePayDebtSubmit} className="space-y-4 animate-fade-in">
+                  <div className="p-3.5 bg-editorial-bg border border-editorial-border rounded font-mono text-[11px] text-editorial-text-primary space-y-2">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <span className="text-[9px] text-editorial-text-muted uppercase block">Cliente Acreedor:</span>
+                        <p className="font-bold text-sm text-white">{activeClient?.name}</p>
                       </div>
-                      <div className="space-y-1">
-                        <label className="text-[9px] font-mono text-amber-400 uppercase">Efectivo Bs</label>
-                        <input type="number" value={payCashBs} onChange={e => setPayCashBs(e.target.value)} className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none" placeholder="Bs 0.00" />
-                      </div>
+                      <span className="text-[9px] text-editorial-text-muted">Tasa: Bs {exchangeRate}</span>
                     </div>
 
-                    <div className="grid grid-cols-1 gap-2 p-3 bg-black/20 border border-editorial-border rounded">
-                      <div className="grid grid-cols-2 gap-2 items-center">
-                        <label className="text-[9px] font-mono text-editorial-text-muted uppercase">Pago Móvil (Bs)</label>
-                        <input type="number" value={payPagoMovil} onChange={e => setPayPagoMovil(e.target.value)} className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none" placeholder="Bs" />
+                    <div className="pt-2 border-t border-editorial-border/40 grid grid-cols-2 gap-2">
+                      <div 
+                        onClick={() => fillAllIn('usd')}
+                        className="bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 rounded p-2 text-center cursor-pointer transition-all group"
+                        title="Clic para llenar deuda total en Dólares ($)"
+                      >
+                        <span className="text-[8px] uppercase text-rose-300 block font-mono">Adeudo ($ USD)</span>
+                        <span className="text-sm font-extrabold text-rose-400 group-hover:underline">
+                          $ {debtUSD.toFixed(2)}
+                        </span>
                       </div>
-                      {(parseFloat(payPagoMovil) > 0) && (
-                        <input type="text" value={refPagoMovil} onChange={e => setRefPagoMovil(e.target.value)} placeholder="Referencia Pago Móvil..." className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-[10px] text-editorial-text-primary focus:border-amber-500 outline-none" />
-                      )}
-                    </div>
 
-                    <div className="grid grid-cols-1 gap-2 p-3 bg-black/20 border border-editorial-border rounded">
-                      <div className="grid grid-cols-2 gap-2 items-center">
-                        <label className="text-[9px] font-mono text-editorial-text-muted uppercase">Punto de Venta (Bs)</label>
-                        <input type="number" value={payPos} onChange={e => setPayPos(e.target.value)} className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none" placeholder="Bs" />
+                      <div 
+                        onClick={() => fillAllIn('pagoMovil')}
+                        className="bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded p-2 text-center cursor-pointer transition-all group"
+                        title="Clic para llenar deuda total en Bolívares (Bs)"
+                      >
+                        <span className="text-[8px] uppercase text-amber-300 block font-mono">Equivalente (Bs)</span>
+                        <span className="text-sm font-extrabold text-amber-400 group-hover:underline">
+                          Bs {debtBs.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
                       </div>
-                      {(parseFloat(payPos) > 0) && (
-                        <input type="text" value={refPos} onChange={e => setRefPos(e.target.value)} placeholder="Referencia Punto..." className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-[10px] text-editorial-text-primary focus:border-amber-500 outline-none" />
-                      )}
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-2 p-3 bg-black/20 border border-editorial-border rounded">
-                      <div className="grid grid-cols-2 gap-2 items-center">
-                        <label className="text-[9px] font-mono text-editorial-text-muted uppercase">Biopago (Bs)</label>
-                        <input type="number" value={payBiopago} onChange={e => setPayBiopago(e.target.value)} className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none" placeholder="Bs" />
-                      </div>
-                      {(parseFloat(payBiopago) > 0) && (
-                        <input type="text" value={refBiopago} onChange={e => setRefBiopago(e.target.value)} placeholder="Referencia Biopago..." className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-[10px] text-editorial-text-primary focus:border-amber-500 outline-none" />
-                      )}
                     </div>
                   </div>
-                </div>
 
-                <div className="flex gap-2.5 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPayingClientId(null);
-                    }}
-                    className="flex-1 py-2 border border-editorial-border text-[10px] font-mono font-bold uppercase hover:bg-editorial-bg cursor-pointer text-editorial-text-muted"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="submit"
-                    className="flex-1 py-2 bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-serif font-bold uppercase cursor-pointer"
-                  >
-                    Confirmar Abono
-                  </button>
-                </div>
-              </form>
-            ) : (
+                  <div className="space-y-4">
+                    {/* Tasa y Resumen Dual en Tiempo Real */}
+                    <div className="bg-black/30 border border-amber-500/30 rounded p-3 flex justify-between items-center text-xs font-mono">
+                      <span className="text-editorial-text-muted text-[10px] uppercase">Total a Abonar:</span>
+                      <div className="text-right">
+                        <span className="text-amber-500 font-bold text-sm block">
+                          $ {calculatedAmount.toFixed(2)} USD
+                        </span>
+                        <span className="text-[10px] text-amber-500/80 block">
+                          Bs {calculatedAmountBs.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Multipago Grid con Botones de Auto-Llenado Rápido */}
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <div className="flex justify-between items-center">
+                            <label className="text-[9px] font-mono text-amber-400 uppercase">Efectivo USD</label>
+                            <button
+                              type="button"
+                              onClick={() => fillAllIn('usd')}
+                              className="text-[8px] font-mono font-bold text-amber-400 hover:text-amber-300 cursor-pointer underline"
+                            >
+                              Llenar Total
+                            </button>
+                          </div>
+                          <input 
+                            type="text"
+                            inputMode="decimal"
+                            value={payCashUsd} 
+                            onChange={e => setPayCashUsd(e.target.value)} 
+                            onFocus={e => e.target.select()}
+                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
+                            placeholder="$0.00" 
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <div className="flex justify-between items-center">
+                            <label className="text-[9px] font-mono text-amber-400 uppercase">Efectivo Bs</label>
+                            <button
+                              type="button"
+                              onClick={() => fillAllIn('cashBs')}
+                              className="text-[8px] font-mono font-bold text-amber-400 hover:text-amber-300 cursor-pointer underline"
+                            >
+                              Llenar Total
+                            </button>
+                          </div>
+                          <input 
+                            type="text"
+                            inputMode="decimal"
+                            value={payCashBs} 
+                            onChange={e => setPayCashBs(e.target.value)} 
+                            onFocus={e => e.target.select()}
+                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
+                            placeholder="Bs 0.00" 
+                          />
+                        </div>
+                      </div>
+
+                      {/* Pago Móvil */}
+                      <div className="grid grid-cols-1 gap-2 p-3 bg-black/20 border border-editorial-border rounded">
+                        <div className="flex justify-between items-center">
+                          <label className="text-[9px] font-mono text-editorial-text-muted uppercase">Pago Móvil (Bs)</label>
+                          <button
+                            type="button"
+                            onClick={() => fillAllIn('pagoMovil')}
+                            className="text-[8px] font-mono font-bold text-amber-400 hover:text-amber-300 cursor-pointer underline"
+                          >
+                            Llenar Total
+                          </button>
+                        </div>
+                        <input 
+                          type="text"
+                          inputMode="decimal"
+                          value={payPagoMovil} 
+                          onChange={e => setPayPagoMovil(e.target.value)} 
+                          onFocus={e => e.target.select()}
+                          className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
+                          placeholder="Bs 0.00" 
+                        />
+                        {(parseSafeDecimal(payPagoMovil) > 0) && (
+                          <input 
+                            type="text" 
+                            value={refPagoMovil} 
+                            onChange={e => setRefPagoMovil(e.target.value)} 
+                            onFocus={e => e.target.select()}
+                            placeholder="Referencia Pago Móvil..." 
+                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-[10px] text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
+                          />
+                        )}
+                      </div>
+
+                      {/* Punto de Venta */}
+                      <div className="grid grid-cols-1 gap-2 p-3 bg-black/20 border border-editorial-border rounded">
+                        <div className="flex justify-between items-center">
+                          <label className="text-[9px] font-mono text-editorial-text-muted uppercase">Punto de Venta (Bs)</label>
+                          <button
+                            type="button"
+                            onClick={() => fillAllIn('pos')}
+                            className="text-[8px] font-mono font-bold text-amber-400 hover:text-amber-300 cursor-pointer underline"
+                          >
+                            Llenar Total
+                          </button>
+                        </div>
+                        <input 
+                          type="text"
+                          inputMode="decimal"
+                          value={payPos} 
+                          onChange={e => setPayPos(e.target.value)} 
+                          onFocus={e => e.target.select()}
+                          className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
+                          placeholder="Bs 0.00" 
+                        />
+                        {(parseSafeDecimal(payPos) > 0) && (
+                          <input 
+                            type="text" 
+                            value={refPos} 
+                            onChange={e => setRefPos(e.target.value)} 
+                            onFocus={e => e.target.select()}
+                            placeholder="Referencia Punto..." 
+                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-[10px] text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
+                          />
+                        )}
+                      </div>
+
+                      {/* Biopago */}
+                      <div className="grid grid-cols-1 gap-2 p-3 bg-black/20 border border-editorial-border rounded">
+                        <div className="flex justify-between items-center">
+                          <label className="text-[9px] font-mono text-editorial-text-muted uppercase">Biopago (Bs)</label>
+                          <button
+                            type="button"
+                            onClick={() => fillAllIn('biopago')}
+                            className="text-[8px] font-mono font-bold text-amber-400 hover:text-amber-300 cursor-pointer underline"
+                          >
+                            Llenar Total
+                          </button>
+                        </div>
+                        <input 
+                          type="text"
+                          inputMode="decimal"
+                          value={payBiopago} 
+                          onChange={e => setPayBiopago(e.target.value)} 
+                          onFocus={e => e.target.select()}
+                          className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
+                          placeholder="Bs 0.00" 
+                        />
+                        {(parseSafeDecimal(payBiopago) > 0) && (
+                          <input 
+                            type="text" 
+                            value={refBiopago} 
+                            onChange={e => setRefBiopago(e.target.value)} 
+                            onFocus={e => e.target.select()}
+                            placeholder="Referencia Biopago..." 
+                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-[10px] text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2.5 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPayingClientId(null);
+                      }}
+                      className="flex-1 py-2.5 border border-editorial-border text-[10px] font-mono font-bold uppercase hover:bg-editorial-bg cursor-pointer text-editorial-text-muted rounded"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-serif font-bold uppercase rounded cursor-pointer transition-all shadow-md shadow-amber-500/10"
+                    >
+                      Confirmar Abono
+                    </button>
+                  </div>
+                </form>
+              );
+            })() : (
               <div className="py-8 text-center border border-dashed border-editorial-border rounded flex flex-col items-center justify-center p-4">
                 <FileCheck className="w-8 h-8 text-editorial-text-muted/40 mb-2" />
                 <p className="text-xs text-editorial-text-muted">Ningún cliente seleccionado.</p>
@@ -681,36 +825,44 @@ export default function ClientsCreditView({
       {/* History Modal */}
       {selectedHistoryClientId && (() => {
         const hClient = clients.find(c => c.id === selectedHistoryClientId);
-        // Extract both sales with debt (Cargos) and abonos (Abonos)
-        const cSales = salesHistory
-          .filter(s => s.clientId === selectedHistoryClientId && (s.debtAmount > 0 || s.isAbono))
-          .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+        const hName = (hClient?.name || '').trim().toLowerCase();
+        
+        // Extract both sales with debt (Cargos) and abonos (Abonos) from transactions / sales history
+        const cSales = (salesHistory || [])
+          .filter(s => {
+            if (!s) return false;
+            const matchId = s.clientId && String(s.clientId) === String(selectedHistoryClientId);
+            const matchEntityId = s.entityId && String(s.entityId) === String(selectedHistoryClientId);
+            const matchName = s.entity && String(s.entity).trim().toLowerCase() === hName;
+            const matchClientName = s.clientName && String(s.clientName).trim().toLowerCase() === hName;
+            return matchId || matchEntityId || matchName || matchClientName;
+          })
+          .sort((a, b) => {
+            const timeA = a.createdAt || (a.timestamp ? (typeof a.timestamp === 'number' ? a.timestamp : 0) : 0);
+            const timeB = b.createdAt || (b.timestamp ? (typeof b.timestamp === 'number' ? b.timestamp : 0) : 0);
+            return timeA - timeB;
+          });
         
         let rollingBalance = 0;
         const timeline = cSales.map(s => {
-          let movementType = 'Desconocido';
-          let amount = 0;
-          let method = s.paymentMethod;
-          let notes = s.notes;
+          const isAbonoMovement = s.isAbono || s.isIncome || s.category === 'credito' || s.category === 'ingresos_cobranza';
+          const movementType = isAbonoMovement ? 'Abono' : 'Cargo';
+          const amt = parseSafeDecimal(s.paidAmount || s.amount || s.debtAmount || s.total || 0);
 
-          if (s.isAbono) {
-            movementType = 'Abono';
-            amount = s.paidAmount;
-            rollingBalance -= amount;
-          } else if (s.debtAmount > 0) {
-            movementType = 'Cargo';
-            amount = s.debtAmount;
-            rollingBalance += amount;
+          if (isAbonoMovement) {
+            rollingBalance -= amt;
+          } else {
+            rollingBalance += amt;
           }
 
           return {
-            id: s.id,
-            date: s.date,
-            invoice: s.id,
+            id: s.id || `hist-${Math.random()}`,
+            date: s.date || 'Reciente',
+            invoice: s.invoiceNumber || s.invoice || s.id || '-',
             type: movementType,
-            method: method,
-            notes: notes,
-            amount: amount,
+            method: s.paymentMethod || 'Efectivo',
+            notes: s.notes || (isAbonoMovement ? 'Abono a Cuenta' : 'Compra a Crédito'),
+            amount: amt,
             balance: rollingBalance,
             items: s.items
           };

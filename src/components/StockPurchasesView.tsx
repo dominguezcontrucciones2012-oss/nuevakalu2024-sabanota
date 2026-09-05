@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { SupplierProfile, CheeseProduct } from '../types';
 import { Mic, Zap, ScanText, Plus, Trash2, Save, Bot, Snowflake, X, Check, RefreshCw } from 'lucide-react';
 import { extractInvoiceData } from '../services/ocrService';
+import { parseSafeDecimal } from '../utils';
 
 export interface PurchaseItem {
   uiId: string;
@@ -199,7 +200,8 @@ export default function StockPurchasesView({
           updated.name = prod.name;
           updated.purchasePrice = prod.purchasePrice;
           updated.sellingPrice = prod.sellingPrice;
-          updated.marginPercent = ((prod.sellingPrice - prod.purchasePrice) / prod.sellingPrice) * 100 || 0;
+          updated.marginPercent = prod.sellingPrice > 0 ? Number((((prod.sellingPrice - prod.purchasePrice) / prod.sellingPrice) * 100).toFixed(1)) : 30;
+          if (prod.unit) updated.unit = prod.unit as any;
         }
       }
 
@@ -210,25 +212,46 @@ export default function StockPurchasesView({
           updated.name = prod.name;
           updated.purchasePrice = prod.purchasePrice;
           updated.sellingPrice = prod.sellingPrice;
-          updated.marginPercent = ((prod.sellingPrice - prod.purchasePrice) / prod.sellingPrice) * 100 || 0;
+          updated.marginPercent = prod.sellingPrice > 0 ? Number((((prod.sellingPrice - prod.purchasePrice) / prod.sellingPrice) * 100).toFixed(1)) : 30;
+          if (prod.unit) updated.unit = prod.unit as any;
         } else if (!prod) {
           updated.productId = '';
         }
       }
       
-      if (field === 'purchasePrice' || field === 'sellingPrice') {
-        const cost = field === 'purchasePrice' ? Number(value) : updated.purchasePrice;
-        const sell = field === 'sellingPrice' ? Number(value) : updated.sellingPrice;
-        if (sell > 0) {
-          updated.marginPercent = ((sell - cost) / sell) * 100;
+      if (field === 'purchasePrice') {
+        const cost = parseSafeDecimal(value);
+        updated.purchasePrice = cost;
+        const margin = parseSafeDecimal(updated.marginPercent) || 30;
+        if (margin > 0 && margin < 100) {
+          updated.sellingPrice = parseFloat((cost / (1 - (margin / 100))).toFixed(2));
+        }
+      }
+
+      if (field === 'sellingPrice') {
+        const sell = parseSafeDecimal(value);
+        updated.sellingPrice = sell;
+        const cost = parseSafeDecimal(updated.purchasePrice);
+        if (sell > 0 && sell >= cost) {
+          updated.marginPercent = parseFloat((((sell - cost) / sell) * 100).toFixed(1));
         }
       }
 
       if (field === 'marginPercent') {
-        const margin = Number(value);
-        if (margin < 100) {
-          updated.sellingPrice = updated.purchasePrice / (1 - (margin / 100));
+        const margin = parseSafeDecimal(value);
+        updated.marginPercent = margin;
+        const cost = parseSafeDecimal(updated.purchasePrice);
+        if (cost > 0 && margin >= 0 && margin < 100) {
+          updated.sellingPrice = parseFloat((cost / (1 - (margin / 100))).toFixed(2));
         }
+      }
+
+      if (field === 'quantityKg') {
+        updated.quantityKg = parseSafeDecimal(value);
+      }
+
+      if (field === 'contentPerBulto') {
+        updated.contentPerBulto = parseSafeDecimal(value);
       }
 
       return updated;
@@ -296,8 +319,8 @@ export default function StockPurchasesView({
     localStorage.removeItem('kalu_draft_purchase');
   };
 
-  const totalItems = items.reduce((sum, item) => sum + (Number(item.quantityKg) || 0), 0);
-  const totalCostUSD = items.reduce((sum, item) => sum + ((Number(item.quantityKg) || 0) * (Number(item.purchasePrice) || 0)), 0);
+  const totalItems = items.reduce((sum, item) => sum + (parseSafeDecimal(item.quantityKg) || 0), 0);
+  const totalCostUSD = items.reduce((sum, item) => sum + ((parseSafeDecimal(item.quantityKg) || 0) * (parseSafeDecimal(item.purchasePrice) || 0)), 0);
   const totalCostBs = totalCostUSD * exchangeRate;
 
   return (
@@ -397,30 +420,33 @@ export default function StockPurchasesView({
                       <td className="py-2 px-3">
                         <div className="flex items-center gap-1">
                           <input 
-                            type="number" step="0.01" min="0"
-                            value={item.quantityKg || ''}
-                            onChange={(e) => handleUpdateItem(item.uiId, 'quantityKg', Number(e.target.value))}
-                            className="w-16 bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            type="text"
+                            inputMode="decimal"
+                            value={item.quantityKg === 0 ? '' : item.quantityKg}
+                            onChange={(e) => handleUpdateItem(item.uiId, 'quantityKg', e.target.value)}
+                            className="w-16 bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono"
                             placeholder="0"
                           />
                           <div className="flex bg-black/40 border border-editorial-border rounded overflow-hidden">
-                            {(['Und', 'Bulto'] as const).map(u => (
+                            {(['Kg', 'Und', 'Bulto'] as const).map(u => (
                               <button
                                 key={u}
+                                type="button"
                                 onClick={() => handleUpdateItem(item.uiId, 'unit', u)}
-                                className={`px-2 py-1.5 text-[9px] font-mono font-bold transition-colors cursor-pointer ${item.unit === u || (!item.unit && u === 'Und') ? 'bg-amber-500 text-white' : 'text-editorial-text-muted hover:text-white hover:bg-white/5'}`}
+                                className={`px-2 py-1.5 text-[9px] font-mono font-bold transition-colors cursor-pointer ${item.unit === u || (!item.unit && u === 'Kg') ? 'bg-amber-500 text-white' : 'text-editorial-text-muted hover:text-white hover:bg-white/5'}`}
                               >
-                                {u === 'Bulto' ? 'BTO' : 'UND'}
+                                {u === 'Bulto' ? 'BTO' : (u === 'Und' ? 'UND' : 'KG')}
                               </button>
                             ))}
                           </div>
                           {item.unit === 'Bulto' && (
                             <input 
-                              type="number" step="0.01" min="0"
+                              type="text"
+                              inputMode="decimal"
                               title="Contenido por bulto"
                               value={item.contentPerBulto || ''}
-                              onChange={(e) => handleUpdateItem(item.uiId, 'contentPerBulto', Number(e.target.value))}
-                              className="w-16 bg-amber-500/10 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 focus:outline-none focus:border-amber-500 font-mono placeholder:text-amber-500/30 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              onChange={(e) => handleUpdateItem(item.uiId, 'contentPerBulto', e.target.value)}
+                              className="w-16 bg-amber-500/10 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 focus:outline-none focus:border-amber-500 font-mono placeholder:text-amber-500/30"
                               placeholder="Cnt/Blt"
                             />
                           )}
@@ -429,10 +455,11 @@ export default function StockPurchasesView({
                       <td className="py-2 px-3">
                         <div className="flex flex-col gap-1 relative">
                           <input 
-                            type="number" step="0.01" min="0"
-                            value={item.purchasePrice || ''}
-                            onChange={(e) => handleUpdateItem(item.uiId, 'purchasePrice', Number(e.target.value))}
-                            className={`w-full bg-black/30 border rounded px-2 py-1.5 text-xs text-white focus:outline-none font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${item.previousCost !== undefined && item.previousCost !== item.purchasePrice ? 'border-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.2)]' : 'border-editorial-border focus:border-amber-500'}`}
+                            type="text"
+                            inputMode="decimal"
+                            value={item.purchasePrice === 0 ? '' : item.purchasePrice}
+                            onChange={(e) => handleUpdateItem(item.uiId, 'purchasePrice', e.target.value)}
+                            className={`w-full bg-black/30 border rounded px-2 py-1.5 text-xs text-white focus:outline-none font-mono ${item.previousCost !== undefined && item.previousCost !== item.purchasePrice ? 'border-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.2)]' : 'border-editorial-border focus:border-amber-500'}`}
                             placeholder="0.00"
                           />
                           {item.previousCost !== undefined && item.previousCost !== item.purchasePrice && (
@@ -444,22 +471,26 @@ export default function StockPurchasesView({
                       </td>
                       <td className="py-2 px-3">
                         <input 
-                          type="number" step="0.1" min="0" max="99"
-                          value={item.marginPercent.toFixed(1)}
-                          onChange={(e) => handleUpdateItem(item.uiId, 'marginPercent', Number(e.target.value))}
-                          className="w-full bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                          type="text"
+                          inputMode="decimal"
+                          value={item.marginPercent === undefined || item.marginPercent === null ? '' : item.marginPercent}
+                          onChange={(e) => handleUpdateItem(item.uiId, 'marginPercent', e.target.value)}
+                          className="w-full bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono"
+                          placeholder="30"
                         />
                       </td>
                       <td className="py-2 px-3">
                         <input 
-                          type="number" step="0.01" min="0"
-                          value={item.sellingPrice.toFixed(2)}
-                          onChange={(e) => handleUpdateItem(item.uiId, 'sellingPrice', Number(e.target.value))}
-                          className="w-full bg-black/30 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 font-bold focus:outline-none focus:border-amber-500 font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                          type="text"
+                          inputMode="decimal"
+                          value={item.sellingPrice === 0 ? '' : item.sellingPrice}
+                          onChange={(e) => handleUpdateItem(item.uiId, 'sellingPrice', e.target.value)}
+                          className="w-full bg-black/30 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 font-bold focus:outline-none focus:border-amber-500 font-mono"
+                          placeholder="0.00"
                         />
                       </td>
                       <td className="py-2 px-3 text-right font-mono font-bold text-editorial-text-primary">
-                        ${(item.quantityKg * item.purchasePrice).toFixed(2)}
+                        ${((parseSafeDecimal(item.quantityKg) || 0) * (parseSafeDecimal(item.purchasePrice) || 0)).toFixed(2)}
                       </td>
                       <td className="py-2 px-2 text-right">
                         <button 
