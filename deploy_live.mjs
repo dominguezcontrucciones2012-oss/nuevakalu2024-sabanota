@@ -30,11 +30,15 @@ async function deploy() {
 
       echo "=== [4/5] Reconstruyendo y levantando contenedores Docker ==="
       cd vps-deployment
-      docker-compose build --no-cache api
-      docker-compose up -d --force-recreate --remove-orphans
+      docker-compose build api
+      docker rm -f mi-web-api mi-web-nginx || true
+      docker-compose up -d --remove-orphans
 
-      echo "=== [5/5] Verificando estado de contenedores ==="
+      echo "=== [5/5] Verificando estado de contenedores y puertos ==="
       docker ps
+      sleep 3
+      curl -I http://localhost/ || true
+      curl -I http://localhost:3001/api/health || true
       echo "🚀 ¡Despliegue finalizado exitosamente en Contabo!"
     `;
 
