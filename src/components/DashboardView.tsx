@@ -45,18 +45,25 @@ export default function DashboardView({
   const lowStockCount = cheeseProducts.filter(p => p.stockKg > 0 && p.stockKg <= p.alertThreshold).length;
   const isMartinNiñoSoldOut = cheeseProducts.some(p => p.id === 'prod-1' && p.stockKg <= 0);
 
-  const totalOutstandingReceivable = clients.reduce((sum, c) => sum + c.outstandingDebt, 0);
-  const totalOutstandingPayable = suppliers.reduce((sum, s) => sum + s.balanceOwed, 0);
+  const clientReceivables = clients.reduce((sum, c) => sum + Number(c.outstandingDebt || 0), 0);
+  const supplierStoreDebt = suppliers.reduce((sum, s) => sum + Number(s.storeDebt || 0), 0);
+  const totalOutstandingReceivable = clientReceivables + supplierStoreDebt;
+  const totalOutstandingPayable = suppliers.reduce((sum, s) => sum + Number(s.balanceOwed || 0), 0);
 
   const centralVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
   const exchangeRate = settings.exchangeRate || 45;
 
-  const currentDrawerUsd = centralVault.usd;
-  const currentDrawerBs = centralVault.bs;
-  const currentBankBs = centralVault.bankBs;
-  const currentBankUsd = centralVault.bankUsd;
+  const currentDrawerUsd = Number(centralVault.usd) || 0;
+  const currentDrawerBs = Number(centralVault.bs) || 0;
+  const currentBankBs = Number(centralVault.bankBs) || 0;
+  const currentBankUsd = Number(centralVault.bankUsd) || 0;
   
-  const totalPatrimony = currentDrawerUsd + (currentDrawerBs / exchangeRate) + (currentBankBs / exchangeRate) + currentBankUsd;
+  const totalVaultLiquidity = currentDrawerUsd + (currentDrawerBs / exchangeRate) + currentBankUsd + (currentBankBs / exchangeRate);
+  const totalInventoryValue = cheeseProducts.reduce((sum, p) => sum + (Number(p.stockKg || 0) * Number(p.purchasePrice || p.sellingPrice || 0)), 0);
+  const initialCapital = Number(settings.sabanotaInitials?.totalCapital || 0);
+  
+  // Patrimonio Total = Capital de Arranque + Liquidez en Bóveda + Inventario + Cuentas por Cobrar - Cuentas por Pagar
+  const totalPatrimony = initialCapital + totalVaultLiquidity + totalInventoryValue + totalOutstandingReceivable - totalOutstandingPayable;
 
   return (
     <div className="space-y-8 animate-fade-in">
@@ -102,20 +109,27 @@ export default function DashboardView({
           <div className="space-y-1 border-l-2 border-emerald-500 pl-4">
             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Efectivo Físico ($ USD)</span>
             <div className="font-serif text-2xl font-bold text-emerald-400">$ {(currentDrawerUsd || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+            <p className="text-[9px] text-editorial-text-muted">Billetes en caja fuerte</p>
           </div>
           <div className="space-y-1 border-l-2 border-emerald-500 pl-4">
             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Efectivo Físico (Bs)</span>
             <div className="font-serif text-2xl font-bold text-emerald-400">Bs. {(currentDrawerBs || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-            <p className="text-[9px] text-editorial-text-muted">$ {(currentDrawerBs / exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</p>
+            <p className="text-[9px] text-editorial-text-muted">≈ $ {(currentDrawerBs / exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</p>
           </div>
           <div className="space-y-1 border-l-2 border-indigo-500 pl-4">
             <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Saldo en Bancos (Bs / USD)</span>
             <div className="font-serif text-2xl font-bold text-indigo-400">Bs. {(currentBankBs || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-            <div className="font-serif text-sm font-bold text-indigo-400/80">$ {(currentBankUsd + (currentBankBs / exchangeRate)).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</div>
+            <div className="text-[11px] font-mono text-neutral-300 flex items-center justify-between">
+              <span>+ $ {(currentBankUsd || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</span>
+              <span className="text-neutral-400">Total: ≈ $ {(currentBankUsd + (currentBankBs / exchangeRate)).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</span>
+            </div>
           </div>
           <div className="space-y-1 border-l-2 border-amber-500 pl-4">
-            <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Capital / Patrimonio Actual</span>
+            <span className="text-[10px] font-mono tracking-widest text-editorial-text-muted uppercase">Capital / Patrimonio Total</span>
             <div className="font-serif text-2xl font-bold text-amber-500">$ {(totalPatrimony || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+            <p className="text-[9px] font-mono text-editorial-text-muted">
+              Base: ${initialCapital.toLocaleString('es-MX')} | Bóveda: ${totalVaultLiquidity.toFixed(2)} | Inv: ${totalInventoryValue.toFixed(2)}
+            </p>
           </div>
         </div>
       </div>
@@ -123,22 +137,34 @@ export default function DashboardView({
       {/* Grid of ERP metrics */}
       <div className={`grid grid-cols-1 md:grid-cols-2 ${isSidebarOpen ? 'lg:grid-cols-3' : 'lg:grid-cols-4'} gap-6`}>
 
-
         {/* Cuentas por Cobrar */}
         <div className="bg-editorial-card border border-editorial-border rounded p-6 flex flex-col justify-between">
           <div className="space-y-1">
-            <span className="text-[9px] font-mono tracking-widest text-editorial-text-muted uppercase">Cartera por Cobrar (Clientes)</span>
+            <span className="text-[9px] font-mono tracking-widest text-editorial-text-muted uppercase">Cartera por Cobrar (Clientes + Libreta)</span>
             <div className="font-serif text-3xl font-extrabold text-amber-500">
               ${(totalOutstandingReceivable || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
             </div>
+            <p className="text-[10px] font-mono text-editorial-text-muted">
+              Clientes: ${clientReceivables.toLocaleString('es-MX', { minimumFractionDigits: 2 })} | Libreta: ${supplierStoreDebt.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+            </p>
           </div>
-          <button
-            onClick={() => onNavigate('clients')}
-            className="text-[9px] font-mono text-editorial-text-muted hover:text-amber-500 mt-4 flex items-center gap-1 text-left cursor-pointer"
-          >
-            <Users className="w-3.5 h-3.5" />
-            Gestionar Créditos Otorgados
-          </button>
+          <div className="flex items-center gap-3 mt-4">
+            <button
+              onClick={() => onNavigate('clients')}
+              className="text-[9px] font-mono text-editorial-text-muted hover:text-amber-500 flex items-center gap-1 text-left cursor-pointer"
+            >
+              <Users className="w-3.5 h-3.5" />
+              Clientes
+            </button>
+            <span className="text-neutral-600 text-[10px]">•</span>
+            <button
+              onClick={() => onNavigate('suppliers')}
+              className="text-[9px] font-mono text-editorial-text-muted hover:text-amber-500 flex items-center gap-1 text-left cursor-pointer"
+            >
+              <Truck className="w-3.5 h-3.5" />
+              Libreta Queseros
+            </button>
+          </div>
         </div>
 
         {/* Cuentas por Pagar */}

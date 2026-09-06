@@ -794,10 +794,12 @@ export default function SuppliersDebtsView({
               }
 
               if (activeModal === 'recibir') {
-                const currentKg = parseSafeDecimal(receiveKg);
-                const currentPrice = parseSafeDecimal(receivePrice);
-                const calculatedSubtotal = currentKg * currentPrice;
-                const calculatedSubtotalBs = calculatedSubtotal * (exchangeRate || 1);
+                const cleanKgStr = String(receiveKg || '').trim().replace(',', '.');
+                const cleanPriceStr = String(receivePrice || '').trim().replace(',', '.');
+                const currentKg = parseFloat(cleanKgStr) || parseSafeDecimal(receiveKg) || 0;
+                const currentPrice = parseFloat(cleanPriceStr) || parseSafeDecimal(receivePrice) || 0;
+                const calculatedSubtotal = Number((currentKg * currentPrice).toFixed(2));
+                const calculatedSubtotalBs = Number((calculatedSubtotal * (exchangeRate || 1)).toFixed(2));
 
                 return (
                   <div className="flex flex-col h-full overflow-hidden">

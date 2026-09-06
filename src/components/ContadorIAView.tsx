@@ -7,7 +7,7 @@ import PhotoAlbumView from './contador/PhotoAlbumView';
 import CentralVaultView from './contador/CentralVaultView';
 import BudgetControlView from './contador/BudgetControlView';
 import CheeseTripsView from './CheeseTripsView';
-import { CentralVaultBalance, Transaction, CheeseTrip, CheeseProduct, ClientProfile } from '../types';
+import { CentralVaultBalance, Transaction, CheeseTrip, CheeseProduct, ClientProfile, SupplierProfile } from '../types';
 
 interface ContadorIAViewProps {
   isAdmin: boolean;
@@ -17,6 +17,7 @@ interface ContadorIAViewProps {
   cheeseTrips?: CheeseTrip[];
   cheeseProducts?: CheeseProduct[];
   clients?: ClientProfile[];
+  suppliers?: SupplierProfile[];
   transactions?: Transaction[];
   onCreateTrip?: (trip: Omit<CheeseTrip, 'id'>) => Promise<void>;
   onUpdateTrip?: (id: string, updates: Partial<CheeseTrip>) => Promise<void>;
@@ -27,7 +28,7 @@ interface ContadorIAViewProps {
 
 export default function ContadorIAView({ 
   isAdmin, vaultBalance, onAddTransaction, exchangeRate,
-  cheeseTrips, cheeseProducts, clients, transactions,
+  cheeseTrips, cheeseProducts, clients, suppliers, transactions,
   onCreateTrip, onUpdateTrip, onSettleTrip, onAddNotification, onUpdateVault
 }: ContadorIAViewProps) {
   const [activeModule, setActiveModule] = useState<string | null>(null);
@@ -102,6 +103,9 @@ export default function ContadorIAView({
           onBack={() => handleNavigateToModule(null)} 
           settlingTripId={modulePayload?.tripId}
           cheeseTrips={cheeseTrips}
+          products={cheeseProducts}
+          suppliers={suppliers}
+          exchangeRate={exchangeRate}
           onSettleTrip={onSettleTrip}
           vaultBalance={vaultBalance}
           onAddTransaction={onAddTransaction}
@@ -137,6 +141,8 @@ export default function ContadorIAView({
           transactions={transactions}
           cheeseProducts={cheeseProducts}
           cheeseTrips={cheeseTrips}
+          clients={clients}
+          suppliers={suppliers}
         />
         <AIAssistantWidget />
       </div>
@@ -146,7 +152,10 @@ export default function ContadorIAView({
   if (activeModule === 'voice-notes') {
     return (
       <div className="relative h-full">
-        <VoiceNotesView onBack={() => setActiveModule(null)} />
+        <VoiceNotesView 
+          onBack={() => setActiveModule(null)} 
+          exchangeRate={exchangeRate}
+        />
         <AIAssistantWidget />
       </div>
     );

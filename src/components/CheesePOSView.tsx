@@ -949,13 +949,15 @@ export default function CheesePOSView({
         )
       );
 
-      // Actualizar Bóveda Central (única fuente de verdad) en Firebase
+      // Actualizar Bóveda Central (única fuente de verdad) en Firebase / Local API
+      // Nota: Como las ventas en vivo ya suman los cobros de inmediato, el cierre de turno
+      // consolida las diferencias del arqueo físico contado (diffUsd, diffBs) para que la bóveda cuadre con la realidad de caja.
       const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
       const updatedVault = {
-        usd: currentVault.usd + expectedUsd,
-        bs: currentVault.bs + expectedBs,
-        bankBs: currentVault.bankBs + totalMobile + totalBiopago + totalCard,
-        bankUsd: currentVault.bankUsd
+        usd: Number((currentVault.usd + diffUsd).toFixed(2)),
+        bs: Number((currentVault.bs + diffBs).toFixed(2)),
+        bankBs: Number(currentVault.bankBs.toFixed(2)),
+        bankUsd: Number(currentVault.bankUsd.toFixed(2))
       };
 
       if (onUpdateSettings) {
@@ -2021,9 +2023,18 @@ export default function CheesePOSView({
                     </div>
 
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-mono tracking-wider text-editorial-text-muted uppercase block">
-                        Efectivo Real Contado USD
-                      </label>
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-mono tracking-wider text-editorial-text-muted uppercase block">
+                          Efectivo Real Contado USD
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setActualCashUsd(Number(expectedUsd.toFixed(2)))}
+                          className="text-[10px] font-mono text-amber-500 hover:text-amber-400 hover:underline cursor-pointer"
+                        >
+                          Copiar Esperado (${expectedUsd.toFixed(2)})
+                        </button>
+                      </div>
                       <input
                         type="text"
                         inputMode="decimal"
@@ -2094,9 +2105,18 @@ export default function CheesePOSView({
                     </div>
 
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-mono tracking-wider text-editorial-text-muted uppercase block">
-                        Efectivo Real Contado Bs
-                      </label>
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-mono tracking-wider text-editorial-text-muted uppercase block">
+                          Efectivo Real Contado Bs
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setActualCashBs(Number(expectedBs.toFixed(2)))}
+                          className="text-[10px] font-mono text-amber-500 hover:text-amber-400 hover:underline cursor-pointer"
+                        >
+                          Copiar Esperado (Bs. {expectedBs.toFixed(2)})
+                        </button>
+                      </div>
                       <input
                         type="text"
                         inputMode="decimal"
@@ -2830,22 +2850,29 @@ export default function CheesePOSView({
                 <div className="grid grid-cols-4 gap-3 text-[10px] font-mono">
                   <div className="bg-editorial-bg p-3 border border-editorial-border rounded text-center">
                     <div className="text-editorial-text-muted mb-1">Pago Móvil</div>
-                    <div className="font-bold text-editorial-text-primary text-sm">Bs. {((selectedAuditClosing.totalMobile || 0) * (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)).toFixed(2)}</div>
-                    <div className="text-[9px] text-emerald-400 mt-0.5">~${(selectedAuditClosing.totalMobile || 0).toFixed(2)}</div>
+                    <div className="font-bold text-editorial-text-primary text-sm">Bs. {(selectedAuditClosing.totalMobile || 0).toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                    <div className="text-[9px] text-emerald-400 mt-0.5">≈ ${(Number(selectedAuditClosing.totalMobile || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)).toFixed(2)} USD</div>
                   </div>
                   <div className="bg-editorial-bg p-3 border border-editorial-border rounded text-center">
                     <div className="text-editorial-text-muted mb-1">Punto / Biopago</div>
-                    <div className="font-bold text-editorial-text-primary text-sm">Bs. {(((selectedAuditClosing.totalCard || 0) + (selectedAuditClosing.totalBiopago || 0)) * (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)).toFixed(2)}</div>
-                    <div className="text-[9px] text-emerald-400 mt-0.5">~${((selectedAuditClosing.totalCard || 0) + (selectedAuditClosing.totalBiopago || 0)).toFixed(2)}</div>
+                    <div className="font-bold text-editorial-text-primary text-sm">Bs. {((selectedAuditClosing.totalCard || 0) + (selectedAuditClosing.totalBiopago || 0)).toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                    <div className="text-[9px] text-emerald-400 mt-0.5">≈ ${(((Number(selectedAuditClosing.totalCard) || 0) + (Number(selectedAuditClosing.totalBiopago) || 0)) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)).toFixed(2)} USD</div>
                   </div>
                   <div className="bg-editorial-bg p-3 border border-amber-500/30 rounded text-center">
                     <div className="text-amber-500/70 mb-1">Fiado (Crédito)</div>
-                    <div className="font-bold text-amber-500 text-sm">${(selectedAuditClosing.totalCreditSales || 0).toFixed(2)}</div>
+                    <div className="font-bold text-amber-500 text-sm">${(Number(selectedAuditClosing.totalCreditSales) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                     <div className="text-[9px] text-amber-500/50 mt-0.5">Pendiente</div>
                   </div>
                   <div className="bg-editorial-bg p-3 border border-editorial-border rounded text-center">
                     <div className="text-editorial-text-muted mb-1">Total Ventas (Turno)</div>
-                    <div className="font-bold text-emerald-400 text-sm">${((selectedAuditClosing.salesCashUsd || 0) + ((selectedAuditClosing.salesCashBs || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) + (selectedAuditClosing.totalCard || 0) + (selectedAuditClosing.totalMobile || 0) + (selectedAuditClosing.totalBiopago || 0) + (selectedAuditClosing.totalCreditSales || 0)).toFixed(2)}</div>
+                    <div className="font-bold text-emerald-400 text-sm">${(
+                      (Number(selectedAuditClosing.salesCashUsd) || 0) + 
+                      ((Number(selectedAuditClosing.salesCashBs) || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) + 
+                      ((Number(selectedAuditClosing.totalCard) || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) + 
+                      ((Number(selectedAuditClosing.totalMobile) || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) + 
+                      ((Number(selectedAuditClosing.totalBiopago) || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) + 
+                      (Number(selectedAuditClosing.totalCreditSales) || 0)
+                    ).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                   </div>
                 </div>
               </div>

@@ -995,6 +995,7 @@ export default function ClientPortal({
                       loggedClient={loggedClient}
                       onNavigateTab={setClientActiveTab}
                       getClientLevelInfo={getClientLevelInfo}
+                      onAddNotification={onAddNotification}
                     />
                   )}
 

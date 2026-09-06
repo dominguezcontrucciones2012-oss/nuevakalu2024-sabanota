@@ -7,9 +7,10 @@ interface QrScannerTabProps {
   loggedClient: any;
   onNavigateTab: (tab: string) => void;
   getClientLevelInfo: (points: number) => { level: number; name?: string; nextGoal?: number; nextPrize?: string; progress?: number; discount?: number; };
+  onAddNotification: (msg: string, type: 'success'|'info'|'warning') => void;
 }
 
-export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }: QrScannerTabProps) {
+export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, onAddNotification }: QrScannerTabProps) {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scannerActive, setScannerActive] = useState(false);
   const [showQrPaymentModal, setShowQrPaymentModal] = useState(false);
@@ -296,13 +297,13 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }
                     const { updateLocalDoc } = await import('../services/localApi');
                     await updateLocalDoc('transactions', fetchedTx.id, payload);
                     
-                    alert('¡Compra Aprobada Exitosamente!');
+                    onAddNotification('¡Compra Aprobada Exitosamente!', 'success');
                     setShowQrPaymentModal(false);
                     setQrPaymentAmount('');
                     onNavigateTab('inicio');
                   } catch (e) {
                     console.error(e);
-                    alert('Error al aprobar la compra a crédito.');
+                    onAddNotification('Error al aprobar la compra a crédito.', 'warning');
                   }
                 } else {
                   // Original manual QR process flow fallback
@@ -329,12 +330,12 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo }
                   try {
                     const { addLocalDoc } = await import('../services/localApi');
                     await addLocalDoc('pwa_payments', payload);
-                    alert('Solicitud de Crédito QR enviada al Centro de Cobranzas para aprobación.');
+                    onAddNotification('Solicitud de Crédito QR enviada al Centro de Cobranzas para aprobación.', 'success');
                     setShowQrPaymentModal(false);
                     setQrPaymentAmount('');
                     onNavigateTab('inicio');
                   } catch (e) {
-                    alert('Error al procesar la compra a crédito.');
+                    onAddNotification('Error al procesar la compra a crédito.', 'warning');
                   }
                 }
               }}

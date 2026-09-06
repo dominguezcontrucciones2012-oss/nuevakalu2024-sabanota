@@ -30,8 +30,8 @@ async function deploy() {
 
       echo "=== [4/5] Reconstruyendo y levantando contenedores Docker ==="
       cd vps-deployment
-      docker-compose build api
-      docker-compose up -d --remove-orphans
+      docker-compose build --no-cache api
+      docker-compose up -d --force-recreate --remove-orphans
 
       echo "=== [5/5] Verificando estado de contenedores ==="
       docker ps

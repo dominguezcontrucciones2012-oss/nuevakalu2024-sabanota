@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import MobilePortalsView from './components/MobilePortalsView';
 import { useSharedData } from './hooks/useSharedData';
+import { addLocalDoc, updateLocalDoc } from './services/localApi';
 import { CheckCircle2, Info, AlertTriangle, X } from 'lucide-react';
 
 interface ToastNotification {
@@ -21,19 +22,116 @@ export default function PortalApp() {
     mobileOrders,
     cheeseTrips,
     transactions,
+    settings,
+    setTransactions,
+    setSettings,
+    setCheeseTrips,
     addMobileOrder,
     deliverMobileOrder,
     cancelMobileOrder
   } = useSharedData();
 
   useEffect(() => {
-    // Detectar qué portal debe mostrarse según la URL (ej: portal.html?type=productor)
+    // Detectar qué portal debe mostrarse según la URL (ej: portal.html?type=contador o portal.html#/contador)
     const params = new URLSearchParams(window.location.search);
     const type = params.get('type');
+    const hash = window.location.hash.replace('#/', '').replace('#', '');
+    
     if (type === 'productor' || type === 'contador' || type === 'proveedor') {
       setPortalType(type);
+    } else if (hash === 'productor' || hash === 'contador' || hash === 'proveedor' || hash === 'cliente') {
+      setPortalType(hash as any);
     }
   }, []);
+
+  const handleAddTransaction = (tx: Partial<any>) => {
+    const newTx = {
+      id: `TX-${Date.now().toString().slice(-4)}`,
+      entity: 'Bóveda Banco Central',
+      date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+      invoiceNumber: `BOV-${Math.floor(Math.random() * 9000 + 1000)}`,
+      status: 'Completado',
+      ...tx
+    };
+    setTransactions((prev) => [newTx as any, ...prev]);
+    try {
+      addLocalDoc('transactions', newTx);
+    } catch (e) {
+      console.error(e);
+    }
+
+    const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+    const updatedVault = { ...currentVault };
+    
+    if (tx.isIncome) {
+      if (tx.paymentMethod === 'Efectivo' || tx.paymentMethod === 'Efectivo USD') updatedVault.usd += (tx.amount || 0);
+      else if (tx.paymentMethod === 'Efectivo BS') updatedVault.bs += (tx.amount || 0);
+      else updatedVault.bankUsd += (tx.amount || 0);
+    } else {
+      if (tx.paymentMethod === 'Efectivo' || tx.paymentMethod === 'Efectivo USD') updatedVault.usd -= (tx.amount || 0);
+      else if (tx.paymentMethod === 'Efectivo BS') updatedVault.bs -= (tx.amount || 0);
+      else updatedVault.bankUsd -= (tx.amount || 0);
+    }
+    
+    const newSettings = { ...settings, centralVaultBalance: updatedVault };
+    setSettings(newSettings);
+    try {
+      updateLocalDoc('settings', 'general', { centralVaultBalance: updatedVault });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleUpdateVault = async (updates: any) => {
+    const newVault = {
+      ...(settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 }),
+      ...updates
+    };
+    setSettings(prev => ({ ...prev, centralVaultBalance: newVault }));
+    try {
+      await updateLocalDoc('settings', 'general', { centralVaultBalance: newVault });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleCreateTrip = async (trip: any) => {
+    try {
+      const newTrip = { ...trip, id: crypto.randomUUID() };
+      setCheeseTrips(prev => [newTrip, ...prev]);
+      await addLocalDoc('cheeseTrips', newTrip);
+      addNotification('Viaje registrado con éxito', 'success');
+    } catch (err) {
+      console.error(err);
+      addNotification('Error al registrar viaje', 'warning');
+    }
+  };
+
+  const handleUpdateTrip = async (tripId: string, updates: any) => {
+    try {
+      setCheeseTrips(prev => prev.map(t => t.id === tripId ? { ...t, ...updates } : t));
+      await updateLocalDoc('cheeseTrips', tripId, updates);
+      addNotification('Viaje actualizado', 'success');
+    } catch (err) {
+      console.error(err);
+      addNotification('Error al actualizar viaje', 'warning');
+    }
+  };
+
+  const handleSettleTrip = async (tripId: string, settlementData: any) => {
+    try {
+      setCheeseTrips(prev => prev.map(t => t.id === tripId ? { ...t, ...settlementData, status: 'liquidado', settledAt: new Date().toISOString() } : t));
+      await updateLocalDoc('cheeseTrips', tripId, {
+        ...settlementData,
+        status: 'liquidado',
+        settledAt: new Date().toISOString()
+      });
+      addNotification('Viaje liquidado con éxito', 'success');
+    } catch (err) {
+      console.error(err);
+      addNotification('Error al liquidar el viaje', 'warning');
+    }
+  };
 
   const addNotification = (message: string, type: 'success' | 'info' | 'warning' = 'info') => {
     const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
@@ -58,9 +156,17 @@ export default function PortalApp() {
         mobileOrders={mobileOrders}
         cheeseTrips={cheeseTrips}
         transactions={transactions}
+        settings={settings}
+        vaultBalance={settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 }}
+        exchangeRate={settings?.exchangeRate || 42.5}
         onAddMobileOrder={addMobileOrder}
         onDeliverMobileOrder={deliverMobileOrder}
         onCancelMobileOrder={cancelMobileOrder}
+        onAddTransaction={handleAddTransaction}
+        onUpdateVault={handleUpdateVault}
+        onCreateTrip={handleCreateTrip}
+        onUpdateTrip={handleUpdateTrip}
+        onSettleTrip={handleSettleTrip}
         onAddNotification={addNotification}
       />
 

@@ -110,7 +110,11 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
 
   const handleRoleSelect = (role: 'crm' | 'contador') => {
     if (validatedUser) {
-      onLoginSuccess(validatedUser, role === 'crm' ? 'portal-dashboard' : 'contador-ia');
+      if (role === 'contador') {
+        window.location.href = '/portal.html?type=contador';
+      } else {
+        onLoginSuccess(validatedUser, 'portal-dashboard');
+      }
     }
   };
 
@@ -262,19 +266,19 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
                     </>
                   )}
 
-                      {/* Remember Device Box */}
-                      <div className="flex items-center gap-2.5 ml-1">
-                        <input
-                          type="checkbox"
-                          id="remember"
-                          checked={rememberMe}
-                          onChange={(e) => setRememberMe(e.target.checked)}
-                          className="w-4 h-4 rounded border-editorial-border bg-editorial-bg text-brand-accent focus:ring-brand-accent focus:ring-offset-editorial-card cursor-pointer"
-                        />
-                        <label htmlFor="remember" className="text-xs text-editorial-text-muted cursor-pointer select-none">
-                          Confiar en este nodo seguro durante 30 días
-                        </label>
-                      </div>
+                  {/* Remember Device Box */}
+                  <div className="flex items-center gap-2.5 ml-1">
+                    <input
+                      type="checkbox"
+                      id="remember"
+                      checked={rememberMe}
+                      onChange={(e) => setRememberMe(e.target.checked)}
+                      className="w-4 h-4 rounded border-editorial-border bg-editorial-bg text-brand-accent focus:ring-brand-accent focus:ring-offset-editorial-card cursor-pointer"
+                    />
+                    <label htmlFor="remember" className="text-xs text-editorial-text-muted cursor-pointer select-none">
+                      Confiar en este nodo seguro durante 30 días
+                    </label>
+                  </div>
 
                   {/* Submit CTA */}
                   <button

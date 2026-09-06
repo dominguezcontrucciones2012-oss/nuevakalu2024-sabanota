@@ -1,5 +1,4 @@
-import React from 'react';
-import { CheeseProduct, ClientProfile, SupplierProfile, MobileOrder, CheeseTrip, Transaction } from '../types';
+import { CheeseProduct, ClientProfile, SupplierProfile, MobileOrder, CheeseTrip, Transaction, CentralVaultBalance, BusinessSettings } from '../types';
 import ClientPortal from './portals/ClientPortal';
 import ProducerPortal from './portals/ProducerPortal';
 import AccountantPortal from './portals/AccountantPortal';
@@ -17,6 +16,14 @@ export interface MobilePortalsViewProps {
   isolatedId?: string;
   cheeseTrips?: CheeseTrip[];
   transactions?: Transaction[];
+  settings?: BusinessSettings;
+  vaultBalance?: CentralVaultBalance;
+  exchangeRate?: number;
+  onCreateTrip?: (trip: Omit<CheeseTrip, 'id'>) => Promise<void>;
+  onUpdateTrip?: (id: string, updates: Partial<CheeseTrip>) => Promise<void>;
+  onSettleTrip?: (id: string, settlementData: Partial<CheeseTrip>) => Promise<void>;
+  onAddTransaction?: (tx: Partial<Transaction>) => void;
+  onUpdateVault?: (updates: Partial<CentralVaultBalance>) => Promise<void>;
 }
 
 export default function MobilePortalsView(props: MobilePortalsViewProps) {

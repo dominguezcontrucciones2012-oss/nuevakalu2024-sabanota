@@ -10,6 +10,7 @@ interface ProfileTabProps {
   onLogout: () => void;
   onNavigateSubView?: (view: string) => void;
   onNavigateTab?: (tab: 'inicio' | 'tienda' | 'qr' | 'pagos' | 'perfil') => void;
+  onAddNotification?: (message: string, type?: 'info' | 'success' | 'warning') => void;
 }
 
 type SubViewType = 'main' | 'mis_datos' | 'info_personal' | 'mis_direcciones' | 'mis_compras' | 'mis_recompensas' | 'seguridad' | 'seguridad_codigo' | 'sobre_kalu' | 'mundo_kalu';
@@ -34,7 +35,8 @@ export default function ProfileTab({
   kaluPoints,
   onLogout,
   onNavigateSubView,
-  onNavigateTab
+  onNavigateTab,
+  onAddNotification
 }: ProfileTabProps) {
   const [activeSubView, setActiveSubView] = useState<SubViewType>('main');
   const [filterTab, setFilterTab] = useState<FilterTabType>('por_pagar');
@@ -615,11 +617,11 @@ export default function ProfileTab({
                     setRecoveryErrorMsg('');
                   } else {
                     const errData = await res.json().catch(() => ({}));
-                    alert(`Error en WhatsApp: ${errData.details || errData.error || 'No se pudo enviar'}`);
+                    onAddNotification(`Error en WhatsApp: ${errData.details || errData.error || 'No se pudo enviar'}`, 'warning');
                   }
                 } catch (e: any) {
                   console.error(e);
-                  alert(`Error de conexión al enviar WhatsApp (${e.message})`);
+                  onAddNotification(`Error de conexión al enviar WhatsApp (${e.message})`, 'warning');
                 } finally {
                   setSendingRecoveryWhatsapp(false);
                 }
@@ -666,11 +668,11 @@ export default function ProfileTab({
                     setRecoveryErrorMsg('');
                   } else {
                     const errData = await res.json().catch(() => ({}));
-                    alert(`Error en Correo: ${errData.details || errData.error || 'No se pudo enviar'}`);
+                    onAddNotification(`Error en Correo: ${errData.details || errData.error || 'No se pudo enviar'}`, 'warning');
                   }
                 } catch (e: any) {
                   console.error(e);
-                  alert(`Error de conexión al enviar correo (${e.message})`);
+                  onAddNotification(`Error de conexión al enviar correo (${e.message})`, 'warning');
                 } finally {
                   setSendingRecoveryEmail(false);
                 }
@@ -719,7 +721,7 @@ export default function ProfileTab({
             <button 
               onClick={() => {
                 if (recoveryCodeInput === recoveryCode) {
-                  alert('¡Código Verificado con éxito! Ahora puedes cambiar tu clave.');
+                  onAddNotification('¡Código Verificado con éxito! Ahora puedes cambiar tu clave.', 'success');
                   setIsVerifyingCode(false);
                   setActiveSubView('main');
                 } else {

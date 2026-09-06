@@ -1,12 +1,9 @@
 import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
 import React, { useState, useEffect, useRef } from 'react';
-
-
-
-import { askGeminiWithImage, askGemini } from '../../services/gemini';
+import { extractInvoiceData, extractDictationData, pingGeminiAPI } from '../../services/ocrService';
 import { INITIAL_CHEESE_PRODUCTS } from '../../data';
-import { Save, ArrowLeft, Search, Package, Trash2, Camera, Mic, Loader2, Snowflake, CheckSquare, Square, FileText, Receipt } from 'lucide-react';
-import { CheeseProduct, CheeseTrip, CentralVaultBalance, Transaction } from '../../types';
+import { Save, ArrowLeft, Search, Package, Trash2, Camera, Image as ImageIcon, Mic, Loader2, Snowflake, CheckSquare, Square, FileText, Receipt, AlertCircle, Sparkles, CheckCircle2, Wifi, WifiOff } from 'lucide-react';
+import { CheeseProduct, CheeseTrip, CentralVaultBalance, Transaction, SupplierProfile } from '../../types';
 
 interface InvoiceUploadViewProps {
   onBack: () => void;
@@ -15,6 +12,9 @@ interface InvoiceUploadViewProps {
   onSettleTrip?: (id: string, settlementData: Partial<CheeseTrip>) => Promise<void>;
   vaultBalance?: CentralVaultBalance;
   onAddTransaction?: (tx: Partial<Transaction>) => void;
+  products?: CheeseProduct[];
+  suppliers?: SupplierProfile[];
+  exchangeRate?: number;
 }
 
 interface InvoiceItem {
@@ -28,6 +28,7 @@ interface InvoiceItem {
   marginPercent: number;
   salePrice: number;
   subtotal: number;
+  unit?: 'Kg' | 'Und' | 'Bulto';
 }
 
 export default function InvoiceUploadView({ 
@@ -36,13 +37,17 @@ export default function InvoiceUploadView({
   cheeseTrips,
   onSettleTrip,
   vaultBalance,
-  onAddTransaction
+  onAddTransaction,
+  products: initialProducts = [],
+  suppliers: initialSuppliers = [],
+  exchangeRate: initialExchangeRate = 45.00
 }: InvoiceUploadViewProps) {
   // Estado Principal de la Factura
   const [items, setItems] = useState<InvoiceItem[]>([]);
-  const [suppliers, setSuppliers] = useState<any[]>([]);
+  const [suppliers, setSuppliers] = useState<any[]>(initialSuppliers);
   const [supplierId, setSupplierId] = useState<string>('');
   const [isCredit, setIsCredit] = useState(false);
+  const [detectedInvoiceInfo, setDetectedInvoiceInfo] = useState<string>('');
   
   // Estado del Buscador/Agregador
   const [searchTerm, setSearchTerm] = useState('');
@@ -56,6 +61,8 @@ export default function InvoiceUploadView({
   const [isScanning, setIsScanning] = useState(false);
   const [isDictating, setIsDictating] = useState(false);
   const [dictationText, setDictationText] = useState('');
+  const [apiHealthStatus, setApiHealthStatus] = useState<'unknown' | 'checking' | 'online' | 'offline'>('unknown');
+  const [apiHealthMessage, setApiHealthMessage] = useState<string>('');
 
   // Trip Settlement States
   const settlingTrip = cheeseTrips?.find(t => t.id === settlingTripId);
@@ -65,19 +72,44 @@ export default function InvoiceUploadView({
   const [vaultBs, setVaultBs] = useState(0);
   const [vaultBankBs, setVaultBankBs] = useState(0);
   const [vaultBankUsd, setVaultBankUsd] = useState(0);
-  const [bcvRate] = useState(45.00); // Or pass exchangeRate as prop
+  const [bcvRate, setBcvRate] = useState(initialExchangeRate || 45.00);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
+
+  // Auto-verificar conexión con Gemini al montar
+  useEffect(() => {
+    const checkGemini = async () => {
+      setApiHealthStatus('checking');
+      const res = await pingGeminiAPI();
+      setApiHealthStatus(res.ok ? 'online' : 'offline');
+      setApiHealthMessage(res.message);
+    };
+    checkGemini();
+  }, []);
 
   // Inicializar Proveedores y Escuchar en Tiempo Real
   useEffect(() => {
     const unsubscribe = onCollectionSnapshot('suppliers', (sups) => {
-      setSuppliers(sups);
-      setSupplierId(prev => (sups.length > 0 && !prev) ? sups[0].id : prev);
+      if (sups && sups.length > 0) {
+        setSuppliers(sups);
+        setSupplierId(prev => (!prev ? sups[0].id : prev));
+      }
     });
 
     return () => unsubscribe();
+  }, []);
+
+  // Escuchar Tasa de Cambio si está disponible en settings
+  useEffect(() => {
+    const unsub = onCollectionSnapshot('settings', (data) => {
+      const generalDoc = data.find((d: any) => d.id === 'general');
+      if (generalDoc && generalDoc.exchangeRate) {
+        setBcvRate(generalDoc.exchangeRate);
+      }
+    });
+    return () => unsub();
   }, []);
 
   // Inicializar Web Speech API para dictado
@@ -102,7 +134,7 @@ export default function InvoiceUploadView({
     }
   }, []);
 
-  // Buscador en tiempo real
+  // Buscador en tiempo real consultando estrictamente la colección 'products'
   useEffect(() => {
     const searchProduct = async () => {
       if (searchTerm.length < 2) {
@@ -111,19 +143,21 @@ export default function InvoiceUploadView({
       }
       setIsSearching(true);
       try {
-        const res = await fetchCollection('inventory');
-        const inventory = await res.json();
-        const results = inventory.filter((p: any) => p.name?.toLowerCase().includes(searchTerm.toLowerCase()));
+        const res = await fetchCollection('products');
+        const productsList = await res.json();
+        const results = productsList.filter((p: any) => p.name?.toLowerCase().includes(searchTerm.toLowerCase()));
         
         if (results.length === 0) {
-          // Fallback a local
-          const localMatches = INITIAL_CHEESE_PRODUCTS.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
+          // Fallback a local/props
+          const fallbackList = initialProducts.length > 0 ? initialProducts : INITIAL_CHEESE_PRODUCTS;
+          const localMatches = fallbackList.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
           setSearchResults(localMatches);
         } else {
           setSearchResults(results);
         }
       } catch (error) {
-        const localMatches = INITIAL_CHEESE_PRODUCTS.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
+        const fallbackList = initialProducts.length > 0 ? initialProducts : INITIAL_CHEESE_PRODUCTS;
+        const localMatches = fallbackList.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
         setSearchResults(localMatches);
       } finally {
         setIsSearching(false);
@@ -132,7 +166,7 @@ export default function InvoiceUploadView({
 
     const debounceTimer = setTimeout(searchProduct, 300);
     return () => clearTimeout(debounceTimer);
-  }, [searchTerm]);
+  }, [searchTerm, initialProducts]);
 
   const toggleDictation = () => {
     if (isDictating) {
@@ -147,24 +181,55 @@ export default function InvoiceUploadView({
   const processDictationWithAI = async (text: string) => {
     setIsScanning(true);
     try {
-      const prompt = `Analiza este texto dictado: "${text}". Extrae los productos comprados.
-      Devuelve un JSON con este formato estricto:
-      {
-        "items": [
-          { "name": "Nombre producto", "quantity": numero, "costPrice": numero }
-        ]
-      }`;
-      const response = await askGemini(prompt, "Eres un sistema de extracción de datos para Kalu.");
-      const jsonStr = response.replace(/```json/g, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(jsonStr);
+      // Obtener nombres de productos de la base de datos
+      let inventoryNames: string[] = [];
+      try {
+        const res = await fetchCollection('products');
+        const prods = await res.json();
+        inventoryNames = prods.map((p: any) => p.name);
+      } catch (e) {
+        inventoryNames = (initialProducts.length > 0 ? initialProducts : INITIAL_CHEESE_PRODUCTS).map(p => p.name);
+      }
+
+      const extractedItems = await extractDictationData(text, bcvRate, inventoryNames);
       
-      if (parsed.items && Array.isArray(parsed.items)) {
-        const newItems = parsed.items.map((i: any) => createInvoiceItem('NEW', i.name, i.quantity, i.costPrice || 0));
+      if (extractedItems && extractedItems.length > 0) {
+        // Cotejar con productos existentes
+        let prodsList: any[] = [];
+        try {
+          const res = await fetchCollection('products');
+          prodsList = await res.json();
+        } catch (e) {
+          prodsList = initialProducts;
+        }
+
+        const newItems: InvoiceItem[] = extractedItems.map(item => {
+          const matchedProd = prodsList.find((p: any) => p.name?.toLowerCase() === item.nombre.toLowerCase());
+          const cost = item.costo_unitario || 0;
+          const isBulto = item.unidad === 'Bulto';
+          const defaultMargin = 30;
+          const sale = cost * (1 + (defaultMargin / 100));
+
+          return {
+            id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            productId: matchedProd ? matchedProd.id : 'NEW',
+            name: matchedProd ? matchedProd.name : item.nombre,
+            quantity: item.cantidad || 1,
+            unitType: isBulto ? 'bulto' : 'unidad',
+            unitsPerBulto: 10,
+            costPrice: cost,
+            marginPercent: defaultMargin,
+            salePrice: parseFloat(sale.toFixed(2)),
+            subtotal: cost * (item.cantidad || 1),
+            unit: item.unidad as any
+          };
+        });
+
         setItems(prev => [...prev, ...newItems]);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Error al procesar dictado:", e);
-      alert("No se pudo extraer la información del dictado.");
+      alert(e.message || "No se pudo extraer la información del dictado.");
     } finally {
       setIsScanning(false);
     }
@@ -175,33 +240,83 @@ export default function InvoiceUploadView({
     if (!file) return;
 
     setIsScanning(true);
+    setApiHealthStatus('checking');
+
     try {
-      // Convertir a base64
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const base64String = (reader.result as string).split(',')[1];
-        
-        const prompt = `Extrae los artículos de esta factura/ticket. Devuelve un JSON estrictamente con este formato:
-        {
-          "items": [
-            { "name": "Nombre", "quantity": numero, "costPrice": numero }
-          ]
-        }`;
-        
-        const response = await askGeminiWithImage(prompt, base64String, file.type);
-        const jsonStr = response.replace(/```json/g, '').replace(/```/g, '').trim();
-        const parsed = JSON.parse(jsonStr);
-        
-        if (parsed.items && Array.isArray(parsed.items)) {
-          const newItems = parsed.items.map((i: any) => createInvoiceItem('NEW', i.name, i.quantity, i.costPrice || 0));
-          setItems(prev => [...prev, ...newItems]);
+      // 1. Obtener catálogo actual de productos
+      let allProducts: any[] = [];
+      try {
+        const res = await fetchCollection('products');
+        allProducts = await res.json();
+      } catch (e) {
+        allProducts = initialProducts.length > 0 ? initialProducts : INITIAL_CHEESE_PRODUCTS;
+      }
+      const inventoryNames = allProducts.map((p: any) => p.name);
+
+      // 2. Ejecutar OCR con el servicio unificado
+      const extracted = await extractInvoiceData(file, bcvRate, inventoryNames);
+      setApiHealthStatus('online');
+
+      // 3. Auto-detección y vinculación estricta de Proveedor
+      if (extracted.proveedor?.nombre || extracted.proveedor?.rif) {
+        const supNombreLow = (extracted.proveedor.nombre || '').toLowerCase().trim();
+        const supRifClean = (extracted.proveedor.rif || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+
+        const matchedSup = suppliers.find(s => {
+          const sNameLow = (s.name || '').toLowerCase().trim();
+          const sIdClean = (s.idNumber || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+          return (
+            (supRifClean && sIdClean && (sIdClean.includes(supRifClean) || supRifClean.includes(sIdClean))) ||
+            (supNombreLow && (sNameLow.includes(supNombreLow) || supNombreLow.includes(sNameLow)))
+          );
+        });
+
+        if (matchedSup) {
+          setSupplierId(matchedSup.id);
+          setDetectedInvoiceInfo(`Proveedor detectado: ${matchedSup.name} (Doc #${extracted.factura || 'S/N'})`);
+        } else {
+          setDetectedInvoiceInfo(`Proveedor detectado en foto: ${extracted.proveedor.nombre || 'S/N'} (${extracted.proveedor.rif || 'S/R'})`);
         }
-      };
-      reader.readAsDataURL(file);
-    } catch (error) {
+      }
+
+      // 4. Mapeo y cotejo inteligente de artículos a 'products'
+      if (extracted.items && extracted.items.length > 0) {
+        const newItems: InvoiceItem[] = extracted.items.map(item => {
+          const itemNameLow = (item.nombre || '').toLowerCase().trim();
+          const matchedProd = allProducts.find(p => p.name?.toLowerCase().trim() === itemNameLow);
+          
+          const isBulto = item.unidad === 'Bulto';
+          const defaultMargin = matchedProd && matchedProd.sellingPrice && matchedProd.purchasePrice 
+            ? Math.round(((matchedProd.sellingPrice - matchedProd.purchasePrice) / matchedProd.purchasePrice) * 100)
+            : 30;
+          const cost = item.costo_unitario || 0;
+          const sale = cost * (1 + (defaultMargin / 100));
+
+          return {
+            id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            productId: matchedProd ? matchedProd.id : 'NEW',
+            name: matchedProd ? matchedProd.name : item.nombre,
+            quantity: item.cantidad || 1,
+            unitType: isBulto ? 'bulto' : 'unidad',
+            unitsPerBulto: 10,
+            costPrice: cost,
+            marginPercent: defaultMargin,
+            salePrice: parseFloat(sale.toFixed(2)),
+            subtotal: cost * (item.cantidad || 1),
+            unit: item.unidad as any
+          };
+        });
+
+        setItems(prev => [...prev, ...newItems]);
+      }
+    } catch (error: any) {
       console.error("Error OCR:", error);
-      alert("Fallo al escanear la imagen.");
+      setApiHealthStatus('offline');
+      alert(error.message || "Fallo al escanear la imagen con IA.");
+    } finally {
       setIsScanning(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      if (galleryInputRef.current) galleryInputRef.current.value = '';
     }
   };
 
@@ -575,14 +690,32 @@ export default function InvoiceUploadView({
             Congelar Borrador
           </button>
           
+          {/* Input para Cámara directa */}
           <input type="file" accept="image/*" capture="environment" className="hidden" ref={fileInputRef} onChange={handleImageScan} />
+          
+          {/* Input para Galería / Explorador de Archivos */}
+          <input type="file" accept="image/*,.pdf" className="hidden" ref={galleryInputRef} onChange={handleImageScan} />
+          
+          {/* Botón 1: Galería / Archivos */}
+          <button 
+            onClick={() => galleryInputRef.current?.click()}
+            disabled={isScanning || isSaving}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 border border-zinc-700 hover:border-emerald-500 text-zinc-300 hover:text-emerald-400 rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-md disabled:opacity-50"
+            title="Seleccionar foto de factura desde la galería o archivos"
+          >
+            {isScanning ? <Loader2 className="w-4 h-4 animate-spin text-emerald-400" /> : <ImageIcon className="w-4 h-4 text-emerald-400" />}
+            <span className="hidden sm:inline">Galería</span>
+          </button>
+
+          {/* Botón 2: Tomar Foto con Cámara */}
           <button 
             onClick={() => fileInputRef.current?.click()}
             disabled={isScanning || isSaving}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 rounded text-xs font-bold transition-colors cursor-pointer shadow-md disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-md disabled:opacity-50"
+            title="Tomar foto directa a la factura"
           >
             {isScanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
-            <span className="hidden sm:inline">Escanear IA</span>
+            <span>Cámara</span>
           </button>
         </div>
       </div>
@@ -594,6 +727,46 @@ export default function InvoiceUploadView({
           
           {/* Action Bar (Búsqueda + Dictado + Toggle Bulto) */}
           <div className="p-4 bg-zinc-900/50 border-b border-zinc-800 shrink-0 space-y-4">
+            
+            {/* Status Badge de la IA de Gemini */}
+            <div className="flex items-center justify-between bg-zinc-950/80 border border-zinc-800/80 px-3 py-1.5 rounded-lg text-[11px] font-mono">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                <span className="text-zinc-400">Motor OCR: <strong className="text-zinc-200">Gemini 2.5 Flash</strong></span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {apiHealthStatus === 'checking' && (
+                  <span className="flex items-center gap-1 text-amber-400">
+                    <Loader2 className="w-3 h-3 animate-spin" /> Verificando API...
+                  </span>
+                )}
+                {apiHealthStatus === 'online' && (
+                  <span className="flex items-center gap-1 text-emerald-400 font-bold">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> IA Conectada
+                  </span>
+                )}
+                {apiHealthStatus === 'offline' && (
+                  <span className="flex items-center gap-1 text-rose-400 font-bold" title={apiHealthMessage}>
+                    <WifiOff className="w-3 h-3 text-rose-400" /> Clave API Desconectada
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {detectedInvoiceInfo && (
+              <div className="bg-emerald-500/10 border border-emerald-500/30 px-3 py-2 rounded-lg flex items-center justify-between text-xs text-emerald-400 font-mono">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>{detectedInvoiceInfo}</span>
+                </div>
+                <button 
+                  onClick={() => setDetectedInvoiceInfo('')} 
+                  className="text-emerald-500 hover:text-emerald-300 font-bold px-1.5"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
             
             {/* Dictado Rápido */}
             <div className="flex gap-2">

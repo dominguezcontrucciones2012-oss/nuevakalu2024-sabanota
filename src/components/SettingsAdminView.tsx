@@ -353,17 +353,17 @@ export default function SettingsAdminView({
     onUpdateSettings({
       defaultStartingCash: defaultStartingCash || 0,
       centralVaultBalance: {
-        usd: drawerUsd + bankBalanceUsd,
-        bs: drawerBs + bankBalanceBs,
-        bankBs: bankBalanceBs,
-        bankUsd: bankBalanceUsd
+        usd: Number(drawerUsd) || 0,
+        bs: Number(drawerBs) || 0,
+        bankBs: Number(bankBalanceBs) || 0,
+        bankUsd: Number(bankBalanceUsd) || 0
       },
       sabanotaInitials: {
-        drawerUsd,
-        drawerBs,
-        bankBalanceBs,
-        bankBalanceUsd,
-        totalCapital
+        drawerUsd: Number(drawerUsd) || 0,
+        drawerBs: Number(drawerBs) || 0,
+        bankBalanceBs: Number(bankBalanceBs) || 0,
+        bankBalanceUsd: Number(bankBalanceUsd) || 0,
+        totalCapital: Number(totalCapital) || 0
       }
     });
     onAddNotification('Saldos iniciales fijados y Bóveda actualizada.', 'success');

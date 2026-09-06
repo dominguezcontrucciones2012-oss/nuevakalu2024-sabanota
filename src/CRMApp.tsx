@@ -112,7 +112,14 @@ export default function App() {
     const saved = localStorage.getItem('kalu_sales_history');
     return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
   });
-  const [users, setUsers] = useState<UserIdentity[]>(INITIAL_USERS);
+  const [users, setUsers] = useState<UserIdentity[]>(() => {
+    try {
+      const saved = localStorage.getItem('kalu_users');
+      return saved ? JSON.parse(saved) : INITIAL_USERS;
+    } catch {
+      return INITIAL_USERS;
+    }
+  });
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>(INITIAL_PAYMENT_METHODS);
   const [activities, setActivities] = useState<ActivityStream[]>(() => {
     const saved = localStorage.getItem('kalu_activities');
@@ -219,12 +226,11 @@ export default function App() {
         
         // MIGRATION LOGIC: If centralVaultBalance is empty but we have sabanotaInitials
         if (!generalDoc.centralVaultBalance && generalDoc.sabanotaInitials) {
-          const exchangeRate = generalDoc.exchangeRate || 45;
           newSettings.centralVaultBalance = {
             usd: Number(generalDoc.sabanotaInitials.drawerUsd) || 0,
             bs: Number(generalDoc.sabanotaInitials.drawerBs) || 0,
             bankBs: Number(generalDoc.sabanotaInitials.bankBalanceBs) || 0,
-            bankUsd: Number(generalDoc.sabanotaInitials.bankBalanceUsd) || (Number(generalDoc.sabanotaInitials.bankBalanceBs || 0) / exchangeRate)
+            bankUsd: Number(generalDoc.sabanotaInitials.bankBalanceUsd) || 0
           };
         }
         setSettings(newSettings);
@@ -297,6 +303,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('kalu_cheese_trips', JSON.stringify(cheeseTrips));
   }, [cheeseTrips]);
+
+  useEffect(() => {
+    localStorage.setItem('kalu_users', JSON.stringify(users));
+  }, [users]);
 
   // Help alert helper
   const addNotification = (message: string, type: 'success' | 'info' | 'warning' = 'info') => {
@@ -527,6 +537,69 @@ export default function App() {
     setTotalSalesRevenue((prev) => prev + saleTotal);
     setTotalSalesCount((prev) => prev + 1);
 
+    // Actualizar Bóveda Central en tiempo real según el desglose de pago
+    const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+    let deltaUsd = 0;
+    let deltaBs = 0;
+    let deltaBankBs = 0;
+    let deltaBankUsd = 0;
+
+    const rate = bcvRateAtSettlement || settings.exchangeRate || 42.5;
+
+    if (addedPayments && Array.isArray(addedPayments) && addedPayments.length > 0) {
+      addedPayments.forEach((p: any) => {
+        const m = (p.method || '').toLowerCase().trim();
+        const amt = Number(p.amount) || 0;
+        const orig = Number(p.originalAmount) || 0;
+
+        if (m.includes('efectivo') && (m.includes('$') || m.includes('usd') || (!m.includes('bs') && !m.includes('ves')))) {
+          deltaUsd += amt;
+        } else if (m.includes('efectivo') && (m.includes('bs') || m.includes('ves'))) {
+          deltaBs += orig || (amt * rate);
+        } else if (m.includes('movil') || m.includes('transfer') || m.includes('tarjeta') || m.includes('punto') || m.includes('bio')) {
+          deltaBankBs += orig || (amt * rate);
+        } else {
+          deltaBankUsd += amt;
+        }
+      });
+    } else {
+      // Pago simple
+      const pm = (paymentMethodType || 'Efectivo').toLowerCase().trim();
+      if (pm.includes('efectivo') && (pm.includes('$') || pm.includes('usd') || (!pm.includes('bs') && !pm.includes('ves')))) {
+        deltaUsd += amountPaid;
+      } else if (pm.includes('efectivo') && (pm.includes('bs') || pm.includes('ves'))) {
+        deltaBs += amountPaid * rate;
+      } else if (pm.includes('movil') || pm.includes('transfer') || pm.includes('tarjeta') || pm.includes('punto') || pm.includes('bio')) {
+        deltaBankBs += amountPaid * rate;
+      } else if (!pm.includes('crédito') && !pm.includes('fiado') && !pm.includes('libreta')) {
+        deltaUsd += amountPaid;
+      }
+    }
+
+    // Descontar cambio/vuelto entregado
+    if (changeAmount && changeAmount > 0) {
+      if (changeCurrency === 'USD') {
+        deltaUsd -= changeAmount;
+      } else if (changeCurrency === 'BS' || changeCurrency === 'PAGO_MOVIL') {
+        deltaBs -= (changeBs || (changeAmount * rate));
+      } else if (changeCurrency === 'MIXED' && mixedChange) {
+        deltaUsd -= (Number(mixedChange.usd) || 0);
+        deltaBs -= (Number(mixedChange.bs) || 0);
+        deltaBankBs -= (Number(mixedChange.mobile) || 0);
+      } else {
+        deltaUsd -= changeAmount;
+      }
+    }
+
+    const updatedVault = {
+      usd: currentVault.usd + deltaUsd,
+      bs: currentVault.bs + deltaBs,
+      bankBs: currentVault.bankBs + deltaBankBs,
+      bankUsd: currentVault.bankUsd + deltaBankUsd
+    };
+
+    handleUpdateSettings({ centralVaultBalance: updatedVault });
+
     // Determine the precise payment method string
     let finalPaymentMethod = paymentMethodType || 'Efectivo';
     if (debtAmount > 0 && paidAmount === 0) {
@@ -608,20 +681,32 @@ export default function App() {
         setCheeseProducts(prev => prev.map(prod => prod.id === item.id ? { ...prod, stockKg: prod.stockKg + item.quantity } : prod));
         try {
           // Import increment if not present, but it's already used below
-                    await updateLocalDoc('products', item.id, { stockKg: (cheeseProducts.find(p => p.id === item.id)?.stockKg || 0) + item.quantity });
+          await updateLocalDoc('products', item.id, { stockKg: (cheeseProducts.find(p => p.id === item.id)?.stockKg || 0) + item.quantity });
         } catch (e) {
           console.error('Failed to return stock', e);
         }
       }
     });
 
-    // 4. Update financials
+    // 4. Update financials & vault
     const tx = transactions.find(t => t.id === transactionId);
     if (tx) {
       setBalance(prev => prev - (tx.amount || 0));
       setTotalSalesRevenue(prev => prev - (tx.amount || 0));
       setTotalSalesCount(prev => prev - 1);
       
+      const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+      const pm = (tx.paymentMethod || '').toLowerCase();
+      let newVault = { ...currentVault };
+      if (pm.includes('bs') || pm.includes('ves')) {
+        newVault.bs -= ((tx.amount || 0) * (tx.bcvRateAtSettlement || settings.exchangeRate || 42.5));
+      } else if (pm.includes('movil') || pm.includes('transfer') || pm.includes('tarjeta') || pm.includes('punto')) {
+        newVault.bankBs -= ((tx.amount || 0) * (tx.bcvRateAtSettlement || settings.exchangeRate || 42.5));
+      } else {
+        newVault.usd -= (tx.amount || 0);
+      }
+      handleUpdateSettings({ centralVaultBalance: newVault });
+
       const newAct: ActivityStream = {
         id: `act-void-${Date.now()}`,
         title: 'Venta Anulada',
@@ -1185,6 +1270,30 @@ export default function App() {
     // Increment business balance
     setBalance((prev) => prev + amount);
 
+    // Actualizar Bóveda Central con el dinero del abono
+    const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+    const rate = settings?.exchangeRate || 42.5;
+    let newVault = { ...currentVault };
+
+    if (paymentBreakdown) {
+      if (paymentBreakdown.cashUsd) newVault.usd += Number(paymentBreakdown.cashUsd);
+      if (paymentBreakdown.cashBs) newVault.bs += Number(paymentBreakdown.cashBs);
+      if (paymentBreakdown.pagoMovilBs) newVault.bankBs += Number(paymentBreakdown.pagoMovilBs);
+      if (paymentBreakdown.puntoBs) newVault.bankBs += Number(paymentBreakdown.puntoBs);
+      if (paymentBreakdown.biopagoBs) newVault.bankBs += Number(paymentBreakdown.biopagoBs);
+    } else {
+      const pm = (paymentMethod || 'Efectivo').toLowerCase();
+      if (pm.includes('bs') || pm.includes('ves')) {
+        newVault.bs += (amount * rate);
+      } else if (pm.includes('movil') || pm.includes('transfer') || pm.includes('tarjeta') || pm.includes('punto') || pm.includes('bio')) {
+        newVault.bankBs += (amount * rate);
+      } else {
+        newVault.usd += amount;
+      }
+    }
+
+    handleUpdateSettings({ centralVaultBalance: newVault });
+
     // Create a transaction record
     const newTx: Transaction = {
       id: `TX-${Date.now().toString().slice(-4)}`,
@@ -1324,6 +1433,17 @@ export default function App() {
       console.error('Error al actualizar balance proveedor en DB:', err);
     }
 
+    const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+    const rate = settings?.exchangeRate || 42.5;
+    let newVault = { ...currentVault };
+    const src = (paymentSource || '').toLowerCase();
+    if (currency === 'VES' || src.includes('bs') || src.includes('pago móvil') || src.includes('pago movil') || src.includes('transferencia')) {
+      newVault.bankBs -= (amount * (currency === 'USD' ? rate : 1));
+    } else {
+      newVault.usd -= amount;
+    }
+    handleUpdateSettings({ centralVaultBalance: newVault });
+
     const newTx: Transaction = {
       id: `TX-${Date.now().toString().slice(-4)}`,
       entity: selectedSup.name,
@@ -1365,6 +1485,17 @@ export default function App() {
     } catch (err) {
       console.error('Error al actualizar deuda tienda proveedor en DB:', err);
     }
+
+    const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+    const rate = settings?.exchangeRate || 42.5;
+    let newVault = { ...currentVault };
+    const m = (method || '').toLowerCase();
+    if (currency === 'VES' || m.includes('bs') || m.includes('pago móvil') || m.includes('pago movil') || m.includes('transferencia')) {
+      newVault.bankBs += (amount * (currency === 'USD' ? rate : 1));
+    } else {
+      newVault.usd += amount;
+    }
+    handleUpdateSettings({ centralVaultBalance: newVault });
 
     const newTx: Transaction = {
       id: `TX-${Date.now().toString().slice(-4)}`,
@@ -1750,6 +1881,7 @@ export default function App() {
               cheeseTrips={cheeseTrips}
               cheeseProducts={cheeseProducts}
               clients={clients}
+              suppliers={suppliers}
               transactions={transactions}
               onCreateTrip={handleCreateTrip}
               onUpdateTrip={handleUpdateTrip}

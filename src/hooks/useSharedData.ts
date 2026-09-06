@@ -149,7 +149,14 @@ export function useSharedData(): SharedDataState {
   });
 
   const [complaints, setComplaints] = useState<CustomerComplaint[]>(INITIAL_COMPLAINTS);
-  const [users, setUsers] = useState<UserIdentity[]>(INITIAL_USERS);
+  const [users, setUsers] = useState<UserIdentity[]>(() => {
+    try {
+      const saved = localStorage.getItem('kalu_users');
+      return saved ? JSON.parse(saved) : INITIAL_USERS;
+    } catch {
+      return INITIAL_USERS;
+    }
+  });
   const [paymentMethods] = useState<PaymentMethod[]>(INITIAL_PAYMENT_METHODS);
   const [activities, setActivities] = useState<ActivityStream[]>(() => {
     try {
@@ -256,14 +263,11 @@ export function useSharedData(): SharedDataState {
       if (generalDoc) {
         let newSettings = { ...DEFAULT_SETTINGS, ...generalDoc } as BusinessSettings;
         if (!generalDoc.centralVaultBalance && generalDoc.sabanotaInitials) {
-          const exchangeRate = generalDoc.exchangeRate || 45;
           newSettings.centralVaultBalance = {
             usd: Number(generalDoc.sabanotaInitials.drawerUsd) || 0,
             bs: Number(generalDoc.sabanotaInitials.drawerBs) || 0,
             bankBs: Number(generalDoc.sabanotaInitials.bankBalanceBs) || 0,
-            bankUsd:
-              Number(generalDoc.sabanotaInitials.bankBalanceUsd) ||
-              (Number(generalDoc.sabanotaInitials.bankBalanceBs || 0) / exchangeRate)
+            bankUsd: Number(generalDoc.sabanotaInitials.bankBalanceUsd) || 0
           };
         }
         setSettings(newSettings);

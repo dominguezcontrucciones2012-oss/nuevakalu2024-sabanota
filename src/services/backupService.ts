@@ -76,6 +76,8 @@ export async function resetAccountingData(): Promise<void> {
       'invoices',
       'shift_transactions',
       'shift_sessions',
+      'cashClosings',
+      'sales',
       'expenses',
       'payments',
       'bills',

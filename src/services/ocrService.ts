@@ -20,13 +20,13 @@ export interface InvoiceData {
 export async function extractInvoiceData(file: File, bcvRate: number, inventoryNames: string[] = []): Promise<InvoiceData> {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   
-  if (!apiKey) {
-    throw new Error('API Key de Gemini no configurada (VITE_GEMINI_API_KEY).');
+  if (!apiKey || apiKey.includes('REPLACE_WITH_GEMINI_KEY')) {
+    throw new Error('API Key de Gemini no configurada en el archivo .env (VITE_GEMINI_API_KEY).');
   }
 
   // Convert file to base64
   const base64Data = await fileToBase64(file);
-  const mimeType = file.type;
+  const mimeType = file.type || 'image/jpeg';
 
   const promptText = `
     Eres un asistente experto en contabilidad. Extrae los datos de esta factura de compra en formato JSON estricto.
@@ -45,7 +45,7 @@ export async function extractInvoiceData(file: File, bcvRate: number, inventoryN
     
     ESTRUCTURA JSON REQUERIDA:
     {
-      "proveedor": { "nombre": "Nombre de la empresa", "rif": "J-12345678" },
+      "proveedor": { "nombre": "Nombre de la empresa o persona", "rif": "J-12345678" },
       "factura": "Número de factura o control",
       "fecha": "YYYY-MM-DD",
       "moneda_detectada": "USD" o "BS",
@@ -98,7 +98,7 @@ export async function extractInvoiceData(file: File, bcvRate: number, inventoryN
         if (response.status === 503 || response.status === 429 || response.status >= 500) {
           throw new Error(`RETRY_ERROR_${response.status}`);
         }
-        throw new Error(`FATAL: Error de Google (HTTP ${response.status}): Revisa la consola o tu VPN.`);
+        throw new Error(`FATAL: Error de Google (HTTP ${response.status}): Revisa tu conexión o API Key.`);
       }
 
       const data = await response.json();
@@ -131,6 +131,183 @@ export async function extractInvoiceData(file: File, bcvRate: number, inventoryN
   }
   
   throw new Error('Fallo inesperado en el flujo de OCR.');
+}
+
+export async function extractDictationData(text: string, bcvRate: number = 45, inventoryNames: string[] = []): Promise<ExtractedInvoiceItem[]> {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  
+  if (!apiKey || apiKey.includes('REPLACE_WITH_GEMINI_KEY')) {
+    throw new Error('API Key de Gemini no configurada en el archivo .env (VITE_GEMINI_API_KEY).');
+  }
+
+  const promptText = `
+    Analiza este texto dictado de una compra/factura: "${text}".
+    Extrae los artículos comprados, cantidades y precios/costos en formato JSON estricto.
+
+    REGLAS:
+    1. Responde ÚNICAMENTE con un JSON válido.
+    2. UNIDADES: Normaliza a 'Und', 'Kg' o 'Bulto'.
+    3. MONEDA: Si el dictado menciona Bolívares o Bs, convierte a USD dividiendo entre ${bcvRate}.
+    4. CATÁLOGO ACTUAL: ${inventoryNames.length > 0 ? inventoryNames.join(", ") : "Vacío"}.
+       Empareja con el catálogo si coincide.
+    
+    ESTRUCTURA JSON:
+    {
+      "items": [
+        { "nombre": "Nombre del producto", "cantidad": 0, "unidad": "Und", "costo_unitario": 0, "costo_total": 0 }
+      ]
+    }
+  `;
+
+  const payload = {
+    contents: [
+      {
+        parts: [{ text: promptText }]
+      }
+    ],
+    generationConfig: {
+      temperature: 0.1,
+      response_mime_type: "application/json"
+    }
+  };
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Error en API de Gemini: HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (data.candidates && data.candidates.length > 0) {
+    let textResponse = data.candidates[0].content.parts[0].text;
+    textResponse = textResponse.replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
+    const parsed = JSON.parse(textResponse);
+    return parsed.items || [];
+  }
+  return [];
+}
+
+export interface StructuredVoiceNote {
+  title: string;
+  category: 'gasto' | 'ingreso' | 'compra' | 'deuda' | 'nota_general';
+  amountUsd?: number;
+  amountBs?: number;
+  paymentMethod?: 'Efectivo' | 'Transferencia' | 'Pago Móvil' | 'Punto' | 'Dólares';
+  summary: string;
+  suggestedAction?: string;
+}
+
+export async function structureVoiceNoteWithAI(text: string, bcvRate: number = 45): Promise<StructuredVoiceNote> {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  
+  if (!apiKey || apiKey.includes('REPLACE_WITH_GEMINI_KEY')) {
+    return {
+      title: 'Nota de Voz',
+      category: 'nota_general',
+      summary: text,
+      suggestedAction: 'Revisar manualmente'
+    };
+  }
+
+  const promptText = `
+    Analiza esta nota de voz contable de la Quesería Kalu: "${text}".
+    Tasa BCV de referencia: ${bcvRate} Bs/$.
+
+    Tu tarea es estructurar y categorizar la nota en JSON estricto.
+    
+    REGLAS:
+    1. Si menciona compras o gastos, extrae el monto. Si está en Bs, calcula el aproximado en USD.
+    2. Categorías permitidas: 'gasto', 'ingreso', 'compra', 'deuda', 'nota_general'.
+    3. Si menciona método de pago ('efectivo', 'pago móvil', 'transferencia', 'dólares'), identifícalo.
+    4. Genera un título corto y un resumen claro de 1 línea.
+
+    ESTRUCTURA JSON REQUERIDA:
+    {
+      "title": "Título corto y descriptivo",
+      "category": "gasto" | "ingreso" | "compra" | "deuda" | "nota_general",
+      "amountUsd": 0,
+      "amountBs": 0,
+      "paymentMethod": "Efectivo" | "Transferencia" | "Pago Móvil" | "Punto" | "Dólares",
+      "summary": "Resumen ejecutivo de la operación",
+      "suggestedAction": "Acción recomendada para el CRM"
+    }
+  `;
+
+  const payload = {
+    contents: [
+      { parts: [{ text: promptText }] }
+    ],
+    generationConfig: {
+      temperature: 0.1,
+      response_mime_type: "application/json"
+    }
+  };
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      return {
+        title: 'Nota de Voz',
+        category: 'nota_general',
+        summary: text,
+        suggestedAction: 'Sin conexión IA'
+      };
+    }
+
+    const data = await response.json();
+    if (data.candidates && data.candidates.length > 0) {
+      let textResponse = data.candidates[0].content.parts[0].text;
+      textResponse = textResponse.replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
+      const parsed = JSON.parse(textResponse);
+      return parsed;
+    }
+  } catch (e) {
+    console.error("Error estructurando nota con IA:", e);
+  }
+
+  return {
+    title: 'Nota de Voz',
+    category: 'nota_general',
+    summary: text,
+    suggestedAction: 'Revisión manual'
+  };
+}
+
+export async function pingGeminiAPI(): Promise<{ ok: boolean; message: string }> {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey || apiKey.includes('REPLACE_WITH_GEMINI_KEY')) {
+    return { ok: false, message: 'Falta configurar VITE_GEMINI_API_KEY en el archivo .env' };
+  }
+
+  try {
+    const payload = {
+      contents: [{ parts: [{ text: 'ping' }] }],
+      generationConfig: { maxOutputTokens: 5 }
+    };
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return { ok: false, message: `Error de API (HTTP ${response.status}): ${errText.slice(0, 100)}` };
+    }
+
+    return { ok: true, message: 'Conexión con Gemini IA activa y verificada.' };
+  } catch (err: any) {
+    return { ok: false, message: `Error de red o conexión: ${err.message}` };
+  }
 }
 
 function fileToBase64(file: File): Promise<string> {

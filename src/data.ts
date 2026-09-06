@@ -21,8 +21,6 @@ import {
 
 export const INITIAL_TRANSACTIONS: Transaction[] = [];
 
-export const INITIAL_USERS: UserIdentity[] = [];
-
 export const INITIAL_PAYMENT_METHODS: PaymentMethod[] = [
   {
     id: 'pm-1',
@@ -63,6 +61,7 @@ import migratedData from './migrated_data.json';
 if (!localStorage.getItem('kalu_inventory')) {
   localStorage.setItem('kalu_inventory', JSON.stringify(migratedData.products));
 }
+
 if (!localStorage.getItem('kalu_clients')) {
   localStorage.setItem('kalu_clients', JSON.stringify(migratedData.clients));
 }
@@ -71,8 +70,15 @@ if (!localStorage.getItem('kalu_suppliers')) {
   localStorage.setItem('kalu_suppliers', JSON.stringify(migratedData.suppliers || []));
 }
 
+if (!localStorage.getItem('kalu_users')) {
+  localStorage.setItem('kalu_users', JSON.stringify([]));
+}
+
 // Cheese-Specific Preloaded Data
 export const INITIAL_CHEESE_PRODUCTS: CheeseProduct[] = JSON.parse(localStorage.getItem('kalu_inventory') || '[]');
+
+export const INITIAL_USERS: UserIdentity[] = JSON.parse(localStorage.getItem('kalu_users') || '[]');
+
 
 export const INITIAL_CHEESE_BATCHES: CheeseLedgerBatch[] = [];
 
