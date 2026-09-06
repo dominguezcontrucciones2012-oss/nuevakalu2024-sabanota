@@ -30,9 +30,9 @@ async function deploy() {
 
       echo "=== [4/5] Reconstruyendo y levantando contenedores Docker ==="
       cd vps-deployment
+      docker-compose down || true
       docker-compose build api
-      docker rm -f mi-web-api mi-web-nginx || true
-      docker-compose up -d --remove-orphans
+      docker-compose up -d
 
       echo "=== [5/5] Verificando estado de contenedores y puertos ==="
       docker ps
