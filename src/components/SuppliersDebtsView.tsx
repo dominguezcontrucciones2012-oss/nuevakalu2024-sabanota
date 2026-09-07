@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { fetchCollection, onCollectionSnapshot } from '../services/localApi';
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc } from '../services/localApi';
 import { SupplierProfile, AccountBill, Transaction, CheeseProduct } from '../types';
 import { Truck, Store, Phone, Plus, BadgeAlert, FileCheck, CheckCircle, ExternalLink, Calendar, Eye, Wallet, CreditCard, Inbox, X, Search, Trash2 } from 'lucide-react';
 import { parseSafeDecimal } from '../utils';
@@ -489,74 +489,149 @@ export default function SuppliersDebtsView({
               String(s.id || '').toLowerCase().includes(term)
             );
           })
-          .map((s) => (
-          <div key={s.id} className="bg-editorial-card border border-editorial-border rounded p-4 flex flex-col justify-between hover:border-editorial-text-primary/40 transition-all duration-300">
-            <div className="space-y-2">
-              <div className="flex justify-between items-start">
-                <div className="w-10 h-10 rounded bg-editorial-text-primary/10 text-editorial-text-primary flex items-center justify-center font-serif text-lg font-bold border border-editorial-text-primary/30">
-                  {String(s.name || 'Sin Nombre').slice(0, 2).toUpperCase()}
-                </div>
-                <span className="font-mono text-[9px] text-editorial-text-muted/60">ID PROV: {String(s.id || '')}</span>
-                <button onClick={() => openEditModal(s)} className="text-[10px] text-amber-500 hover:text-amber-400">✏️ Editar</button>
-              </div>
+          .map((s) => {
+            // Calcular saldo dinámico para trabajadores basado en sus transacciones en tiempo real
+            let displayedPayable = Number(s.balanceOwed) || 0;
+            let displayedDebt = Number(s.storeDebt) || 0;
 
-              <div className="space-y-1">
-                <h4 className="font-serif text-xl font-bold text-editorial-text-primary tracking-tight leading-tight">{String(s.name || 'Sin Nombre')}</h4>
-                <p className="text-xs text-editorial-text-muted font-sans mt-1">
-                  <span className="text-[10px] font-mono uppercase text-editorial-text-muted/60 block mt-1.5">Vendedor:</span>
-                  {s.contactName}
-                </p>
-                <p className="text-xs text-editorial-text-muted leading-tight font-sans">
-                  <span className="text-[10px] font-mono uppercase text-editorial-text-muted/60 block mt-1.5">Ubicación:</span>
-                  {s.address}
-                </p>
-              </div>
+            if (s.isEmployee) {
+              const supNameClean = (s.name || '').trim().toLowerCase();
+              const workerTxs = transactions.filter((d: any) => {
+                if (!d) return false;
+                const entityMatch = d.entity && String(d.entity).trim().toLowerCase() === supNameClean;
+                const supplierIdMatch = d.supplierId && String(d.supplierId) === String(s.id);
+                const entityIdMatch = d.entityId && String(d.entityId) === String(s.id);
+                return entityMatch || supplierIdMatch || entityIdMatch;
+              });
 
-              {s.rfc && (
-                <div className="pt-2">
-                  <span className="text-[9px] font-mono uppercase text-editorial-text-muted/60">RIF / Cédula:</span>
-                  <p className="text-xs font-mono text-editorial-text-primary mt-0.5">{s.rfc}</p>
-                </div>
-              )}
-              {(s.phone || s.birthday) && (
-                <div className="pt-2 border-t border-editorial-border/30 mt-2 grid grid-cols-2 gap-2">
-                  {s.phone && (
-                    <div>
-                      <span className="text-[9px] font-mono uppercase text-editorial-text-muted/60">Teléfono:</span>
-                      <p className="text-[11px] font-mono mt-0.5"><a href={`tel:${s.phone}`} className="text-amber-500 hover:text-amber-400">{s.phone}</a></p>
+              if (workerTxs.length > 0) {
+                const getTxTime = (tx: any): number => {
+                  if (!tx) return 0;
+                  if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+                  if (tx.timestamp) {
+                    if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+                    if (typeof tx.timestamp === 'number') return tx.timestamp;
+                  }
+                  if (tx.id && typeof tx.id === 'string') {
+                    const parts = tx.id.split('-');
+                    for (const part of parts) {
+                      if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+                    }
+                  }
+                  return parseCustomDate(tx.date || '') || 0;
+                };
+
+                const asc = [...workerTxs].sort((a, b) => getTxTime(a) - getTxTime(b));
+                let running = 0;
+                asc.forEach(tx => {
+                  const isLiquidation = (tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'));
+                  const isBodegaDebt = !isLiquidation && (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda')));
+                  const isPayroll = !isLiquidation && (tx.category === 'gastos' || tx.category === 'compras' || (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))));
+                  
+                  if (isLiquidation) {
+                    running = 0;
+                  } else if (isPayroll) {
+                    running += (Number(tx.amount) || 0);
+                  } else if (isBodegaDebt) {
+                    running -= (Number(tx.amount) || 0);
+                  } else if (tx.isIncome) {
+                    running += (Number(tx.amount) || 0);
+                  } else {
+                    running -= (Number(tx.amount) || 0);
+                  }
+                });
+
+                // Cruce bidireccional neto:
+                if (running >= 0) {
+                  displayedPayable = running;
+                  displayedDebt = 0;
+                } else {
+                  displayedPayable = 0;
+                  displayedDebt = Math.abs(running);
+                }
+              } else {
+                // Si no hay transacciones pero tiene balanceOwed y storeDebt fijos
+                const net = (Number(s.balanceOwed) || 0) - (Number(s.storeDebt) || 0);
+                if (net >= 0) {
+                  displayedPayable = net;
+                  displayedDebt = 0;
+                } else {
+                  displayedPayable = 0;
+                  displayedDebt = Math.abs(net);
+                }
+              }
+            }
+
+            return (
+              <div key={s.id} className="bg-editorial-card border border-editorial-border rounded p-4 flex flex-col justify-between hover:border-editorial-text-primary/40 transition-all duration-300">
+                <div className="space-y-2">
+                  <div className="flex justify-between items-start">
+                    <div className="w-10 h-10 rounded bg-editorial-text-primary/10 text-editorial-text-primary flex items-center justify-center font-serif text-lg font-bold border border-editorial-text-primary/30">
+                      {String(s.name || 'Sin Nombre').slice(0, 2).toUpperCase()}
+                    </div>
+                    <span className="font-mono text-[9px] text-editorial-text-muted/60">ID PROV: {String(s.id || '')}</span>
+                    <button onClick={() => openEditModal(s)} className="text-[10px] text-amber-500 hover:text-amber-400">✏️ Editar</button>
+                  </div>
+
+                  <div className="space-y-1">
+                    <h4 className="font-serif text-xl font-bold text-editorial-text-primary tracking-tight leading-tight">{String(s.name || 'Sin Nombre')}</h4>
+                    <p className="text-xs text-editorial-text-muted font-sans mt-1">
+                      <span className="text-[10px] font-mono uppercase text-editorial-text-muted/60 block mt-1.5">Vendedor:</span>
+                      {s.contactName}
+                    </p>
+                    <p className="text-xs text-editorial-text-muted leading-tight font-sans">
+                      <span className="text-[10px] font-mono uppercase text-editorial-text-muted/60 block mt-1.5">Ubicación:</span>
+                      {s.address}
+                    </p>
+                  </div>
+
+                  {s.rfc && (
+                    <div className="pt-2">
+                      <span className="text-[9px] font-mono uppercase text-editorial-text-muted/60">RIF / Cédula:</span>
+                      <p className="text-xs font-mono text-editorial-text-primary mt-0.5">{s.rfc}</p>
                     </div>
                   )}
-                  {s.birthday && (
-                    <div>
-                      <span className="text-[9px] font-mono uppercase text-editorial-text-muted/60">Cumpleaños:</span>
-                      <p className="text-[11px] font-mono mt-0.5 text-editorial-text-primary">{s.birthday}</p>
+                  {(s.phone || s.birthday) && (
+                    <div className="pt-2 border-t border-editorial-border/30 mt-2 grid grid-cols-2 gap-2">
+                      {s.phone && (
+                        <div>
+                          <span className="text-[9px] font-mono uppercase text-editorial-text-muted/60">Teléfono:</span>
+                          <p className="text-[11px] font-mono mt-0.5"><a href={`tel:${s.phone}`} className="text-amber-500 hover:text-amber-400">{s.phone}</a></p>
+                        </div>
+                      )}
+                      {s.birthday && (
+                        <div>
+                          <span className="text-[9px] font-mono uppercase text-editorial-text-muted/60">Cumpleaños:</span>
+                          <p className="text-[11px] font-mono mt-0.5 text-editorial-text-primary">{s.birthday}</p>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-              )}
-            </div>
 
-            <div className="mt-3 pt-3 border-t border-editorial-border/60 space-y-2">
-              <div className="flex justify-between items-center bg-editorial-bg border border-editorial-border/60 rounded p-2">
-                <div>
-                  <span className="text-[9px] font-mono uppercase text-editorial-text-muted block leading-none mb-1">Cuentas por Pagar</span>
-                  <span className={`font-mono font-bold text-xs ${s.balanceOwed > 0 ? 'text-amber-500' : 'text-editorial-text-muted/60'}`}>
-                    $ {(s.balanceOwed || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
-                  </span>
-                  <span className="block text-[9px] font-mono text-editorial-text-muted/80 mt-0.5">
-                    Bs {(s.balanceOwed * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
-                </div>
-                <div className="text-right">
-                  <span className="text-[9px] font-mono uppercase text-editorial-text-muted block leading-none mb-1">A cobrar</span>
-                  <span className={`font-mono font-bold text-xs ${(s.storeDebt || 0) > 0 ? 'text-rose-400 font-extrabold' : 'text-editorial-text-muted/60'}`}>
-                    $ {(s.storeDebt || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
-                  </span>
-                  <span className="block text-[9px] font-mono text-editorial-text-muted/80 mt-0.5">
-                    Bs {((s.storeDebt || 0) * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
-                </div>
-              </div>
+                <div className="mt-3 pt-3 border-t border-editorial-border/60 space-y-2">
+                  <div className="flex justify-between items-center bg-editorial-bg border border-editorial-border/60 rounded p-2">
+                    <div>
+                      <span className="text-[9px] font-mono uppercase text-editorial-text-muted block leading-none mb-1">
+                        {s.isEmployee ? 'Sueldo Acumulado' : 'Cuentas por Pagar'}
+                      </span>
+                      <span className={`font-mono font-bold text-xs ${displayedPayable > 0 ? 'text-amber-500 font-extrabold' : 'text-editorial-text-muted/60'}`}>
+                        $ {displayedPayable.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                      </span>
+                      <span className="block text-[9px] font-mono text-editorial-text-muted/80 mt-0.5">
+                        Bs {(displayedPayable * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[9px] font-mono uppercase text-editorial-text-muted block leading-none mb-1">A cobrar</span>
+                      <span className={`font-mono font-bold text-xs ${displayedDebt > 0 ? 'text-rose-400 font-extrabold' : 'text-editorial-text-muted/60'}`}>
+                        $ {displayedDebt.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                      </span>
+                      <span className="block text-[9px] font-mono text-editorial-text-muted/80 mt-0.5">
+                        Bs {(displayedDebt * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  </div>
 
               <div className="grid grid-cols-2 gap-1.5 mt-2 pt-2 border-t border-editorial-border/30">
                 <button
@@ -582,13 +657,15 @@ export default function SuppliersDebtsView({
                 >
                   <Wallet className="w-3.5 h-3.5" /> Pagar a Él
                 </button>
-                <button
-                  type="button"
-                  onClick={() => openModal('abonar', s.id)}
-                  className="py-1.5 px-2 bg-editorial-bg hover:bg-editorial-card border border-editorial-border text-[9px] font-mono font-bold uppercase rounded flex items-center justify-center gap-1.5 cursor-pointer transition-all text-editorial-text-primary"
-                >
-                  <CreditCard className="w-3.5 h-3.5" /> Movimiento
-                </button>
+                {!s.isEmployee && (
+                  <button
+                    type="button"
+                    onClick={() => openModal('abonar', s.id)}
+                    className="py-1.5 px-2 bg-editorial-bg hover:bg-editorial-card border border-editorial-border text-[9px] font-mono font-bold uppercase rounded flex items-center justify-center gap-1.5 cursor-pointer transition-all text-editorial-text-primary"
+                  >
+                    <CreditCard className="w-3.5 h-3.5" /> Movimiento
+                  </button>
+                )}
               </div>
             </div>
 
@@ -600,8 +677,9 @@ export default function SuppliersDebtsView({
               </div>
             </div>
           </div>
-        ))}
-      </div>
+        );
+      })}
+    </div>
 
       {/* Panel Lateral (Drawer) de Libreta */}
       {activeModal && selectedSupplierId && (
@@ -645,17 +723,50 @@ export default function SuppliersDebtsView({
                 const ascendingTx = [...supTxRaw].sort((a, b) => getTxTimeMs(a) - getTxTimeMs(b));
 
                 // Calculate progressive running balance
+                // Para trabajadores (isEmployee: true):
+                // - Pago de Nómina / Sueldo (gastos/compras/nómina) SUMA (+) como saldo a favor del trabajador
+                // - Consumos de Bodega / Víveres fiados (COMPRA_POS / credito) RESTA (-) del saldo acumulado
+                //   * Si runningBalance > 0: La empresa le debe sueldo neto al trabajador.
+                //   * Si runningBalance < 0: El trabajador le debe a la bodega de la empresa.
+                //   * Si runningBalance == 0: Cuentas totalmente saldadas.
+                // Para productores (isCheeseProducer: true):
+                // - Entrega de queso (isIncome: true) suma a favor del productor (+)
+                // - Pago recibido (isIncome: false) descuenta (-)
                 let currentBalance = 0;
                 const txWithBalance = ascendingTx.map(tx => {
                   let sum = 0;
                   let rest = 0;
+                  const isEmp = !!s.isEmployee;
                   
-                  if (tx.isIncome) {
-                    sum = tx.amount;
-                    currentBalance += sum;
+                  if (isEmp) {
+                    const isLiquidation = (tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'));
+                    const isBodegaDebt = !isLiquidation && (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda')));
+                    const isPayroll = !isLiquidation && (tx.category === 'gastos' || tx.category === 'compras' || (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))));
+                    
+                    if (isLiquidation) {
+                      rest = Number(tx.amount) > 0 ? Number(tx.amount) : Math.max(0, currentBalance);
+                      currentBalance = 0;
+                    } else if (isPayroll) {
+                      sum = Number(tx.amount) || 0;
+                      currentBalance += sum;
+                    } else if (isBodegaDebt) {
+                      rest = Number(tx.amount) || 0;
+                      currentBalance -= rest;
+                    } else if (tx.isIncome) {
+                      sum = Number(tx.amount) || 0;
+                      currentBalance += sum;
+                    } else {
+                      rest = Number(tx.amount) || 0;
+                      currentBalance -= rest;
+                    }
                   } else {
-                    rest = tx.amount;
-                    currentBalance -= rest;
+                    if (tx.isIncome) {
+                      sum = Number(tx.amount) || 0;
+                      currentBalance += sum;
+                    } else {
+                      rest = Number(tx.amount) || 0;
+                      currentBalance -= rest;
+                    }
                   }
                   
                   return {
@@ -666,8 +777,13 @@ export default function SuppliersDebtsView({
                   };
                 });
 
-                // Display descending (newest first at the top)
-                const filteredTx = txWithBalance.reverse();
+                // Presentar de forma estrictamente descendente (el más reciente siempre primero arriba)
+                const filteredTx = [...txWithBalance].reverse();
+
+                // Para el trabajador, el saldo a su favor consolidado es el saldo progresivo final calculado de su libreta
+                const workerFinalBalance = s.isEmployee 
+                  ? (txWithBalance.length > 0 ? (txWithBalance[txWithBalance.length - 1].runningBalance ?? 0) : ((Number(s.balanceOwed) || 0) - (Number(s.storeDebt) || 0)))
+                  : (Number(s.balanceOwed || 0) - (Number(s.storeDebt) || 0));
 
                 return (
                   <div className="flex flex-col h-full overflow-hidden w-full max-w-full">
@@ -679,12 +795,14 @@ export default function SuppliersDebtsView({
                       </div>
                       <div className="flex items-center gap-4">
                         <div className="bg-neutral-800/80 px-4 py-2 rounded border border-neutral-700/50 text-right">
-                          <span className="text-[10px] font-mono uppercase text-neutral-400 block leading-none mb-1">Saldo Neto Disponible</span>
+                          <span className="text-[10px] font-mono uppercase text-neutral-400 block leading-none mb-1">
+                            {s.isEmployee ? 'Saldo Acumulado a Favor' : 'Saldo Neto Disponible'}
+                          </span>
                           <span className="font-mono font-bold text-sm text-amber-500">
-                            $ {(s.balanceOwed - (s.storeDebt || 0)).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                            $ {workerFinalBalance.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
                           </span>
                           <span className="block text-[9px] font-mono text-neutral-500 mt-0.5">
-                            Bs {((s.balanceOwed - (s.storeDebt || 0)) * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            Bs {(workerFinalBalance * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </span>
                         </div>
                         <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
@@ -741,18 +859,34 @@ export default function SuppliersDebtsView({
                                let catLabel: string = tx.category;
                                let badgeClasses = "inline-block px-2 py-1 rounded bg-neutral-800 border border-neutral-700 text-[10px] font-mono uppercase text-neutral-300";
                                
-                               if (tx.category === 'compras' && tx.isIncome) {
-                                 catLabel = 'Entrega';
-                                 badgeClasses = "inline-block px-2 py-1 rounded bg-yellow-500/20 border border-yellow-500/30 text-[10px] font-mono uppercase text-yellow-500 font-bold tracking-wider";
-                               } else if (tx.category === 'credito' && !tx.isIncome) {
-                                 catLabel = 'COMPRA_POS';
-                                 badgeClasses = "inline-block px-2 py-1 rounded bg-neutral-700/50 border border-neutral-600/50 text-[10px] font-mono uppercase text-neutral-400 tracking-wider";
-                               } else if (tx.category === 'compras' && !tx.isIncome) {
-                                 catLabel = 'Pago';
-                                 badgeClasses = "inline-block px-2 py-1 rounded bg-blue-500/20 border border-blue-500/30 text-[10px] font-mono uppercase text-blue-500 font-bold tracking-wider";
-                               } else if (tx.category === 'credito' && tx.isIncome) {
-                                 catLabel = 'Abono';
-                                 badgeClasses = "inline-block px-2 py-1 rounded bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-mono uppercase text-emerald-500 font-bold tracking-wider";
+                               if (s.isEmployee) {
+                                 if ((tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'))) {
+                                   catLabel = 'Liquidación';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-purple-500/20 border border-purple-500/30 text-[10px] font-mono uppercase text-purple-400 font-bold tracking-wider";
+                                 } else if (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))) {
+                                   catLabel = 'Nómina';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-amber-500/20 border border-amber-500/30 text-[10px] font-mono uppercase text-amber-400 font-bold tracking-wider";
+                                 } else if (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda'))) {
+                                   catLabel = 'Bodega/Víveres';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-rose-500/20 border border-rose-500/30 text-[10px] font-mono uppercase text-rose-400 font-bold tracking-wider";
+                                 } else if (tx.category === 'gastos' || tx.category === 'compras') {
+                                   catLabel = 'Pago';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-blue-500/20 border border-blue-500/30 text-[10px] font-mono uppercase text-blue-400 font-bold tracking-wider";
+                                 }
+                               } else {
+                                 if (tx.category === 'compras' && tx.isIncome) {
+                                   catLabel = 'Entrega';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-yellow-500/20 border border-yellow-500/30 text-[10px] font-mono uppercase text-yellow-500 font-bold tracking-wider";
+                                 } else if (tx.category === 'credito' && !tx.isIncome) {
+                                   catLabel = 'COMPRA_POS';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-neutral-700/50 border border-neutral-600/50 text-[10px] font-mono uppercase text-neutral-400 tracking-wider";
+                                 } else if (tx.category === 'compras' && !tx.isIncome) {
+                                   catLabel = 'Pago';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-blue-500/20 border border-blue-500/30 text-[10px] font-mono uppercase text-blue-500 font-bold tracking-wider";
+                                 } else if (tx.category === 'credito' && tx.isIncome) {
+                                   catLabel = 'Abono';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-mono uppercase text-emerald-500 font-bold tracking-wider";
+                                 }
                                }
 
                                return (
@@ -963,6 +1097,133 @@ export default function SuppliersDebtsView({
               }
 
               if (activeModal === 'pagar') {
+                if (s.isEmployee) {
+                  // Calcular el saldo real acumulado a favor del trabajador a liquidar
+                  const supNameClean = (s.name || '').trim().toLowerCase();
+                  const workerTxs = transactions.filter((d: any) => {
+                    if (!d) return false;
+                    const entityMatch = d.entity && String(d.entity).trim().toLowerCase() === supNameClean;
+                    const supplierIdMatch = d.supplierId && String(d.supplierId) === String(s.id);
+                    const entityIdMatch = d.entityId && String(d.entityId) === String(s.id);
+                    return entityMatch || supplierIdMatch || entityIdMatch;
+                  });
+
+                  let workerCalculatedSalary = Number(s.balanceOwed) || 0;
+                  if (workerTxs.length > 0) {
+                    const getTxTime = (tx: any): number => {
+                      if (!tx) return 0;
+                      if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+                      if (tx.timestamp) {
+                        if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+                        if (typeof tx.timestamp === 'number') return tx.timestamp;
+                      }
+                      if (tx.id && typeof tx.id === 'string') {
+                        const parts = tx.id.split('-');
+                        for (const part of parts) {
+                          if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+                        }
+                      }
+                      return parseCustomDate(tx.date || '') || 0;
+                    };
+
+                    const asc = [...workerTxs].sort((a, b) => getTxTime(a) - getTxTime(b));
+                    let running = 0;
+                    asc.forEach(tx => {
+                      const isLiquidation = (tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'));
+                      const isBodegaDebt = !isLiquidation && (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda')));
+                      const isPayroll = !isLiquidation && (tx.category === 'gastos' || tx.category === 'compras' || (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))));
+                      
+                      if (isLiquidation) {
+                        running = 0;
+                      } else if (isPayroll) {
+                        running += (Number(tx.amount) || 0);
+                      } else if (isBodegaDebt) {
+                        running -= (Number(tx.amount) || 0);
+                      } else if (tx.isIncome) {
+                        running += (Number(tx.amount) || 0);
+                      } else {
+                        running -= (Number(tx.amount) || 0);
+                      }
+                    });
+                    workerCalculatedSalary = running;
+                  }
+
+                  return (
+                    <div className="flex flex-col h-full">
+                      {/* Header */}
+                      <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
+                        <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2">
+                          <Wallet className="w-5 h-5"/> Liquidación / Sueldo de {s.name}
+                        </h3>
+                        <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+                      {/* Content */}
+                      <div className="p-5 space-y-4 flex-1 overflow-y-auto">
+                        <div className="bg-amber-500/10 border border-amber-500/30 rounded p-4 text-center">
+                          <span className="text-[10px] font-mono uppercase text-neutral-400 block tracking-wider font-bold">Saldo Acumulado a Favor / Pendiente a Liquidar</span>
+                          <span className="font-mono text-3xl font-extrabold text-amber-400 block mt-1">
+                            $ {workerCalculatedSalary.toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD
+                          </span>
+                          <span className="text-xs font-mono text-amber-400/80 block mt-1">
+                            ≈ Bs {(workerCalculatedSalary * (exchangeRate || 42.5)).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+
+                        {(Number(s.storeDebt) > 0) && (
+                          <div className="bg-rose-500/10 border border-rose-500/30 rounded p-3 text-center">
+                            <span className="text-[10px] font-mono uppercase text-rose-400 block tracking-wider">Deuda de Bodega a Cruzar: ${(Number(s.storeDebt) || 0).toFixed(2)} USD</span>
+                          </div>
+                        )}
+
+                        <div className="bg-neutral-800/40 border border-neutral-700/60 rounded p-3.5 text-xs text-neutral-300 font-mono leading-relaxed space-y-1">
+                          <div className="font-bold text-amber-400">ℹ️ Cierre Administrativo de Nómina:</div>
+                          <p>Al confirmar aquí se registra el cierre formal de la nómina devengada y se saldan las cuentas del colaborador, dejando su cuenta limpia en <strong>$0.00</strong> sin debitar fondos de bancos o tesorería.</p>
+                        </div>
+
+                        <div className="pt-2">
+                          <button
+                            disabled={isSubmitting}
+                            onClick={async () => {
+                              try {
+                                setIsSubmitting(true);
+                                if (onUpdateSupplier) {
+                                  await onUpdateSupplier(s.id, { storeDebt: 0, balanceOwed: 0 });
+                                }
+                                const nowMs = Date.now();
+                                const liqAmount = Number(workerCalculatedSalary) || 0;
+                                await addLocalDoc('transactions', {
+                                  id: `TX-LIQ-${nowMs}`,
+                                  category: 'gastos',
+                                  amount: liqAmount,
+                                  isIncome: false,
+                                  entity: s.name,
+                                  supplierId: s.id,
+                                  date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+                                  notes: `Pago Liquidado / Finalizado de nómina para ${s.name} ($${liqAmount.toFixed(2)} USD). Cuenta reseteada a $0.00.`,
+                                  paymentMethod: 'Cierre Administrativo',
+                                  status: 'Completado',
+                                  createdAt: nowMs
+                                });
+                                onAddNotification(`Liquidación finalizada para ${s.name}. Saldo en $0.00.`, 'success');
+                                setActiveModal(null);
+                              } catch (e) {
+                                onAddNotification('Error al liquidar cuenta', 'warning');
+                              } finally {
+                                setIsSubmitting(false);
+                              }
+                            }}
+                            className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-neutral-950 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer shadow-lg font-black disabled:opacity-50"
+                          >
+                            {isSubmitting ? 'Procesando...' : 'CONFIRMAR LIQUIDACIÓN Y DEJAR SALDO EN $0,00'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
                 const inputAmt = parseSafeDecimal(payToThemAmount) || 0;
                 const usdAmount = payToThemCurrency === 'VES' ? (inputAmt / exchangeRate) : inputAmt;
                 const isOverpaid = (Math.round(usdAmount * 100) / 100) > (Math.round(s.balanceOwed * 100) / 100);
