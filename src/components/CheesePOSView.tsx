@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOrder, Transaction } from '../types';
-import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X, Scan, Store } from 'lucide-react';
+import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X, Scan, Store, ShieldAlert } from 'lucide-react';
 import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '../utils';
 
 import { fetchCollection, addLocalDoc, updateLocalDoc, deleteLocalDoc, batchDeleteLocalDocs, onCollectionSnapshot } from '../services/localApi';
@@ -369,6 +369,23 @@ export default function CheesePOSView({
 
   const totalAbonado = addedPayments.reduce((sum, p) => sum + p.amount, 0);
 
+  const PRODUCER_CREDIT_LIMIT = 60; // Límite de crédito / tope de endeudamiento permitido para productores ($60)
+
+  const selectedSupplier = customerType === 'supplier' ? suppliers.find(s => s.id === selectedSupplierId) : null;
+  const currentSupplierDebt = selectedSupplier ? Number(selectedSupplier.storeDebt || 0) : 0;
+  const currentSupplierBalanceOwed = selectedSupplier ? Number(selectedSupplier.balanceOwed || 0) : 0;
+
+  // Monto que se enviará a crédito / libreta en la transacción actual
+  const supplierPendingCreditAmount = isCreditSale ? Math.max(0, total - totalAbonado) : 0;
+  // Proyección del saldo deudor en tienda tras procesar la venta
+  const projectedSupplierStoreDebt = currentSupplierDebt + supplierPendingCreditAmount;
+  // Validación de exceso de crédito
+  const isSupplierOverCreditLimit = customerType === 'supplier' && isCreditSale && projectedSupplierStoreDebt > PRODUCER_CREDIT_LIMIT;
+  // Monto mínimo que debe abonarse al contado para que la deuda fiada no supere los $60
+  const requiredSupplierDownPayment = isSupplierOverCreditLimit 
+    ? Math.max(0, (total - totalAbonado) - (PRODUCER_CREDIT_LIMIT - currentSupplierDebt))
+    : 0;
+
   const handleAddPayment = async () => {
     let rawAmount = parseSafeDecimal(paidAmountInput);
     if (paymentMethod === 'Mundo Kalu') {
@@ -597,6 +614,20 @@ export default function CheesePOSView({
       onAddNotification('El monto total abonado no cubre el valor de la venta.', 'warning');
       setIsProcessing(false);
       return;
+    }
+
+    // Regla Estricta: Tope de Crédito / Endeudamiento para Productores ($60)
+    if (customerType === 'supplier' && isCreditSale) {
+      const currentDebt = selectedSupplier ? Number(selectedSupplier.storeDebt || 0) : 0;
+      const creditPortion = Math.max(0, total - totalAbonado);
+      const projectedDebt = currentDebt + creditPortion;
+      
+      if (projectedDebt > PRODUCER_CREDIT_LIMIT) {
+        const excess = projectedDebt - PRODUCER_CREDIT_LIMIT;
+        onAddNotification(`Tope de crédito excedido: El límite permitido es $${PRODUCER_CREDIT_LIMIT.toFixed(2)}. Debe abonar al menos $${excess.toFixed(2)} de contado para autorizar la venta.`, 'warning');
+        setIsProcessing(false);
+        return;
+      }
     }
 
     const paidAmount = isEffectiveCredit ? totalAbonado : Math.max(total, totalAbonado);
@@ -1090,7 +1121,29 @@ export default function CheesePOSView({
           Historial de Cierres
         </button>
 
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-3">
+          {/* Alerta Discreta de Límite de Crédito del Productor */}
+          {customerType === 'supplier' && selectedSupplier && (
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded border text-xs font-mono transition-all ${
+              currentSupplierDebt > PRODUCER_CREDIT_LIMIT || isSupplierOverCreditLimit
+                ? 'bg-rose-500/10 border-rose-500/40 text-rose-400'
+                : currentSupplierDebt >= PRODUCER_CREDIT_LIMIT * 0.75
+                  ? 'bg-amber-500/10 border-amber-500/40 text-amber-400'
+                  : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+            }`}>
+              <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold truncate max-w-[120px]">{selectedSupplier.name}:</span>
+                <span>Deuda Tienda ${currentSupplierDebt.toFixed(2)} / ${PRODUCER_CREDIT_LIMIT}</span>
+                {isSupplierOverCreditLimit && (
+                  <span className="bg-rose-500 text-black px-1.5 py-0.2 rounded font-extrabold text-[9px] uppercase tracking-wider">
+                    Tope Superado
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           {(() => {
             const pendingOrders = mobileOrders.filter(o => o.status === 'Pendiente');
             const hasPending = pendingOrders.length > 0;
@@ -1483,6 +1536,46 @@ export default function CheesePOSView({
                         </div>
                       )}
                     </div>
+
+                    {/* Estado del Productor Seleccionado en Caja */}
+                    {selectedSupplier && (
+                      <div className={`mt-2 p-2.5 rounded border text-xs font-mono transition-all ${
+                        currentSupplierDebt > PRODUCER_CREDIT_LIMIT
+                          ? 'bg-rose-950/40 border-rose-500/50 text-rose-300'
+                          : currentSupplierDebt >= PRODUCER_CREDIT_LIMIT * 0.75
+                            ? 'bg-amber-950/40 border-amber-500/50 text-amber-300'
+                            : 'bg-editorial-bg border-editorial-border text-editorial-text-muted'
+                      }`}>
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-[10px] uppercase font-bold tracking-wider text-editorial-text-primary">
+                            Libreta: {selectedSupplier.name}
+                          </span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                            currentSupplierDebt > PRODUCER_CREDIT_LIMIT
+                              ? 'bg-rose-500 text-black font-extrabold'
+                              : currentSupplierDebt >= PRODUCER_CREDIT_LIMIT * 0.75
+                                ? 'bg-amber-500/20 text-amber-400'
+                                : 'bg-emerald-500/20 text-emerald-400'
+                          }`}>
+                            {currentSupplierDebt > PRODUCER_CREDIT_LIMIT ? 'Tope Excedido' : `Límite $${PRODUCER_CREDIT_LIMIT}`}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-[11px] pt-1 border-t border-editorial-border/30">
+                          <div>
+                            <span className="text-[9px] text-editorial-text-muted block">Deuda en Tienda:</span>
+                            <span className={`font-bold ${currentSupplierDebt > PRODUCER_CREDIT_LIMIT ? 'text-rose-400' : 'text-editorial-text-primary'}`}>
+                              ${currentSupplierDebt.toFixed(2)} USD
+                            </span>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-[9px] text-editorial-text-muted block">Crédito Disponible:</span>
+                            <span className={`font-bold ${PRODUCER_CREDIT_LIMIT - currentSupplierDebt <= 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                              ${Math.max(0, PRODUCER_CREDIT_LIMIT - currentSupplierDebt).toFixed(2)} USD
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1849,13 +1942,46 @@ export default function CheesePOSView({
                                  Nota: El monto restante de ${(total - totalAbonado).toFixed(2)} (Bs {((total - totalAbonado) * exchangeRate).toFixed(2)}) se enviará a cuenta por cobrar automáticamente.
                                </p>
                             )}
+
+                             {/* Bloqueo Estricto de Crédito para Productor ($60) */}
+                             {customerType === 'supplier' && isCreditSale && isSupplierOverCreditLimit && (
+                               <div className="mt-3 p-3 bg-rose-950/60 border-2 border-rose-500 rounded-lg text-xs font-mono space-y-2 animate-in fade-in duration-200">
+                                 <div className="flex items-center gap-2 text-rose-400 font-bold uppercase text-[11px]">
+                                   <ShieldAlert className="w-4 h-4 shrink-0 text-rose-400" />
+                                   <span>VENTA BLOQUEADA: TOPE DE CRÉDITO EXCEDIDO</span>
+                                 </div>
+                                 <p className="text-[10px] text-rose-200 leading-tight">
+                                   El productor <strong>{selectedSupplier?.name}</strong> acumularía una deuda de <strong>${projectedSupplierStoreDebt.toFixed(2)}</strong>, superando el tope máximo de <strong>${PRODUCER_CREDIT_LIMIT.toFixed(2)}</strong>.
+                                 </p>
+                                 <div className="p-2 bg-black/50 border border-rose-500/40 rounded text-[10px] text-amber-300 flex justify-between items-center">
+                                   <span>Abono de contado requerido:</span>
+                                   <span className="font-bold text-xs text-rose-400 font-mono">
+                                     ${requiredSupplierDownPayment.toFixed(2)} USD (Bs {(requiredSupplierDownPayment * (Number(exchangeRate) > 1 ? Number(exchangeRate) : Number(settings?.exchangeRate) > 1 ? Number(settings.exchangeRate) : 807.3862)).toFixed(2)})
+                                   </span>
+                                 </div>
+                                 <button
+                                   type="button"
+                                   onClick={() => {
+                                     const effectiveRate = Number(exchangeRate) > 1 
+                                       ? Number(exchangeRate) 
+                                       : Number(settings?.exchangeRate) > 1 
+                                         ? Number(settings.exchangeRate) 
+                                         : 807.3862;
+                                     setPaidAmountInput(paymentMethod === 'Efectivo $' ? requiredSupplierDownPayment.toFixed(2) : (requiredSupplierDownPayment * effectiveRate).toFixed(2));
+                                   }}
+                                   className="w-full py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded font-bold text-[10px] uppercase tracking-wider transition-colors cursor-pointer"
+                                 >
+                                   Autocompletar Abono Excedente (${requiredSupplierDownPayment.toFixed(2)})
+                                 </button>
+                               </div>
+                             )}
                          </div>
                        )}
                      </div>
                   </div>
 
                   {/* Action Buttons Footer */}
-                  <form onSubmit={handleProcessSaleSubmit} className="pt-6 mt-6 border-t border-editorial-border/60 flex items-center justify-end gap-4">
+                  <form ref={formRef} onSubmit={handleProcessSaleSubmit} className="pt-6 mt-6 border-t border-editorial-border/60 flex items-center justify-end gap-4">
                     <button
                       type="button"
                       onClick={() => {
@@ -1876,11 +2002,12 @@ export default function CheesePOSView({
                     
                     <button
                       type="submit"
-                      disabled={isProcessing || (!isCreditSale && totalAbonado < total)}
-                      className="h-12 px-8 bg-amber-500 text-black font-serif font-bold text-[13px] tracking-widest uppercase flex items-center justify-center gap-2 hover:brightness-110 active:scale-98 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded shadow-[0_0_15px_rgba(245,158,11,0.2)]"
+                      disabled={isProcessing || (!isCreditSale && totalAbonado < total) || isSupplierOverCreditLimit}
+                      className="h-12 px-8 bg-amber-500 text-black font-serif font-bold text-[13px] tracking-widest uppercase flex items-center justify-center gap-2 hover:brightness-110 active:scale-98 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer rounded shadow-[0_0_15px_rgba(245,158,11,0.2)]"
+                      title={isSupplierOverCreditLimit ? `Debe abonar al menos $${requiredSupplierDownPayment.toFixed(2)} al contado para autorizar la venta.` : undefined}
                     >
                       <CheckCircle className="w-4 h-4" />
-                      <span>{isProcessing ? 'PROCESANDO...' : 'FACTURAR / CONFIRMAR VENTA (F4)'}</span>
+                      <span>{isProcessing ? 'PROCESANDO...' : isSupplierOverCreditLimit ? 'TOPE EXCEDIDO (BLOQUEADO)' : 'FACTURAR / CONFIRMAR VENTA (F4)'}</span>
                     </button>
                   </form>
                 </div>
