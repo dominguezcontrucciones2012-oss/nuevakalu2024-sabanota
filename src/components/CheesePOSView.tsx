@@ -412,8 +412,14 @@ export default function CheesePOSView({
     let amountInUsd = rawAmount;
     let currency = '$';
 
+    const effectiveRate = Number(exchangeRate) > 1 
+      ? Number(exchangeRate) 
+      : Number(settings?.exchangeRate) > 1 
+        ? Number(settings.exchangeRate) 
+        : 807.3862;
+
     if (paymentMethod !== 'Efectivo $' && paymentMethod !== 'Mundo Kalu') {
-       amountInUsd = rawAmount / exchangeRate;
+       amountInUsd = rawAmount / effectiveRate;
        currency = 'Bs';
     }
 
@@ -785,8 +791,9 @@ export default function CheesePOSView({
           })
           .reduce((acc: number, p: any) => {
             // Si el método es en Bs, usamos originalAmount (que está en Bs). Si no existe (legacy), lo calculamos con la tasa
-            if (method === 'Efectivo Bs' || method === 'Pago Móvil' || method === 'BioPago') {
-               const val = Number(p.originalAmount) || (Number(p.amount) * (s.bcvRateAtSettlement || exchangeRate || 1));
+            if (method === 'Efectivo Bs' || method === 'Pago Móvil' || method === 'BioPago' || method === 'Tarjeta / Punto' || method === 'Tarjeta') {
+               const effectiveRate = Number(s.bcvRateAtSettlement) > 1 ? Number(s.bcvRateAtSettlement) : (Number(exchangeRate) > 1 ? Number(exchangeRate) : (Number(settings?.exchangeRate) > 1 ? Number(settings.exchangeRate) : 807.3862));
+               const val = Number(p.originalAmount) || (Number(p.amount) * effectiveRate);
                return acc + val;
             }
             const val = Number(p.amount) || Number(p.usdAmount) || 0;
@@ -818,7 +825,8 @@ export default function CheesePOSView({
       
       // Si es un método en Bs y no es multipago (legacy), multiplicamos aquí mismo para devolver el monto en Bs nominal
       if (isMatch && (method === 'Efectivo Bs' || method === 'Pago Móvil' || method === 'Transferencia' || method === 'BioPago' || method === 'Tarjeta / Punto' || method === 'Tarjeta')) {
-         saleAmount = saleAmount * (s.bcvRateAtSettlement || exchangeRate || 1);
+         const effectiveRate = Number(s.bcvRateAtSettlement) > 1 ? Number(s.bcvRateAtSettlement) : (Number(exchangeRate) > 1 ? Number(exchangeRate) : (Number(settings?.exchangeRate) > 1 ? Number(settings.exchangeRate) : 807.3862));
+         saleAmount = saleAmount * effectiveRate;
       }
       
       return sum + (isMatch ? saleAmount : 0);
@@ -1585,13 +1593,20 @@ export default function CheesePOSView({
                             </div>
                           ) : (
                             <div className="flex justify-between items-center text-sm group cursor-pointer" onClick={() => {
-                              const rem = total - totalAbonado;
-                              setPaidAmountInput(paymentMethod === 'Efectivo $' ? rem.toFixed(2) : (rem * exchangeRate).toFixed(2));
+                              const effectiveRate = Number(exchangeRate) > 1 
+                                ? Number(exchangeRate) 
+                                : Number(settings?.exchangeRate) > 1 
+                                  ? Number(settings.exchangeRate) 
+                                  : 807.3862;
+                              const rem = Math.max(0, total - totalAbonado);
+                              setPaidAmountInput(paymentMethod === 'Efectivo $' ? rem.toFixed(2) : (rem * effectiveRate).toFixed(2));
                             }}>
                               <span className="font-mono uppercase tracking-widest text-rose-400 group-hover:text-rose-300 transition-colors">RESTANTE</span>
                               <div className="text-right">
                                 <div className="font-mono text-2xl font-bold text-rose-400 group-hover:text-rose-300 transition-colors">${(total - totalAbonado).toFixed(2)}</div>
-                                <div className="font-mono text-[10px] text-rose-400/70 group-hover:text-rose-300/70 transition-colors">Bs {((total - totalAbonado) * exchangeRate).toFixed(2)}</div>
+                                <div className="font-mono text-[10px] text-rose-400/70 group-hover:text-rose-300/70 transition-colors">
+                                  Bs {((total - totalAbonado) * (Number(exchangeRate) > 1 ? Number(exchangeRate) : Number(settings?.exchangeRate) > 1 ? Number(settings.exchangeRate) : 807.3862)).toFixed(2)}
+                                </div>
                               </div>
                             </div>
                           )}
@@ -1642,6 +1657,13 @@ export default function CheesePOSView({
                                 type="button"
                                 onClick={() => {
                                   setPaymentMethod(m.id);
+                                  const effectiveRate = Number(exchangeRate) > 1 
+                                    ? Number(exchangeRate) 
+                                    : Number(settings?.exchangeRate) > 1 
+                                      ? Number(settings.exchangeRate) 
+                                      : 807.3862;
+                                  const rem = Math.max(0, total - totalAbonado);
+                                  
                                   if (m.id === 'Mundo Kalu' && customerType === 'client') {
                                     const client = clients.find(c => c.id === selectedClientId);
                                     if (client) {
@@ -1649,10 +1671,12 @@ export default function CheesePOSView({
                                     } else {
                                       setPaymentReference('');
                                     }
+                                    setPaidAmountInput('');
                                   } else {
                                     setPaymentReference('');
+                                    // Autocompletar el restante en la moneda seleccionada con la tasa real
+                                    setPaidAmountInput(m.id === 'Efectivo $' ? rem.toFixed(2) : (rem * effectiveRate).toFixed(2));
                                   }
-                                  setPaidAmountInput('');
                                 }}
                                 className={`p-3 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-2 ${
                                   paymentMethod === m.id
@@ -1699,15 +1723,27 @@ export default function CheesePOSView({
                           <div className={`grid ${paymentMethod === 'Mundo Kalu' ? 'grid-cols-1' : 'grid-cols-2'} gap-4 mb-4`}>
                             {paymentMethod !== 'Mundo Kalu' && (
                                 <div className="space-y-2">
-                                  <label className="font-mono text-[10px] uppercase tracking-widest text-editorial-text-muted block">
-                                    BILLETE / MONTO RECIBIDO FÍSICAMENTE ({paymentMethod === 'Efectivo $' ? '$' : 'Bs'})
-                                  </label>
+                                  <div className="flex justify-between items-center">
+                                    <label className="font-mono text-[10px] uppercase tracking-widest text-editorial-text-muted block">
+                                      MONTO A RECIBIR ({paymentMethod === 'Efectivo $' ? 'DÓLARES $' : 'BOLÍVARES BS'})
+                                    </label>
+                                    {paymentMethod !== 'Efectivo $' && parseSafeDecimal(paidAmountInput) > 0 && (
+                                      <span className="text-[10px] font-mono text-emerald-400 font-bold">
+                                        ≈ ${(parseSafeDecimal(paidAmountInput) / (Number(exchangeRate) > 1 ? Number(exchangeRate) : Number(settings?.exchangeRate) > 1 ? Number(settings.exchangeRate) : 807.3862)).toFixed(2)} USD
+                                      </span>
+                                    )}
+                                    {paymentMethod === 'Efectivo $' && parseSafeDecimal(paidAmountInput) > 0 && (
+                                      <span className="text-[10px] font-mono text-emerald-400 font-bold">
+                                        ≈ Bs {(parseSafeDecimal(paidAmountInput) * (Number(exchangeRate) > 1 ? Number(exchangeRate) : Number(settings?.exchangeRate) > 1 ? Number(settings.exchangeRate) : 807.3862)).toFixed(2)}
+                                      </span>
+                                    )}
+                                  </div>
                                   <input
                                     type="text"
                                     inputMode="decimal"
                                     value={paidAmountInput}
                                     onChange={(e) => setPaidAmountInput(e.target.value)}
-                                    placeholder={`Ej: ${paymentMethod === 'Efectivo $' ? Math.max(0, total - totalAbonado).toFixed(2) : (Math.max(0, total - totalAbonado) * exchangeRate).toFixed(2)}`}
+                                    placeholder={`Ej: ${paymentMethod === 'Efectivo $' ? Math.max(0, total - totalAbonado).toFixed(2) : (Math.max(0, total - totalAbonado) * (Number(exchangeRate) > 1 ? Number(exchangeRate) : Number(settings?.exchangeRate) > 1 ? Number(settings.exchangeRate) : 807.3862)).toFixed(2)}`}
                                     className="w-full h-10 px-3 bg-editorial-card border border-amber-500/50 rounded text-lg text-amber-500 font-mono font-bold focus:outline-none focus:border-amber-500"
                                   />
                                 </div>
@@ -1717,13 +1753,13 @@ export default function CheesePOSView({
                             {(paymentMethod === 'Pago Móvil' || paymentMethod === 'BioPago' || paymentMethod === 'Tarjeta / Punto') && (
                               <div className="space-y-2 animate-in fade-in duration-200">
                                 <label className="font-mono text-[10px] uppercase tracking-widest text-amber-500 block">
-                                  {paymentMethod === 'Tarjeta / Punto' ? 'APROBACIÓN PUNTO' : 'REFERENCIA'}
+                                  {paymentMethod === 'Tarjeta / Punto' ? 'N° APROBACIÓN / VOUCHER' : 'N° REFERENCIA'}
                                 </label>
                                 <input
                                   type="text"
                                   value={paymentReference}
                                   onChange={(e) => setPaymentReference(e.target.value)}
-                                  placeholder={"N° Ref..."}
+                                  placeholder={"N° Ref / Aprobación..."}
                                   className="w-full h-10 px-3 bg-editorial-card border border-editorial-border rounded text-sm text-editorial-text-primary focus:outline-none focus:border-amber-500 font-mono"
                                 />
                               </div>

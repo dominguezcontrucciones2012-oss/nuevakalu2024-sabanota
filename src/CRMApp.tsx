@@ -101,8 +101,15 @@ export default function App() {
     return saved ? JSON.parse(saved) : INITIAL_OPERATING_EXPENSES;
   });
   const [complaints, setComplaints] = useState<CustomerComplaint[]>(INITIAL_COMPLAINTS);
-  const [settings, setSettings] = useState<BusinessSettings>(DEFAULT_SETTINGS);
   const [mobileOrders, setMobileOrders] = useState<MobileOrder[]>([]);
+  const [settings, setSettings] = useState<BusinessSettings>(() => {
+    try {
+      const saved = localStorage.getItem('kalu_settings');
+      return saved ? JSON.parse(saved) : DEFAULT_SETTINGS;
+    } catch {
+      return DEFAULT_SETTINGS;
+    }
+  });
   const [cheeseTrips, setCheeseTrips] = useState<CheeseTrip[]>(() => {
     const saved = localStorage.getItem('kalu_cheese_trips');
     return saved ? JSON.parse(saved) : [];
@@ -234,6 +241,11 @@ export default function App() {
           };
         }
         setSettings(newSettings);
+        try {
+          localStorage.setItem('kalu_settings', JSON.stringify(newSettings));
+        } catch (e) {
+          // ignore
+        }
       }
     });
 
