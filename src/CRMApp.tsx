@@ -1430,17 +1430,29 @@ export default function App() {
     const selectedSup = suppliers.find(s => s.id === supplierId);
     if (!selectedSup) return;
 
-    const newBalanceOwed = Math.max(0, (selectedSup.balanceOwed || 0) - amount);
+    const currentBalanceOwed = Number(selectedSup.balanceOwed) || 0;
+    const currentStoreDebt = Number(selectedSup.storeDebt) || 0;
+
+    let newBalanceOwed = 0;
+    let newStoreDebt = currentStoreDebt;
+
+    if (amount <= currentBalanceOwed) {
+      newBalanceOwed = currentBalanceOwed - amount;
+    } else {
+      newBalanceOwed = 0;
+      const excess = amount - currentBalanceOwed;
+      newStoreDebt = currentStoreDebt + excess;
+    }
 
     setSuppliers(prev => prev.map(s => {
       if (s.id === supplierId) {
-        return { ...s, balanceOwed: newBalanceOwed };
+        return { ...s, balanceOwed: newBalanceOwed, storeDebt: newStoreDebt };
       }
       return s;
     }));
 
     try {
-      await updateLocalDoc('suppliers', supplierId, { balanceOwed: newBalanceOwed });
+      await updateLocalDoc('suppliers', supplierId, { balanceOwed: newBalanceOwed, storeDebt: newStoreDebt });
     } catch (err) {
       console.error('Error al actualizar balance proveedor en DB:', err);
     }
@@ -1847,6 +1859,7 @@ export default function App() {
               onPaySupplierRemainingBalance={handlePaySupplierRemainingBalance}
               onLoadPurchase={handleLoadPurchase}
               onAddNotification={addNotification}
+              isSidebarOpen={isSidebarOpen}
             />
           )}
 

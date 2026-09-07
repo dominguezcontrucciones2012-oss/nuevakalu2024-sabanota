@@ -137,10 +137,12 @@ export default function SuppliersDebtsView({
   const [receivePayment, setReceivePayment] = useState('A la Libreta');
   const [createNewProduct, setCreateNewProduct] = useState(false);
 
-  // Pago a Él (Pay Supplier)
+  // Pago a Él / Adelanto (Pay Supplier / Cash Advance)
   const [payToThemAmount, setPayToThemAmount] = useState('');
   const [payToThemCurrency, setPayToThemCurrency] = useState<'USD' | 'VES'>('USD');
   const [payToThemSource, setPayToThemSource] = useState('Efectivo / Caja Chica');
+  const [payToThemConcept, setPayToThemConcept] = useState('Pago de Saldo / Liquidación de Queso');
+  const [payToThemNotes, setPayToThemNotes] = useState('');
 
   // Abono de Él (Supplier Pays Us / Takes Credit)
   const [payToUsAmount, setPayToUsAmount] = useState('');
@@ -168,9 +170,11 @@ export default function SuppliersDebtsView({
       setCreateNewProduct(false);
     } else if (modal === 'pagar') {
       const s = suppliers.find(sup => sup.id === supplierId);
-      setPayToThemAmount(s ? s.balanceOwed.toString() : '');
+      setPayToThemAmount(s && (s.balanceOwed || 0) > 0 ? (s.balanceOwed || 0).toString() : '');
       setPayToThemCurrency('USD');
       setPayToThemSource('Efectivo / Caja Chica');
+      setPayToThemConcept((s && (s.balanceOwed || 0) > 0) ? 'Pago de Saldo / Liquidación de Queso' : 'Adelanto de Dinero');
+      setPayToThemNotes('');
 
     } else if (modal === 'abonar') {
       const s = suppliers.find(sup => sup.id === supplierId);
@@ -693,7 +697,7 @@ export default function SuppliersDebtsView({
           {/* Dynamic Modal/Drawer Container */}
           <div className={
             activeModal === 'historial'
-              ? "fixed inset-0 m-auto h-fit max-h-[90vh] overflow-hidden w-full max-w-3xl bg-neutral-900 border border-neutral-700 shadow-2xl z-50 rounded-lg flex flex-col"
+              ? `fixed inset-3 md:inset-5 z-50 bg-neutral-900 border border-neutral-700 shadow-2xl rounded-xl flex flex-col transition-all duration-300 ${isSidebarOpen ? 'lg:left-[335px]' : 'lg:left-5'}`
               : "fixed right-0 top-0 h-screen overflow-hidden w-full sm:w-[450px] max-w-full bg-neutral-900 border-l border-neutral-700 shadow-2xl z-50 animate-slide-left flex flex-col"
           }>
             {(() => {
@@ -830,8 +834,8 @@ export default function SuppliersDebtsView({
                     </div>
 
                     {/* Content Table */}
-                    <div className="p-0 font-sans flex-1 bg-neutral-950 overflow-x-auto max-h-[60vh] overflow-y-auto">
-                      <table className="w-full min-w-[700px] text-left border-collapse text-xs">
+                    <div className="p-0 font-sans flex-1 bg-neutral-950 overflow-y-auto w-full">
+                      <table className="w-full text-left border-collapse text-xs">
                         <thead className="sticky top-0 bg-neutral-900 shadow-sm z-10">
                           <tr className="border-b border-neutral-800 text-[10px] font-mono text-neutral-500 uppercase tracking-wider">
                             <th className="py-3 px-4 font-normal whitespace-nowrap">Fecha</th>
@@ -1225,45 +1229,108 @@ export default function SuppliersDebtsView({
                 }
 
                 const inputAmt = parseSafeDecimal(payToThemAmount) || 0;
-                const usdAmount = payToThemCurrency === 'VES' ? (inputAmt / exchangeRate) : inputAmt;
-                const isOverpaid = (Math.round(usdAmount * 100) / 100) > (Math.round(s.balanceOwed * 100) / 100);
-                const isValidAmount = inputAmt > 0 && !isOverpaid;
+                const usdAmount = payToThemCurrency === 'VES' ? (inputAmt / (exchangeRate || 1)) : inputAmt;
+                
+                // Cálculo de saldo y tope de crédito dinámico (última entrega / arrime de queso)
+                const currentBalanceOwed = Number(s.balanceOwed) || 0;
+                const currentStoreDebt = Number(s.storeDebt) || 0;
+
+                const dynamicProducerCreditLimit = (() => {
+                  const supNameClean = (s.name || '').trim().toLowerCase();
+                  const producerTxs = (transactions || []).filter((tx: any) => {
+                    if (!tx) return false;
+                    const entityMatch = tx.entity && String(tx.entity).trim().toLowerCase() === supNameClean;
+                    const supplierIdMatch = tx.supplierId && String(tx.supplierId) === String(s.id);
+                    const entityIdMatch = tx.entityId && String(tx.entityId) === String(s.id);
+                    return entityMatch || supplierIdMatch || entityIdMatch;
+                  });
+
+                  const getTxTime = (tx: any): number => {
+                    if (!tx) return 0;
+                    if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+                    if (tx.timestamp) {
+                      if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+                      if (typeof tx.timestamp === 'number') return tx.timestamp;
+                    }
+                    if (tx.id && typeof tx.id === 'string') {
+                      const parts = tx.id.split('-');
+                      for (const part of parts) {
+                        if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+                      }
+                    }
+                    return parseCustomDate(tx.date || '') || 0;
+                  };
+
+                  const sortedTxs = [...producerTxs].sort((a, b) => getTxTime(b) - getTxTime(a));
+                  const lastDelivery = sortedTxs.find(tx => {
+                    const isPurchase = tx.category === 'compras';
+                    const isReceipt = tx.isIncome || (tx.paymentMethod && tx.paymentMethod.includes('Libreta')) || (tx.notes && (tx.notes.toLowerCase().includes('recibid') || tx.notes.toLowerCase().includes('compra') || tx.notes.toLowerCase().includes('arrime')));
+                    const notPayment = !tx.notes?.toLowerCase().includes('pago') && !tx.notes?.toLowerCase().includes('adelanto') && !tx.notes?.toLowerCase().includes('liquidaci');
+                    return (isPurchase && notPayment) || (tx.isIncome && Number(tx.amount) > 0);
+                  });
+
+                  if (lastDelivery && Number(lastDelivery.amount) > 0) {
+                    return Number(lastDelivery.amount);
+                  }
+
+                  if (currentBalanceOwed > 0) {
+                    return currentBalanceOwed;
+                  }
+
+                  return 0;
+                })();
+                
+                // Si el pago excede lo que le debemos de queso, el excedente se convierte en saldo a cobrar / deuda / adelanto
+                const excessAdvance = Math.max(0, usdAmount - currentBalanceOwed);
+                const projectedDebt = currentStoreDebt + excessAdvance;
+                const isOverCreditLimit = projectedDebt > dynamicProducerCreditLimit;
+                
+                const isValidAmount = inputAmt > 0 && !isOverCreditLimit;
 
                 return (
                   <div className="flex flex-col h-full">
                     {/* Header */}
                     <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
-                      <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><Wallet className="w-5 h-5"/> Pagar a {s.name}</h3>
+                      <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><Wallet className="w-5 h-5"/> Pagar / Adelanto a {s.name}</h3>
                       <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
                         <X className="w-5 h-5" />
                       </button>
                     </div>
                     {/* Content */}
                     <div className="p-5 space-y-4 flex-1 overflow-y-auto">
-                      <div className="bg-amber-500/10 border border-amber-500/30 rounded p-4 text-center">
-                        <span className="text-[10px] font-mono uppercase text-neutral-400 block tracking-wider">Deuda Pendiente con el Productor</span>
-                        <span 
-                          onClick={() => {
-                            setPayToThemAmount((s.balanceOwed || 0).toFixed(2));
-                            setPayToThemCurrency('USD');
-                          }}
-                          className="font-mono text-3xl font-extrabold text-amber-500 block mt-1 cursor-pointer hover:underline hover:text-amber-400 transition-colors"
-                        >
-                          $ {(s.balanceOwed || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD
-                        </span>
-                        <span 
-                          onClick={() => {
-                            setPayToThemAmount(((s.balanceOwed || 0) * exchangeRate).toFixed(2));
-                            setPayToThemCurrency('VES');
-                          }}
-                          className="text-xs font-mono text-amber-500/70 block mt-1 cursor-pointer hover:underline hover:text-amber-400 transition-colors"
-                        >
-                          Bs {((s.balanceOwed || 0) * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
-                        </span>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="bg-amber-500/10 border border-amber-500/30 rounded p-3 text-center">
+                          <span className="text-[9px] font-mono uppercase text-neutral-400 block tracking-wider font-bold">Saldo a Favor del Productor</span>
+                          <span 
+                            onClick={() => {
+                              if (currentBalanceOwed > 0) {
+                                setPayToThemAmount(currentBalanceOwed.toFixed(2));
+                                setPayToThemCurrency('USD');
+                                setPayToThemConcept('Pago de Saldo / Liquidación de Queso');
+                              }
+                            }}
+                            className={`font-mono text-xl font-extrabold block mt-0.5 ${currentBalanceOwed > 0 ? 'text-amber-500 cursor-pointer hover:underline hover:text-amber-400' : 'text-neutral-500'}`}
+                          >
+                            $ {currentBalanceOwed.toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD
+                          </span>
+                          <span className="text-[10px] font-mono text-amber-500/70 block">
+                            Bs {(currentBalanceOwed * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+
+                        <div className="bg-neutral-800/60 border border-neutral-700 rounded p-3 text-center">
+                          <span className="text-[9px] font-mono uppercase text-neutral-400 block tracking-wider font-bold">Tope de Crédito (Última Entrega)</span>
+                          <span className="font-mono text-xl font-extrabold text-neutral-200 block mt-0.5">
+                            $ {dynamicProducerCreditLimit.toFixed(2)} USD
+                          </span>
+                          <span className="text-[10px] font-mono text-neutral-400 block">
+                            Deuda actual: <strong className={currentStoreDebt > 0 ? 'text-rose-400' : 'text-neutral-300'}>${currentStoreDebt.toFixed(2)}</strong>
+                          </span>
+                        </div>
                       </div>
                       
                       {s.balanceOwed > 0 && (s.storeDebt || 0) > 0 && (
-                        <div className="bg-rose-500/10 border border-rose-500/30 rounded p-4 flex justify-between items-center">
+                        <div className="bg-rose-500/10 border border-rose-500/30 rounded p-3.5 flex justify-between items-center">
                            <div className="text-xs font-sans text-rose-200">
                              Él nos debe: <strong className="font-mono">${s.storeDebt?.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</strong>
                            </div>
@@ -1277,25 +1344,43 @@ export default function SuppliersDebtsView({
                         </div>
                       )}
 
-                      <div className="flex justify-end">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (payToThemCurrency === 'VES') {
-                              setPayToThemAmount(((s.balanceOwed || 0) * exchangeRate).toFixed(2));
-                            } else {
-                              setPayToThemAmount((s.balanceOwed || 0).toFixed(2));
-                            }
-                          }}
-                          className="px-3 py-1.5 bg-neutral-800 border border-amber-500/50 hover:bg-amber-500/20 text-amber-500 text-[10px] font-mono font-bold uppercase rounded transition-colors cursor-pointer"
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Concepto del Pago / Salida</label>
+                        <select 
+                          value={payToThemConcept} 
+                          onChange={e => setPayToThemConcept(e.target.value)} 
+                          className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer"
                         >
-                          Liquidar Saldo Total
-                        </button>
+                          <option value="Pago de Saldo / Liquidación de Queso">Pago de Saldo / Liquidación de Queso</option>
+                          <option value="Adelanto de Dinero">Adelanto de Dinero / Préstamo</option>
+                          <option value="Pago de Servicios (Internet, Luz, etc.)">Pago de Servicios (Internet, Luz, etc.)</option>
+                          <option value="Pago de Favor / Encargo">Pago de Favor / Encargo</option>
+                          <option value="Otro Adelanto / Salida">Otro Adelanto / Salida</option>
+                        </select>
                       </div>
+
+                      {currentBalanceOwed > 0 && (
+                        <div className="flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (payToThemCurrency === 'VES') {
+                                setPayToThemAmount(((s.balanceOwed || 0) * exchangeRate).toFixed(2));
+                              } else {
+                                setPayToThemAmount((s.balanceOwed || 0).toFixed(2));
+                              }
+                              setPayToThemConcept('Pago de Saldo / Liquidación de Queso');
+                            }}
+                            className="px-3 py-1 bg-neutral-800 border border-amber-500/50 hover:bg-amber-500/20 text-amber-500 text-[9px] font-mono font-bold uppercase rounded transition-colors cursor-pointer"
+                          >
+                            Liquidar Saldo a Favor Total
+                          </button>
+                        </div>
+                      )}
 
                       <div className="flex gap-4">
                         <div className="space-y-1.5 flex-[2]">
-                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto a Pagar</label>
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto a Entregar</label>
                           <input type="text" inputMode="decimal" value={payToThemAmount} onChange={e => setPayToThemAmount(e.target.value)} onFocus={(e) => e.target.select()} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all font-mono" placeholder="0.00" />
                         </div>
                         <div className="space-y-1.5 flex-[1]">
@@ -1308,7 +1393,7 @@ export default function SuppliersDebtsView({
                                 if (newCurrency === 'VES') {
                                   setPayToThemAmount((amt * exchangeRate).toFixed(2));
                                 } else {
-                                  setPayToThemAmount((amt / exchangeRate).toFixed(2));
+                                  setPayToThemAmount((amt / (exchangeRate || 1)).toFixed(2));
                                 }
                               }
                               setPayToThemCurrency(newCurrency);
@@ -1326,34 +1411,66 @@ export default function SuppliersDebtsView({
                         </div>
                       )}
 
-                      {isOverpaid && (
-                        <div className="bg-rose-950/40 border border-rose-900 rounded p-3 text-xs text-rose-400 font-mono flex items-start gap-2">
-                          <BadgeAlert className="w-4 h-4 shrink-0 mt-0.5" />
-                          <span>El monto ingresado no puede superar el saldo pendiente de <strong>${s.balanceOwed.toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD</strong>.</span>
+                      {/* Alerta de Tope de Crédito Excedido (Bloqueo Estricto) */}
+                      {isOverCreditLimit && (
+                        <div className="bg-rose-950/50 border border-rose-600 rounded p-3.5 text-xs text-rose-300 font-mono space-y-1.5 animate-in fade-in">
+                          <div className="flex items-center gap-2 font-bold text-rose-400 text-[11px] uppercase">
+                            <BadgeAlert className="w-4 h-4 shrink-0 text-rose-500" />
+                            🔒 OPERACIÓN BLOQUEADA: TOPE DE CRÉDITO EXCEDIDO
+                          </div>
+                          <p className="text-[10px] leading-relaxed">
+                            Este pago o adelanto dejaría la deuda del productor en <strong className="text-white">${projectedDebt.toFixed(2)} USD</strong>, superando su tope dinámico de última entrega de <strong className="text-amber-400">${dynamicProducerCreditLimit.toFixed(2)} USD</strong>.
+                          </p>
+                          <p className="text-[10px] text-rose-400/90 font-bold">
+                            ⚠️ Reduzca el monto a un máximo de ${(Math.max(0, currentBalanceOwed + Math.max(0, dynamicProducerCreditLimit - currentStoreDebt))).toFixed(2)} USD para poder procesarlo.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Advertencia informativa de que genera adelanto/saldo en contra si supera el saldo a favor */}
+                      {!isOverCreditLimit && excessAdvance > 0 && (
+                        <div className="bg-amber-950/30 border border-amber-500/40 rounded p-3 text-[11px] text-amber-300 font-mono flex items-start gap-2">
+                          <BadgeAlert className="w-4 h-4 shrink-0 mt-0.5 text-amber-500" />
+                          <span>
+                            El monto excede el saldo pendiente. Se registrará un adelanto de <strong>${excessAdvance.toFixed(2)} USD</strong> a la cuenta del productor (Deuda total proyectada: <strong>${projectedDebt.toFixed(2)} USD</strong> / Tope de Entrega: ${dynamicProducerCreditLimit.toFixed(2)}).
+                          </span>
                         </div>
                       )}
 
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Fuente de Pago</label>
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Fuente de Pago / Salida de Dinero</label>
                         <select value={payToThemSource} onChange={e => setPayToThemSource(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
                           <option value="Efectivo / Caja Chica">Efectivo / Caja Chica</option>
                           <option value="Pago Móvil / Banco">Pago Móvil / Banco</option>
                         </select>
                       </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Detalles / Nota Opcional</label>
+                        <input 
+                          type="text" 
+                          value={payToThemNotes} 
+                          onChange={e => setPayToThemNotes(e.target.value)} 
+                          className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" 
+                          placeholder="Ej. Pago de internet / Pago personal / Adelanto" 
+                        />
+                      </div>
+
                       <div className="pt-2">
                         <button
                           disabled={!isValidAmount}
                           onClick={() => {
                             if (!isValidAmount) return;
-                            const note = `Liquidación de deuda a productor. Pago de ${payToThemCurrency === 'USD' ? '$' : 'Bs '}${inputAmt} ${payToThemCurrency} (Tasa: ${exchangeRate}). Fuente: ${payToThemSource}`;
+                            const customNote = payToThemNotes.trim() ? ` - ${payToThemNotes.trim()}` : '';
+                            const note = `${payToThemConcept}. Pago/Salida de ${payToThemCurrency === 'USD' ? '$' : 'Bs '}${inputAmt} ${payToThemCurrency} (Tasa: ${exchangeRate}). Fuente: ${payToThemSource}${customNote}`;
                             
                             onPaySupplierRemainingBalance?.(s.id, usdAmount, payToThemSource, note, payToThemCurrency);
-                            onAddNotification(`Pago de $${usdAmount.toFixed(2)} USD a ${s.name} registrado exitosamente.`, 'success');
+                            onAddNotification(`Pago/Adelanto de $${usdAmount.toFixed(2)} USD a ${s.name} registrado exitosamente.`, 'success');
                             setActiveModal(null);
                           }}
-                          className="w-full py-3 bg-amber-600 hover:bg-amber-500 text-neutral-900 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="w-full py-3.5 bg-amber-600 hover:bg-amber-500 text-neutral-900 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed font-bold"
                         >
-                          Efectuar Pago
+                          {isOverCreditLimit ? 'Operación Bloqueada (Tope Excedido)' : 'Efectuar Pago / Adelanto'}
                         </button>
                       </div>
                     </div>

@@ -369,21 +369,71 @@ export default function CheesePOSView({
 
   const totalAbonado = addedPayments.reduce((sum, p) => sum + p.amount, 0);
 
-  const PRODUCER_CREDIT_LIMIT = 60; // Límite de crédito / tope de endeudamiento permitido para productores ($60)
-
   const selectedSupplier = customerType === 'supplier' ? suppliers.find(s => s.id === selectedSupplierId) : null;
   const currentSupplierDebt = selectedSupplier ? Number(selectedSupplier.storeDebt || 0) : 0;
   const currentSupplierBalanceOwed = selectedSupplier ? Number(selectedSupplier.balanceOwed || 0) : 0;
+
+  // Cálculo dinámico del límite de crédito individual basado en la última entrega / arrime del productor
+  const producerDynamicCreditLimit = (() => {
+    if (!selectedSupplier) return 0;
+
+    const supNameClean = (selectedSupplier.name || '').trim().toLowerCase();
+    const producerTxs = (allTransactions || []).filter((tx: any) => {
+      if (!tx) return false;
+      const entityMatch = tx.entity && String(tx.entity).trim().toLowerCase() === supNameClean;
+      const supplierIdMatch = tx.supplierId && String(tx.supplierId) === String(selectedSupplier.id);
+      const entityIdMatch = tx.entityId && String(tx.entityId) === String(selectedSupplier.id);
+      return entityMatch || supplierIdMatch || entityIdMatch;
+    });
+
+    // Helper para obtener timestamp
+    const getTxTime = (tx: any): number => {
+      if (!tx) return 0;
+      if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+      if (tx.timestamp) {
+        if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+        if (typeof tx.timestamp === 'number') return tx.timestamp;
+      }
+      if (tx.id && typeof tx.id === 'string') {
+        const parts = tx.id.split('-');
+        for (const part of parts) {
+          if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+        }
+      }
+      const direct = new Date(tx.date || '').getTime();
+      return isNaN(direct) ? 0 : direct;
+    };
+
+    // Buscar la última entrega de queso (recepción/compra con isIncome true o items de queso o categoría compras)
+    const sortedTxs = [...producerTxs].sort((a, b) => getTxTime(b) - getTxTime(a));
+    const lastDelivery = sortedTxs.find(tx => {
+      const isPurchase = tx.category === 'compras';
+      const isReceipt = tx.isIncome || (tx.paymentMethod && tx.paymentMethod.includes('Libreta')) || (tx.notes && (tx.notes.toLowerCase().includes('recibid') || tx.notes.toLowerCase().includes('compra') || tx.notes.toLowerCase().includes('arrime')));
+      const notPayment = !tx.notes?.toLowerCase().includes('pago') && !tx.notes?.toLowerCase().includes('adelanto') && !tx.notes?.toLowerCase().includes('liquidaci');
+      return (isPurchase && notPayment) || (tx.isIncome && Number(tx.amount) > 0);
+    });
+
+    if (lastDelivery && Number(lastDelivery.amount) > 0) {
+      return Number(lastDelivery.amount);
+    }
+
+    // Si no hay transacciones previas registradas pero tiene saldo a favor inicial o balanceOwed
+    if (currentSupplierBalanceOwed > 0) {
+      return currentSupplierBalanceOwed;
+    }
+
+    return 0;
+  })();
 
   // Monto que se enviará a crédito / libreta en la transacción actual
   const supplierPendingCreditAmount = isCreditSale ? Math.max(0, total - totalAbonado) : 0;
   // Proyección del saldo deudor en tienda tras procesar la venta
   const projectedSupplierStoreDebt = currentSupplierDebt + supplierPendingCreditAmount;
-  // Validación de exceso de crédito
-  const isSupplierOverCreditLimit = customerType === 'supplier' && isCreditSale && projectedSupplierStoreDebt > PRODUCER_CREDIT_LIMIT;
-  // Monto mínimo que debe abonarse al contado para que la deuda fiada no supere los $60
+  // Validación de exceso de crédito con el tope dinámico del productor
+  const isSupplierOverCreditLimit = customerType === 'supplier' && isCreditSale && projectedSupplierStoreDebt > producerDynamicCreditLimit;
+  // Monto mínimo que debe abonarse al contado para que la deuda fiada no supere su propio tope dinámico
   const requiredSupplierDownPayment = isSupplierOverCreditLimit 
-    ? Math.max(0, (total - totalAbonado) - (PRODUCER_CREDIT_LIMIT - currentSupplierDebt))
+    ? Math.max(0, (total - totalAbonado) - Math.max(0, producerDynamicCreditLimit - currentSupplierDebt))
     : 0;
 
   const handleAddPayment = async () => {
@@ -616,15 +666,15 @@ export default function CheesePOSView({
       return;
     }
 
-    // Regla Estricta: Tope de Crédito / Endeudamiento para Productores ($60)
+    // Regla Estricta: Tope de Crédito / Endeudamiento para Productores (Tope Dinámico de Última Entrega)
     if (customerType === 'supplier' && isCreditSale) {
       const currentDebt = selectedSupplier ? Number(selectedSupplier.storeDebt || 0) : 0;
       const creditPortion = Math.max(0, total - totalAbonado);
       const projectedDebt = currentDebt + creditPortion;
       
-      if (projectedDebt > PRODUCER_CREDIT_LIMIT) {
-        const excess = projectedDebt - PRODUCER_CREDIT_LIMIT;
-        onAddNotification(`Tope de crédito excedido: El límite permitido es $${PRODUCER_CREDIT_LIMIT.toFixed(2)}. Debe abonar al menos $${excess.toFixed(2)} de contado para autorizar la venta.`, 'warning');
+      if (projectedDebt > producerDynamicCreditLimit) {
+        const excess = projectedDebt - producerDynamicCreditLimit;
+        onAddNotification(`Tope de crédito excedido: El límite según su última entrega es $${producerDynamicCreditLimit.toFixed(2)}. Debe abonar al menos $${excess.toFixed(2)} de contado para autorizar la venta.`, 'warning');
         setIsProcessing(false);
         return;
       }
@@ -1125,16 +1175,16 @@ export default function CheesePOSView({
           {/* Alerta Discreta de Límite de Crédito del Productor */}
           {customerType === 'supplier' && selectedSupplier && (
             <div className={`flex items-center gap-2 px-3 py-1.5 rounded border text-xs font-mono transition-all ${
-              currentSupplierDebt > PRODUCER_CREDIT_LIMIT || isSupplierOverCreditLimit
+              (producerDynamicCreditLimit > 0 && currentSupplierDebt > producerDynamicCreditLimit) || isSupplierOverCreditLimit
                 ? 'bg-rose-500/10 border-rose-500/40 text-rose-400'
-                : currentSupplierDebt >= PRODUCER_CREDIT_LIMIT * 0.75
+                : (producerDynamicCreditLimit > 0 && currentSupplierDebt >= producerDynamicCreditLimit * 0.75)
                   ? 'bg-amber-500/10 border-amber-500/40 text-amber-400'
                   : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
             }`}>
               <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
               <div className="flex items-center gap-1.5">
                 <span className="font-bold truncate max-w-[120px]">{selectedSupplier.name}:</span>
-                <span>Deuda Tienda ${currentSupplierDebt.toFixed(2)} / ${PRODUCER_CREDIT_LIMIT}</span>
+                <span>Deuda Tienda ${currentSupplierDebt.toFixed(2)} / ${producerDynamicCreditLimit.toFixed(2)}</span>
                 {isSupplierOverCreditLimit && (
                   <span className="bg-rose-500 text-black px-1.5 py-0.2 rounded font-extrabold text-[9px] uppercase tracking-wider">
                     Tope Superado
@@ -1540,9 +1590,9 @@ export default function CheesePOSView({
                     {/* Estado del Productor Seleccionado en Caja */}
                     {selectedSupplier && (
                       <div className={`mt-2 p-2.5 rounded border text-xs font-mono transition-all ${
-                        currentSupplierDebt > PRODUCER_CREDIT_LIMIT
+                        (producerDynamicCreditLimit > 0 && currentSupplierDebt > producerDynamicCreditLimit)
                           ? 'bg-rose-950/40 border-rose-500/50 text-rose-300'
-                          : currentSupplierDebt >= PRODUCER_CREDIT_LIMIT * 0.75
+                          : (producerDynamicCreditLimit > 0 && currentSupplierDebt >= producerDynamicCreditLimit * 0.75)
                             ? 'bg-amber-950/40 border-amber-500/50 text-amber-300'
                             : 'bg-editorial-bg border-editorial-border text-editorial-text-muted'
                       }`}>
@@ -1551,26 +1601,26 @@ export default function CheesePOSView({
                             Libreta: {selectedSupplier.name}
                           </span>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ${
-                            currentSupplierDebt > PRODUCER_CREDIT_LIMIT
+                            (producerDynamicCreditLimit > 0 && currentSupplierDebt > producerDynamicCreditLimit)
                               ? 'bg-rose-500 text-black font-extrabold'
-                              : currentSupplierDebt >= PRODUCER_CREDIT_LIMIT * 0.75
+                              : (producerDynamicCreditLimit > 0 && currentSupplierDebt >= producerDynamicCreditLimit * 0.75)
                                 ? 'bg-amber-500/20 text-amber-400'
                                 : 'bg-emerald-500/20 text-emerald-400'
                           }`}>
-                            {currentSupplierDebt > PRODUCER_CREDIT_LIMIT ? 'Tope Excedido' : `Límite $${PRODUCER_CREDIT_LIMIT}`}
+                            {(producerDynamicCreditLimit > 0 && currentSupplierDebt > producerDynamicCreditLimit) ? 'Tope Excedido' : `Límite $${producerDynamicCreditLimit.toFixed(2)}`}
                           </span>
                         </div>
                         <div className="grid grid-cols-2 gap-2 text-[11px] pt-1 border-t border-editorial-border/30">
                           <div>
                             <span className="text-[9px] text-editorial-text-muted block">Deuda en Tienda:</span>
-                            <span className={`font-bold ${currentSupplierDebt > PRODUCER_CREDIT_LIMIT ? 'text-rose-400' : 'text-editorial-text-primary'}`}>
+                            <span className={`font-bold ${(producerDynamicCreditLimit > 0 && currentSupplierDebt > producerDynamicCreditLimit) ? 'text-rose-400' : 'text-editorial-text-primary'}`}>
                               ${currentSupplierDebt.toFixed(2)} USD
                             </span>
                           </div>
                           <div className="text-right">
                             <span className="text-[9px] text-editorial-text-muted block">Crédito Disponible:</span>
-                            <span className={`font-bold ${PRODUCER_CREDIT_LIMIT - currentSupplierDebt <= 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                              ${Math.max(0, PRODUCER_CREDIT_LIMIT - currentSupplierDebt).toFixed(2)} USD
+                            <span className={`font-bold ${producerDynamicCreditLimit - currentSupplierDebt <= 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                              ${Math.max(0, producerDynamicCreditLimit - currentSupplierDebt).toFixed(2)} USD
                             </span>
                           </div>
                         </div>
@@ -1943,7 +1993,7 @@ export default function CheesePOSView({
                                </p>
                             )}
 
-                             {/* Bloqueo Estricto de Crédito para Productor ($60) */}
+                             {/* Bloqueo Estricto de Crédito para Productor (Tope Dinámico por Historial) */}
                              {customerType === 'supplier' && isCreditSale && isSupplierOverCreditLimit && (
                                <div className="mt-3 p-3 bg-rose-950/60 border-2 border-rose-500 rounded-lg text-xs font-mono space-y-2 animate-in fade-in duration-200">
                                  <div className="flex items-center gap-2 text-rose-400 font-bold uppercase text-[11px]">
@@ -1951,7 +2001,7 @@ export default function CheesePOSView({
                                    <span>VENTA BLOQUEADA: TOPE DE CRÉDITO EXCEDIDO</span>
                                  </div>
                                  <p className="text-[10px] text-rose-200 leading-tight">
-                                   El productor <strong>{selectedSupplier?.name}</strong> acumularía una deuda de <strong>${projectedSupplierStoreDebt.toFixed(2)}</strong>, superando el tope máximo de <strong>${PRODUCER_CREDIT_LIMIT.toFixed(2)}</strong>.
+                                   El productor <strong>{selectedSupplier?.name}</strong> acumularía una deuda de <strong>${projectedSupplierStoreDebt.toFixed(2)}</strong>, superando su tope dinámico de última entrega de <strong>${producerDynamicCreditLimit.toFixed(2)}</strong>.
                                  </p>
                                  <div className="p-2 bg-black/50 border border-rose-500/40 rounded text-[10px] text-amber-300 flex justify-between items-center">
                                    <span>Abono de contado requerido:</span>
