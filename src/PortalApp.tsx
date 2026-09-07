@@ -32,13 +32,13 @@ export default function PortalApp() {
   } = useSharedData();
 
   useEffect(() => {
-    // Detectar qué portal debe mostrarse según la URL (ej: portal.html?type=contador o portal.html#/contador)
+    // Detectar qué portal debe mostrarse según la URL (ej: ?portal=productor, ?type=contador o portal.html#/contador)
     const params = new URLSearchParams(window.location.search);
-    const type = params.get('type');
+    const portal = params.get('portal') || params.get('type');
     const hash = window.location.hash.replace('#/', '').replace('#', '');
     
-    if (type === 'productor' || type === 'contador' || type === 'proveedor') {
-      setPortalType(type);
+    if (portal === 'productor' || portal === 'contador' || portal === 'proveedor' || portal === 'cliente') {
+      setPortalType(portal as any);
     } else if (hash === 'productor' || hash === 'contador' || hash === 'proveedor' || hash === 'cliente') {
       setPortalType(hash as any);
     }
