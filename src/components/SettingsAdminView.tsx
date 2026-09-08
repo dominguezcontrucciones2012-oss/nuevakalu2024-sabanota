@@ -281,14 +281,17 @@ export default function SettingsAdminView({
       const { clearCollection } = await import('../services/localApi');
       const collectionsToClear = [
         'transactions',
+        'sales',
         'invoices',
         'shift_transactions',
         'shift_sessions',
+        'cashClosings',
         'expenses',
         'payments',
         'bills',
         'installments',
-        'kardex'
+        'kardex',
+        'cheeseTrips'
       ];
       
       for (const col of collectionsToClear) {
@@ -304,7 +307,7 @@ export default function SettingsAdminView({
       const sups = await fetchCollection('suppliers');
       if (Array.isArray(sups)) {
         for (const d of sups) {
-          await updateLocalDoc('suppliers', d.id, { balanceOwed: 0, storeDebt: 0 });
+          await updateLocalDoc('suppliers', d.id, { balanceOwed: 0, storeDebt: 0, balance: 0, debt: 0 });
         }
       }
       setMaintLogs(prev => [...prev, `Saldos de ${Array.isArray(sups) ? sups.length : 0} proveedores reseteados.`]);
@@ -313,10 +316,33 @@ export default function SettingsAdminView({
       const clis = await fetchCollection('clients');
       if (Array.isArray(clis)) {
         for (const d of clis) {
-          await updateLocalDoc('clients', d.id, { outstandingDebt: 0, loyaltyPoints: 0 });
+          await updateLocalDoc('clients', d.id, { outstandingDebt: 0, loyaltyPoints: 0, balanceUsd: 0, balanceBs: 0 });
         }
       }
       setMaintLogs(prev => [...prev, `Deudas de ${Array.isArray(clis) ? clis.length : 0} clientes reseteadas.`]);
+
+      // Reset Bóveda Central to 0
+      try {
+        await updateLocalDoc('settings', 'general', {
+          centralVaultBalance: { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 }
+        });
+      } catch (e) {
+        console.warn('Error resetting vault balance in settings:', e);
+      }
+
+      // Purge local storage accounting keys
+      localStorage.removeItem('kalu_sales_history');
+      localStorage.removeItem('kalu_expenses');
+      localStorage.removeItem('kalu_supplier_ledger');
+      localStorage.removeItem('kalu_activities');
+      localStorage.removeItem('kalu_balance');
+      localStorage.removeItem('kalu_sales_count');
+      localStorage.removeItem('kalu_sales_revenue');
+      localStorage.removeItem('kalu_cheese_trips');
+
+      if (onResetAccounting) {
+        await onResetAccounting();
+      }
 
       setMaintLogs(prev => [...prev, '¡PURGA DE CONTABILIDAD COMPLETADA EXITOSAMENTE!']);
       onAddNotification("Contabilidad y deudas reseteadas a cero correctamente en la base de datos.", "success");

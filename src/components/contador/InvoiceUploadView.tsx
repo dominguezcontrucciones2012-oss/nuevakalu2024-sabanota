@@ -1,8 +1,8 @@
 import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
 import React, { useState, useEffect, useRef } from 'react';
-import { extractInvoiceData, extractDictationData, pingGeminiAPI } from '../../services/ocrService';
+import { extractInvoiceData, extractDictationData, pingGeminiAPI, normalizeTextForMatching } from '../../services/ocrService';
 import { INITIAL_CHEESE_PRODUCTS } from '../../data';
-import { Save, ArrowLeft, Search, Package, Trash2, Camera, Image as ImageIcon, Mic, Loader2, Snowflake, CheckSquare, Square, FileText, Receipt, AlertCircle, Sparkles, CheckCircle2, Wifi, WifiOff } from 'lucide-react';
+import { Save, ArrowLeft, Search, Package, Trash2, Camera, Image as ImageIcon, Mic, Loader2, Snowflake, Flame, CheckSquare, Square, FileText, Receipt, AlertCircle, Sparkles, CheckCircle2, Wifi, WifiOff, X, RefreshCw, FolderOpen } from 'lucide-react';
 import { CheeseProduct, CheeseTrip, CentralVaultBalance, Transaction, SupplierProfile } from '../../types';
 
 interface InvoiceUploadViewProps {
@@ -19,7 +19,7 @@ interface InvoiceUploadViewProps {
 
 interface InvoiceItem {
   id: string;
-  productId: string; // 'NEW' si no existe
+  productId: string; // ID real o 'NEW' si no existe
   name: string;
   quantity: number;
   unitType: 'unidad' | 'bulto';
@@ -29,6 +29,16 @@ interface InvoiceItem {
   salePrice: number;
   subtotal: number;
   unit?: 'Kg' | 'Und' | 'Bulto';
+}
+
+interface InvoiceDraft {
+  id: string;
+  type: string;
+  items: InvoiceItem[];
+  supplierId?: string;
+  isCredit?: boolean;
+  date?: string;
+  createdAt: string;
 }
 
 export default function InvoiceUploadView({ 
@@ -48,21 +58,31 @@ export default function InvoiceUploadView({
   const [supplierId, setSupplierId] = useState<string>('');
   const [isCredit, setIsCredit] = useState(false);
   const [detectedInvoiceInfo, setDetectedInvoiceInfo] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<'upload' | 'manual' | 'scanner'>('upload');
   
-  // Estado del Buscador/Agregador
+  // Estado de carga y procesamiento
+  const [isScanning, setIsScanning] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [apiHealthStatus, setApiHealthStatus] = useState<'idle' | 'checking' | 'online' | 'offline'>('idle');
+  const [apiHealthMessage, setApiHealthMessage] = useState<string>('');
+
+  // Voice Dictation & Drafts
+  const [isDictating, setIsDictating] = useState(false);
+  const [dictationText, setDictationText] = useState('');
+  const [frozenDrafts, setFrozenDrafts] = useState<InvoiceDraft[]>([]);
+  const [showDraftsModal, setShowDraftsModal] = useState(false);
+
+  // Manual Entry States
   const [searchTerm, setSearchTerm] = useState('');
-  const [searchResults, setSearchResults] = useState<CheeseProduct[]>([]);
+  const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [unitType, setUnitType] = useState<'unidad' | 'bulto'>('unidad');
   const [unitsPerBulto, setUnitsPerBulto] = useState<number>(10);
-  
-  // Estado UI
-  const [isSaving, setIsSaving] = useState(false);
-  const [isScanning, setIsScanning] = useState(false);
-  const [isDictating, setIsDictating] = useState(false);
-  const [dictationText, setDictationText] = useState('');
-  const [apiHealthStatus, setApiHealthStatus] = useState<'unknown' | 'checking' | 'online' | 'offline'>('unknown');
-  const [apiHealthMessage, setApiHealthMessage] = useState<string>('');
+  const [manualName, setManualName] = useState('');
+  const [manualCost, setManualCost] = useState<number>(0);
+  const [manualSale, setManualSale] = useState<number>(0);
+  const [manualQty, setManualQty] = useState<number>(1);
+  const [bcvRate, setBcvRate] = useState<number>(initialExchangeRate);
 
   // Trip Settlement States
   const settlingTrip = cheeseTrips?.find(t => t.id === settlingTripId);
@@ -72,164 +92,216 @@ export default function InvoiceUploadView({
   const [vaultBs, setVaultBs] = useState(0);
   const [vaultBankBs, setVaultBankBs] = useState(0);
   const [vaultBankUsd, setVaultBankUsd] = useState(0);
-  const [bcvRate, setBcvRate] = useState(initialExchangeRate || 45.00);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
 
-  // Auto-verificar conexión con Gemini al montar
+  // Helper de Emparejamiento Preventivo
+  const matchProductInCatalog = (nameToMatch: string, catalog: any[]): any | undefined => {
+    if (!nameToMatch) return undefined;
+    const cleanTarget = normalizeTextForMatching(nameToMatch);
+    if (!cleanTarget) return undefined;
+
+    // 1. Exacto normalizado
+    let match = catalog.find(p => normalizeTextForMatching(p.name) === cleanTarget);
+    if (match) return match;
+
+    // 2. Contención de subcadena
+    match = catalog.find(p => {
+      const cleanP = normalizeTextForMatching(p.name);
+      return cleanP.length >= 3 && (cleanP.includes(cleanTarget) || cleanTarget.includes(cleanP));
+    });
+    return match;
+  };
+
+  // Test API connection on mount
   useEffect(() => {
-    const checkGemini = async () => {
+    let isMounted = true;
+    const testApi = async () => {
       setApiHealthStatus('checking');
       const res = await pingGeminiAPI();
-      setApiHealthStatus(res.ok ? 'online' : 'offline');
-      setApiHealthMessage(res.message);
+      if (!isMounted) return;
+      if (res.ok) {
+        setApiHealthStatus('online');
+        setApiHealthMessage(res.message);
+      } else {
+        setApiHealthStatus('offline');
+        setApiHealthMessage(res.message);
+      }
     };
-    checkGemini();
+    testApi();
+    return () => { isMounted = false; };
   }, []);
 
-  // Inicializar Proveedores y Escuchar en Tiempo Real
+  // Sync suppliers from database or props
   useEffect(() => {
-    const unsubscribe = onCollectionSnapshot('suppliers', (sups) => {
-      if (sups && sups.length > 0) {
-        setSuppliers(sups);
-        setSupplierId(prev => (!prev ? sups[0].id : prev));
+    const loadSuppliers = async () => {
+      try {
+        const data = await fetchCollection('suppliers');
+        if (data && data.length > 0) {
+          setSuppliers(data);
+        }
+      } catch (e) {
+        console.error("Error cargando proveedores:", e);
       }
+    };
+    loadSuppliers();
+
+    // Listen to real-time updates of frozen drafts
+    const unsubDrafts = onCollectionSnapshot('daily_drafts', (data) => {
+      const drafts = (data || []).filter((d: any) => d.type === 'invoice_draft');
+      setFrozenDrafts(drafts);
     });
 
-    return () => unsubscribe();
+    return () => {
+      if (unsubDrafts) unsubDrafts();
+    };
   }, []);
 
-  // Escuchar Tasa de Cambio si está disponible en settings
+  // Speech Recognition Setup
   useEffect(() => {
-    const unsub = onCollectionSnapshot('settings', (data) => {
-      const generalDoc = data.find((d: any) => d.id === 'general');
-      if (generalDoc && generalDoc.exchangeRate) {
-        setBcvRate(generalDoc.exchangeRate);
-      }
-    });
-    return () => unsub();
-  }, []);
-
-  // Inicializar Web Speech API para dictado
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        recognitionRef.current = new SpeechRecognition();
-        recognitionRef.current.continuous = false;
-        recognitionRef.current.interimResults = false;
-        recognitionRef.current.lang = 'es-MX';
-
-        recognitionRef.current.onresult = (event: any) => {
-          const text = event.results[0][0].transcript;
-          setDictationText(text);
-          processDictationWithAI(text);
-        };
-
-        recognitionRef.current.onerror = () => setIsDictating(false);
-        recognitionRef.current.onend = () => setIsDictating(false);
-      }
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+      console.warn('Reconocimiento de voz no soportado en este navegador');
+      return;
     }
-  }, []);
 
-  // Buscador en tiempo real consultando estrictamente la colección 'products'
-  useEffect(() => {
-    const searchProduct = async () => {
-      if (searchTerm.length < 2) {
-        setSearchResults([]);
-        return;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'es-ES';
+
+    recognition.onresult = (event: any) => {
+      let current = '';
+      for (let i = 0; i < event.results.length; i++) {
+        current += event.results[i][0].transcript;
       }
+      setDictationText(current);
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error('Error dictado:', event.error);
+      setIsDictating(false);
+    };
+
+    recognition.onend = () => {
+      setIsDictating(false);
+      if (dictationText.trim()) {
+        processDictationWithAI(dictationText);
+      }
+    };
+
+    recognitionRef.current = recognition;
+  }, [dictationText, bcvRate]);
+
+  // Handle Search Debounced
+  useEffect(() => {
+    if (!searchTerm.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    const searchProduct = async () => {
       setIsSearching(true);
       try {
-        const res = await fetchCollection('products');
-        const productsList = await res.json();
-        const results = productsList.filter((p: any) => p.name?.toLowerCase().includes(searchTerm.toLowerCase()));
+        const productsList = await fetchCollection('products');
+        const results = (productsList || []).filter((p: any) => normalizeTextForMatching(p.name).includes(normalizeTextForMatching(searchTerm)));
         
         if (results.length === 0) {
-          // Fallback a local/props
           const fallbackList = initialProducts.length > 0 ? initialProducts : INITIAL_CHEESE_PRODUCTS;
-          const localMatches = fallbackList.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
+          const localMatches = fallbackList.filter(p => normalizeTextForMatching(p.name).includes(normalizeTextForMatching(searchTerm)));
           setSearchResults(localMatches);
         } else {
           setSearchResults(results);
         }
       } catch (error) {
         const fallbackList = initialProducts.length > 0 ? initialProducts : INITIAL_CHEESE_PRODUCTS;
-        const localMatches = fallbackList.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()));
+        const localMatches = fallbackList.filter(p => normalizeTextForMatching(p.name).includes(normalizeTextForMatching(searchTerm)));
         setSearchResults(localMatches);
       } finally {
         setIsSearching(false);
       }
     };
 
-    const debounceTimer = setTimeout(searchProduct, 300);
-    return () => clearTimeout(debounceTimer);
+    const debounce = setTimeout(searchProduct, 300);
+    return () => clearTimeout(debounce);
   }, [searchTerm, initialProducts]);
 
   const toggleDictation = () => {
     if (isDictating) {
       recognitionRef.current?.stop();
+      setIsDictating(false);
     } else {
       setDictationText('');
-      recognitionRef.current?.start();
-      setIsDictating(true);
+      try {
+        recognitionRef.current?.start();
+        setIsDictating(true);
+      } catch (err) {
+        console.error('Error iniciando dictado:', err);
+      }
     }
   };
+
+  // Alias para retrocompatibilidad
+  const savedDrafts = frozenDrafts;
 
   const processDictationWithAI = async (text: string) => {
     setIsScanning(true);
     try {
-      // Obtener nombres de productos de la base de datos
-      let inventoryNames: string[] = [];
+      let allProducts: any[] = [];
       try {
-        const res = await fetchCollection('products');
-        const prods = await res.json();
-        inventoryNames = prods.map((p: any) => p.name);
+        const prods = await fetchCollection('products');
+        allProducts = Array.isArray(prods) ? prods : (initialProducts.length > 0 ? initialProducts : INITIAL_CHEESE_PRODUCTS);
       } catch (e) {
-        inventoryNames = (initialProducts.length > 0 ? initialProducts : INITIAL_CHEESE_PRODUCTS).map(p => p.name);
+        allProducts = (initialProducts.length > 0 ? initialProducts : INITIAL_CHEESE_PRODUCTS);
       }
 
+      const inventoryNames = allProducts.map((p: any) => p.name);
       const extractedItems = await extractDictationData(text, bcvRate, inventoryNames);
       
       if (extractedItems && extractedItems.length > 0) {
-        // Cotejar con productos existentes
-        let prodsList: any[] = [];
-        try {
-          const res = await fetchCollection('products');
-          prodsList = await res.json();
-        } catch (e) {
-          prodsList = initialProducts;
-        }
-
         const newItems: InvoiceItem[] = extractedItems.map(item => {
-          const matchedProd = prodsList.find((p: any) => p.name?.toLowerCase() === item.nombre.toLowerCase());
+          const matchedProd = matchProductInCatalog(item.nombre, allProducts);
           const cost = item.costo_unitario || 0;
           const isBulto = item.unidad === 'Bulto';
-          const defaultMargin = 30;
+          const defaultMargin = matchedProd && matchedProd.sellingPrice && matchedProd.purchasePrice 
+            ? Math.round(((matchedProd.sellingPrice - matchedProd.purchasePrice) / matchedProd.purchasePrice) * 100)
+            : 30;
           const sale = cost * (1 + (defaultMargin / 100));
+          const totalQty = isBulto ? (item.cantidad * 10) : (item.cantidad || 1); // Asumimos 10 por bulto por defecto
 
           return {
             id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             productId: matchedProd ? matchedProd.id : 'NEW',
-            name: matchedProd ? matchedProd.name : item.nombre,
-            quantity: item.cantidad || 1,
+            name: matchedProd ? matchedProd.name : item.nombre.toUpperCase().trim(),
+            quantity: totalQty,
             unitType: isBulto ? 'bulto' : 'unidad',
             unitsPerBulto: 10,
             costPrice: cost,
             marginPercent: defaultMargin,
             salePrice: parseFloat(sale.toFixed(2)),
-            subtotal: cost * (item.cantidad || 1),
+            subtotal: parseFloat((cost * totalQty).toFixed(2)),
             unit: item.unidad as any
           };
         });
 
-        setItems(prev => [...prev, ...newItems]);
+        setItems(prev => {
+           const next = [...prev];
+           newItems.forEach(ni => {
+             const existingIdx = next.findIndex(x => x.name.toUpperCase() === ni.name.toUpperCase());
+             if (existingIdx !== -1) {
+               next[existingIdx].quantity += ni.quantity;
+               next[existingIdx].subtotal = parseFloat((next[existingIdx].quantity * next[existingIdx].costPrice).toFixed(2));
+             } else {
+               next.push(ni);
+             }
+           });
+           return next;
+        });
       }
     } catch (e: any) {
       console.error("Error al procesar dictado:", e);
-      alert(e.message || "No se pudo extraer la información del dictado.");
     } finally {
       setIsScanning(false);
     }
@@ -243,31 +315,28 @@ export default function InvoiceUploadView({
     setApiHealthStatus('checking');
 
     try {
-      // 1. Obtener catálogo actual de productos
       let allProducts: any[] = [];
       try {
-        const res = await fetchCollection('products');
-        allProducts = await res.json();
+        const prods = await fetchCollection('products');
+        allProducts = Array.isArray(prods) ? prods : (initialProducts.length > 0 ? initialProducts : INITIAL_CHEESE_PRODUCTS);
       } catch (e) {
         allProducts = initialProducts.length > 0 ? initialProducts : INITIAL_CHEESE_PRODUCTS;
       }
       const inventoryNames = allProducts.map((p: any) => p.name);
 
-      // 2. Ejecutar OCR con el servicio unificado
       const extracted = await extractInvoiceData(file, bcvRate, inventoryNames);
       setApiHealthStatus('online');
 
-      // 3. Auto-detección y vinculación estricta de Proveedor
       if (extracted.proveedor?.nombre || extracted.proveedor?.rif) {
-        const supNombreLow = (extracted.proveedor.nombre || '').toLowerCase().trim();
+        const supNombreNorm = normalizeTextForMatching(extracted.proveedor.nombre);
         const supRifClean = (extracted.proveedor.rif || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 
         const matchedSup = suppliers.find(s => {
-          const sNameLow = (s.name || '').toLowerCase().trim();
+          const sNameNorm = normalizeTextForMatching(s.name);
           const sIdClean = (s.idNumber || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
           return (
             (supRifClean && sIdClean && (sIdClean.includes(supRifClean) || supRifClean.includes(sIdClean))) ||
-            (supNombreLow && (sNameLow.includes(supNombreLow) || supNombreLow.includes(sNameLow)))
+            (supNombreNorm && (sNameNorm.includes(supNombreNorm) || supNombreNorm.includes(sNameNorm)))
           );
         });
 
@@ -279,35 +348,45 @@ export default function InvoiceUploadView({
         }
       }
 
-      // 4. Mapeo y cotejo inteligente de artículos a 'products'
       if (extracted.items && extracted.items.length > 0) {
         const newItems: InvoiceItem[] = extracted.items.map(item => {
-          const itemNameLow = (item.nombre || '').toLowerCase().trim();
-          const matchedProd = allProducts.find(p => p.name?.toLowerCase().trim() === itemNameLow);
-          
+          const matchedProd = matchProductInCatalog(item.nombre, allProducts);
           const isBulto = item.unidad === 'Bulto';
           const defaultMargin = matchedProd && matchedProd.sellingPrice && matchedProd.purchasePrice 
             ? Math.round(((matchedProd.sellingPrice - matchedProd.purchasePrice) / matchedProd.purchasePrice) * 100)
             : 30;
           const cost = item.costo_unitario || 0;
           const sale = cost * (1 + (defaultMargin / 100));
+          const totalQty = isBulto ? (item.cantidad * 10) : (item.cantidad || 1);
 
           return {
             id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             productId: matchedProd ? matchedProd.id : 'NEW',
-            name: matchedProd ? matchedProd.name : item.nombre,
-            quantity: item.cantidad || 1,
+            name: matchedProd ? matchedProd.name : item.nombre.toUpperCase().trim(),
+            quantity: totalQty,
             unitType: isBulto ? 'bulto' : 'unidad',
             unitsPerBulto: 10,
             costPrice: cost,
             marginPercent: defaultMargin,
             salePrice: parseFloat(sale.toFixed(2)),
-            subtotal: cost * (item.cantidad || 1),
+            subtotal: parseFloat((cost * totalQty).toFixed(2)),
             unit: item.unidad as any
           };
         });
 
-        setItems(prev => [...prev, ...newItems]);
+        setItems(prev => {
+          const next = [...prev];
+          newItems.forEach(ni => {
+             const existingIdx = next.findIndex(x => x.name.toUpperCase() === ni.name.toUpperCase());
+             if (existingIdx !== -1) {
+               next[existingIdx].quantity += ni.quantity;
+               next[existingIdx].subtotal = parseFloat((next[existingIdx].quantity * next[existingIdx].costPrice).toFixed(2));
+             } else {
+               next.push(ni);
+             }
+          });
+          return next;
+        });
       }
     } catch (error: any) {
       console.error("Error OCR:", error);
@@ -321,9 +400,11 @@ export default function InvoiceUploadView({
   };
 
   const createInvoiceItem = (productId: string, name: string, qty: number, cost: number): InvoiceItem => {
-    const finalQty = unitType === 'bulto' ? qty * unitsPerBulto : qty;
+    const validQty = Math.max(1, Number(qty) || 1);
+    const validCost = Math.max(0, Number(cost) || 0);
+    const finalQty = unitType === 'bulto' ? validQty * (Number(unitsPerBulto) || 1) : validQty;
     const defaultMargin = 30; // 30% por defecto
-    const sale = cost * (1 + (defaultMargin / 100));
+    const sale = validCost * (1 + (defaultMargin / 100));
     
     return {
       id: `item-${Date.now()}-${Math.random().toString(36).substr(2,9)}`,
@@ -331,11 +412,11 @@ export default function InvoiceUploadView({
       name,
       quantity: finalQty,
       unitType,
-      unitsPerBulto,
-      costPrice: cost,
+      unitsPerBulto: Number(unitsPerBulto) || 10,
+      costPrice: validCost,
       marginPercent: defaultMargin,
       salePrice: parseFloat(sale.toFixed(2)),
-      subtotal: cost * finalQty
+      subtotal: parseFloat((validCost * finalQty).toFixed(2))
     };
   };
 
@@ -343,7 +424,7 @@ export default function InvoiceUploadView({
     // Tomar costo existente si lo hay, o 0
     const cost = (prod as CheeseProduct).purchasePrice || 0;
     const newItem = createInvoiceItem(prod.id, prod.name, 1, cost);
-    setItems([...items, newItem]);
+    setItems(prev => [...prev, newItem]);
     setSearchTerm('');
     setSearchResults([]);
   };
@@ -354,16 +435,31 @@ export default function InvoiceUploadView({
       
       let updated = { ...item, [field]: value };
       
-      // Lógica de cálculo en cadena
-      if (field === 'costPrice' || field === 'marginPercent') {
-        updated.salePrice = parseFloat((updated.costPrice * (1 + (updated.marginPercent / 100))).toFixed(2));
-        updated.subtotal = updated.costPrice * updated.quantity;
+      const currentCost = Number(field === 'costPrice' ? value : updated.costPrice) || 0;
+      const currentQty = Number(field === 'quantity' ? value : updated.quantity) || 0;
+      const currentMargin = Number(field === 'marginPercent' ? value : updated.marginPercent) || 0;
+      const currentSale = Number(field === 'salePrice' ? value : updated.salePrice) || 0;
+
+      // Lógica de cálculo en cadena y sincronización de subtotal
+      if (field === 'costPrice') {
+        updated.costPrice = currentCost;
+        updated.salePrice = parseFloat((currentCost * (1 + (currentMargin / 100))).toFixed(2));
+        updated.subtotal = parseFloat((currentCost * currentQty).toFixed(2));
+      } else if (field === 'marginPercent') {
+        updated.marginPercent = currentMargin;
+        updated.salePrice = parseFloat((currentCost * (1 + (currentMargin / 100))).toFixed(2));
+        updated.subtotal = parseFloat((currentCost * currentQty).toFixed(2));
       } else if (field === 'salePrice') {
-        updated.marginPercent = updated.costPrice > 0 
-          ? parseFloat((((updated.salePrice - updated.costPrice) / updated.costPrice) * 100).toFixed(1))
+        updated.salePrice = currentSale;
+        updated.marginPercent = currentCost > 0 
+          ? parseFloat((((currentSale - currentCost) / currentCost) * 100).toFixed(1))
           : 100;
+        updated.subtotal = parseFloat((currentCost * currentQty).toFixed(2));
       } else if (field === 'quantity') {
-        updated.subtotal = updated.costPrice * updated.quantity;
+        updated.quantity = currentQty;
+        updated.subtotal = parseFloat((currentCost * currentQty).toFixed(2));
+      } else if (field === 'name') {
+        updated.name = value;
       }
       
       return updated;
@@ -375,7 +471,10 @@ export default function InvoiceUploadView({
   };
 
   const handleFreezeDraft = async () => {
-    if (items.length === 0) return;
+    if (items.length === 0) {
+      alert("Agregue al menos un artículo para congelar el borrador.");
+      return;
+    }
     setIsSaving(true);
     try {
       await addLocalDoc('daily_drafts', {
@@ -386,7 +485,7 @@ export default function InvoiceUploadView({
         date: new Date().toISOString().split('T')[0],
         createdAt: new Date().toISOString()
       });
-      alert("Borrador Congelado guardado con éxito.");
+      alert("✅ Borrador congelado con éxito.");
       setItems([]);
     } catch (e) {
       console.error(e);
@@ -396,15 +495,88 @@ export default function InvoiceUploadView({
     }
   };
 
+  const handleRestoreDraft = (draft: InvoiceDraft, shouldDelete: boolean = false) => {
+    if (items.length > 0) {
+      const confirmReplace = window.confirm("Ya tienes artículos en la tabla actual. ¿Deseas reemplazarlos con el borrador descongelado?");
+      if (!confirmReplace) return;
+    }
+
+    // Normalizar subtotales para garantizar cálculo exacto
+    const sanitizedItems = (draft.items || []).map(it => {
+      const c = Number(it.costPrice) || 0;
+      const q = Number(it.quantity) || 1;
+      return {
+        ...it,
+        costPrice: c,
+        quantity: q,
+        subtotal: parseFloat((c * q).toFixed(2))
+      };
+    });
+
+    setItems(sanitizedItems);
+    if (draft.supplierId) setSupplierId(draft.supplierId);
+    if (typeof draft.isCredit === 'boolean') setIsCredit(draft.isCredit);
+    setShowDraftsModal(false);
+
+    if (shouldDelete && draft.id) {
+      deleteLocalDoc('daily_drafts', draft.id).catch(console.error);
+    }
+  };
+
+  const handleDeleteDraft = async (draftId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm("¿Estás seguro de eliminar este borrador congelado?")) return;
+    try {
+      await deleteLocalDoc('daily_drafts', draftId);
+    } catch (err) {
+      console.error("Error al eliminar borrador:", err);
+    }
+  };
+
   const handleFinalSave = async () => {
-    if (items.length === 0) return;
+    if (items.length === 0) {
+      alert("⚠️ No hay artículos en la factura para procesar.");
+      return;
+    }
+    
+    // Validar que los ítems tengan datos válidos
+    const invalidItems = items.filter(it => (Number(it.quantity) || 0) <= 0 || (Number(it.costPrice) || 0) < 0);
+    if (invalidItems.length > 0) {
+      alert(`⚠️ Hay ${invalidItems.length} artículo(s) con cantidad o costo inválido. Por favor corríjalos antes de guardar.`);
+      return;
+    }
+
     setIsSaving(true);
     try {
-      const totalInvoiceCost = items.reduce((sum, item) => sum + item.subtotal, 0);
+      const totalInvoiceCost = items.reduce((sum, item) => sum + (Number(item.subtotal) || (Number(item.costPrice || 0) * Number(item.quantity || 0))), 0);
 
-      // 1. Guardar factura en compras
-      await addLocalDoc('purchases', {
-        supplierId,
+      // 1. Resolver o Crear Proveedor si es nuevo o vino de la IA
+      let effectiveSupplierId = supplierId;
+      let effectiveSupplierName = 'Factura Externa';
+
+      try {
+        const currentSups = await fetchCollection('suppliers') || [];
+        
+        let foundSup = currentSups.find((s: any) => s.id === supplierId);
+        if (!foundSup && detectedInvoiceInfo) {
+          // Intentar match por nombre extraído
+          foundSup = currentSups.find((s: any) => normalizeTextForMatching(s.name).includes(normalizeTextForMatching(detectedInvoiceInfo)));
+        }
+
+        if (foundSup) {
+          effectiveSupplierId = foundSup.id;
+          effectiveSupplierName = foundSup.name;
+        } else if (supplierId && supplierId.trim() !== '') {
+          effectiveSupplierName = supplierId;
+        }
+      } catch (e) {
+        console.warn("Error resolviendo proveedores:", e);
+      }
+
+      // 2. Guardar factura en compras
+      const savedPurchase = await addLocalDoc('purchases', {
+        supplierId: effectiveSupplierId,
+        supplierName: effectiveSupplierName,
         isCredit,
         items,
         totalCost: totalInvoiceCost,
@@ -412,60 +584,82 @@ export default function InvoiceUploadView({
         status: 'Completado'
       });
 
-      // 2. Actualizar Inventario Atómicamente (por cada item)
+      if (!savedPurchase) {
+        throw new Error("No se pudo registrar la factura en la base de datos de compras.");
+      }
+
+      // 3. Actualizar Inventario Atómicamente (por cada item)
+      let allProductsList: any[] = [];
+      try {
+        const prods = await fetchCollection('products');
+        allProductsList = Array.isArray(prods) ? prods : [];
+      } catch (e) {
+        allProductsList = [];
+      }
+
+      let updatedCount = 0;
+      let createdCount = 0;
+
       for (const item of items) {
         let prevStock = 0;
+        
+        const isBulto = item.unitType === 'bulto' || item.unit === 'Bulto';
+        const finalUnit = isBulto ? 'Und' : (item.unit === 'Und' ? 'Und' : (item.unit || 'Kg'));
 
-        if (item.productId && item.productId !== 'NEW') {
-          try {
-            const res = await fetchCollection('products');
-            const products = await res.json();
-            const p = products.find((x: any) => x.id === item.productId);
-            if (p) {
-              prevStock = p.stockKg || 0;
-            }
-
-            await updateLocalDoc('products', item.productId, {
-               purchasePrice: item.costPrice,
-               sellingPrice: item.salePrice,
-               stockKg: prevStock + item.quantity
-            });
-          } catch (e) {
-            console.warn("Item no hallado, se creará.");
-            await addLocalDoc('products', {
-              name: item.name,
-              stockKg: item.quantity,
-              purchasePrice: item.costPrice,
-              sellingPrice: item.salePrice,
-              category: 'General'
-            });
-          }
-        } else {
-          // Crear nuevo producto en inventario
-          await addLocalDoc('products', {
-            name: item.name,
-            stockKg: item.quantity,
-            purchasePrice: item.costPrice,
-            sellingPrice: item.salePrice,
-            category: 'General'
-          });
+        // Emparejamiento preventivo final: Buscar por ID o por coincidencia normalizada
+        let targetProd = allProductsList.find((p: any) => p.id === item.productId && item.productId !== 'NEW');
+        if (!targetProd) {
+          targetProd = matchProductInCatalog(item.name, allProductsList);
         }
 
-        // Add Kardex Movement
+        if (targetProd) {
+          prevStock = Number(targetProd.stockKg) || 0;
+          const updatedStock = prevStock + Number(item.quantity);
+
+          await updateLocalDoc('products', targetProd.id, {
+            purchasePrice: Number(item.costPrice),
+            sellingPrice: Number(item.salePrice) > 0 ? Number(item.salePrice) : (targetProd.sellingPrice || 0),
+            stockKg: updatedStock,
+            unit: targetProd.unit || finalUnit
+          });
+          updatedCount++;
+        } else {
+          // Crear nuevo producto en inventario con estructura canónica
+          const newDoc = {
+            name: item.name.trim(),
+            stockKg: Number(item.quantity),
+            purchasePrice: Number(item.costPrice),
+            sellingPrice: Number(item.salePrice),
+            category: 'Víveres',
+            unit: finalUnit,
+            alertThreshold: 5,
+            agingDays: 0,
+            origin: effectiveSupplierName
+          };
+          const created = await addLocalDoc('products', newDoc);
+          if (created && created.id) {
+            allProductsList.push({ ...newDoc, id: created.id });
+            createdCount++;
+          }
+        }
+
+        // Add Kardex Movement con cantidades y unidades exactas del producto real
         try {
+          const resolvedUnit = targetProd?.unit || (item.unit === 'Und' ? 'Und' : (item.unitType === 'bulto' ? 'Und' : (item.unit || 'Kg')));
           await addLocalDoc('kardex', {
-            productId: item.productId || 'NEW',
-            productName: item.name,
-            type: 'ENTRADA',
-            concept: settlingTrip ? 'Liquidación Gira San Juan / Compra Víveres' : 'Compra Víveres',
-            quantity: item.quantity,
+            productId: targetProd ? targetProd.id : 'NUEVO',
+            productName: targetProd ? targetProd.name : item.name,
+            type: 'ENTRADA_COMPRA',
+            concept: settlingTrip ? 'Liquidación Gira San Juan / Compra Víveres' : `Compra Factura (${effectiveSupplierName})`,
+            quantity: Number(item.quantity),
             previousStock: prevStock,
-            newStock: prevStock + item.quantity,
-            costPrice: item.costPrice,
-            totalCost: item.costPrice * item.quantity,
-            unit: item.unit || 'Kg/Und',
-            price: item.costPrice, // Mantener para compatibilidad
-            documentRef: settlingTrip ? `Viaje #${settlingTrip.tripNumber}` : (suppliers.find(s => s.id === supplierId)?.name || 'Compra'),
+            newStock: prevStock + Number(item.quantity),
+            unitCost: Number(item.costPrice),
+            totalCost: Number(item.costPrice) * Number(item.quantity),
+            unit: resolvedUnit,
+            referenceId: `FAC-${Date.now().toString().slice(-6)}`,
+            documentRef: settlingTrip ? `Viaje #${settlingTrip.tripNumber}` : effectiveSupplierName,
+            userOrCashier: 'Contador IA',
             date: new Date().toISOString()
           });
         } catch (e) {
@@ -473,23 +667,42 @@ export default function InvoiceUploadView({
         }
       }
 
-      // 3. Persistencia de Cuentas por Pagar (CXP) si es Crédito
-      if (isCredit && supplierId) {
+      // 4. Persistencia de Cuentas por Pagar (CXP) y Registro de Transacción
+      if (effectiveSupplierId) {
         try {
-          const res = await fetchCollection('suppliers');
-          const sups = await res.json();
-          const s = sups.find((x: any) => x.id === supplierId);
+          const sups = (await fetchCollection('suppliers')) || [];
+          const s = sups.find((x: any) => x.id === effectiveSupplierId || normalizeTextForMatching(x.name) === normalizeTextForMatching(effectiveSupplierName));
+          
           if (s) {
-            await updateLocalDoc('suppliers', supplierId, {
-              balanceOwed: (s.balanceOwed || 0) + Number(totalInvoiceCost)
+            if (isCredit) {
+              const currentBalance = Number(s.balanceOwed) || 0;
+              const newBalance = currentBalance + Number(totalInvoiceCost);
+              await updateLocalDoc('suppliers', s.id, {
+                balanceOwed: newBalance
+              });
+            }
+
+            // Registrar transacción contable asociada al proveedor para que aparezca en su historial
+            await addLocalDoc('transactions', {
+              category: 'compras',
+              entity: s.name || effectiveSupplierName,
+              supplierId: s.id,
+              amount: totalInvoiceCost,
+              isIncome: false,
+              status: 'Completado',
+              invoiceNumber: `FAC-${Date.now().toString().slice(-6)}`,
+              paymentMethod: isCredit ? 'A la Libreta / Crédito' : 'Contado / Caja',
+              notes: `Compra de mercancía vía Factura Inteligente (${items.length} artículos)`,
+              date: new Date().toISOString(),
+              createdAt: Date.now()
             });
           }
         } catch (e) {
-          console.error("Error al actualizar deuda del proveedor:", e);
+          console.error("Error al actualizar deuda y transacción del proveedor:", e);
         }
       }
 
-      // 4. Integración con Viaje San Juan (Si aplica)
+      // 5. Integración con Viaje San Juan (Si aplica)
       if (settlingTrip && onSettleTrip) {
         try {
           const currentInvoicesUsd = settlingTrip.totalInvoicesValueUsd || 0;
@@ -503,11 +716,10 @@ export default function InvoiceUploadView({
           const tripBagValue = settlingTrip.totalBagValueUsd || settlingTrip.dispatchedCostValue;
           const netProfit = totalSettlementValue - tripBagValue;
 
-          // Construir facturas para el registro del viaje
           const invoicesList = settlingTrip.invoices || [];
           invoicesList.push({
             id: `INV-${Date.now()}`,
-            supplierName: suppliers.find(s => s.id === supplierId)?.name || 'Compras Locales',
+            supplierName: effectiveSupplierName,
             date: new Date().toISOString(),
             totalUsd: totalInvoiceCost,
             items: items.map(item => ({ description: item.name, quantity: item.quantity, unitCostUsd: item.costPrice, totalCostUsd: item.subtotal }))
@@ -520,13 +732,11 @@ export default function InvoiceUploadView({
             netProfitUsd: netProfit
           };
 
-          // Auto-Liquidación si cubre la deuda
           if (totalSettlementValue >= tripBagValue) {
             updateData.status = 'liquidado';
             updateData.settledAt = new Date().toISOString();
             await onSettleTrip(settlingTrip.id, updateData);
           } else {
-            // Actualización parcial
             await updateLocalDoc('cheeseTrips', settlingTrip.id, updateData);
           }
         } catch (e) {
@@ -534,12 +744,12 @@ export default function InvoiceUploadView({
         }
       }
 
-      alert("Factura ingresada e inventario actualizado.");
+      alert(`✅ Factura procesada con éxito:\n• ${items.length} artículos procesados (${updatedCount} actualizados, ${createdCount} nuevos).\n• Total cargado: $${totalInvoiceCost.toFixed(2)} USD.\n• Kardex y Cuentas sincronizadas.`);
       setItems([]);
       setSearchTerm('');
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error al procesar compra:", error);
-      alert("Ocurrió un error al guardar.");
+      alert(`❌ ERROR AL GUARDAR: ${error.message || 'No se pudo sincronizar con la base de datos local.'}\n\nPor favor revise su conexión al servidor backend.`);
     } finally {
       setIsSaving(false);
     }
@@ -621,7 +831,7 @@ export default function InvoiceUploadView({
     }
   };
 
-  const grandTotal = items.reduce((sum, i) => sum + i.subtotal, 0);
+  const grandTotal = items.reduce((sum, i) => sum + (Number(i.subtotal) || (Number(i.costPrice || 0) * Number(i.quantity || 0))), 0);
 
   return (
     <div className="flex flex-col h-full bg-zinc-950 animate-fade-in font-sans">
@@ -660,7 +870,7 @@ export default function InvoiceUploadView({
           </div>
         )}
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {settlingTrip && (
             <>
               <button 
@@ -681,13 +891,34 @@ export default function InvoiceUploadView({
               )}
             </>
           )}
+
+          {/* Botón: Descongelar Borradores */}
           <button 
-            onClick={handleFreezeDraft}
+            type="button"
+            onClick={() => setShowDraftsModal(true)}
             disabled={isSaving}
-            className="bg-zinc-900 border border-zinc-700 hover:border-zinc-600 text-zinc-300 px-4 py-2 rounded-lg text-xs font-bold uppercase flex items-center gap-2 transition-colors disabled:opacity-50"
+            className="bg-cyan-950/40 border border-cyan-800/80 hover:bg-cyan-900/60 text-cyan-300 px-3.5 py-2 rounded-lg text-xs font-bold uppercase flex items-center gap-2 transition-all cursor-pointer shadow-md disabled:opacity-50"
+            title="Ver y restaurar borradores guardados"
+          >
+            <FolderOpen className="w-4 h-4 text-cyan-400" />
+            <span>Descongelar</span>
+            {savedDrafts.length > 0 && (
+              <span className="bg-cyan-500 text-zinc-950 text-[10px] font-mono font-black px-1.5 py-0.2 rounded-full">
+                {savedDrafts.length}
+              </span>
+            )}
+          </button>
+
+          {/* Botón: Congelar Borrador Actual */}
+          <button 
+            type="button"
+            onClick={handleFreezeDraft}
+            disabled={isSaving || items.length === 0}
+            className="bg-zinc-900 border border-zinc-700 hover:border-cyan-500 text-zinc-300 hover:text-cyan-300 px-3.5 py-2 rounded-lg text-xs font-bold uppercase flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
+            title="Guardar estado actual para continuar más tarde"
           >
             <Snowflake className="w-4 h-4 text-cyan-400" />
-            Congelar Borrador
+            <span>Congelar</span>
           </button>
           
           {/* Input para Cámara directa */}
@@ -698,23 +929,29 @@ export default function InvoiceUploadView({
           
           {/* Botón 1: Galería / Archivos */}
           <button 
+            type="button"
             onClick={() => galleryInputRef.current?.click()}
             disabled={isScanning || isSaving}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 border border-zinc-700 hover:border-emerald-500 text-zinc-300 hover:text-emerald-400 rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-md disabled:opacity-50"
             title="Seleccionar foto de factura desde la galería o archivos"
           >
-            {isScanning ? <Loader2 className="w-4 h-4 animate-spin text-emerald-400" /> : <ImageIcon className="w-4 h-4 text-emerald-400" />}
+            <span className="flex items-center justify-center w-4 h-4">
+              {isScanning ? <Loader2 className="w-4 h-4 animate-spin text-emerald-400" /> : <ImageIcon className="w-4 h-4 text-emerald-400" />}
+            </span>
             <span className="hidden sm:inline">Galería</span>
           </button>
 
           {/* Botón 2: Tomar Foto con Cámara */}
           <button 
+            type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={isScanning || isSaving}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-md disabled:opacity-50"
             title="Tomar foto directa a la factura"
           >
-            {isScanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
+            <span className="flex items-center justify-center w-4 h-4">
+              {isScanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
+            </span>
             <span>Cámara</span>
           </button>
         </div>
@@ -732,7 +969,7 @@ export default function InvoiceUploadView({
             <div className="flex items-center justify-between bg-zinc-950/80 border border-zinc-800/80 px-3 py-1.5 rounded-lg text-[11px] font-mono">
               <div className="flex items-center gap-2">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span className="text-zinc-400">Motor OCR: <strong className="text-zinc-200">Gemini 2.5 Flash</strong></span>
+                <span className="text-zinc-400">Motor OCR: <strong className="text-zinc-200">Gemini 2.5 / 3.7 Flash</strong></span>
               </div>
               <div className="flex items-center gap-1.5">
                 {apiHealthStatus === 'checking' && (
@@ -981,12 +1218,15 @@ export default function InvoiceUploadView({
             </div>
 
             <button
+              type="button"
               onClick={handleFinalSave}
               disabled={items.length === 0 || isSaving}
               className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black uppercase tracking-widest text-xs rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg shadow-emerald-500/20 disabled:opacity-50"
             >
-              {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}
-              Guardar e Incrementar
+              <span className="flex items-center justify-center w-5 h-5">
+                {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}
+              </span>
+              <span>Guardar e Incrementar</span>
             </button>
           </div>
         </div>
@@ -1055,6 +1295,113 @@ export default function InvoiceUploadView({
               >
                 {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                 {isSaving ? 'Procesando...' : 'Cerrar con Pérdida (Forzar)'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Modal Descongelar Borradores */}
+      {showDraftsModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-zinc-950 border border-cyan-800/60 p-6 rounded-2xl shadow-2xl shadow-cyan-950/40 w-full max-w-xl max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between pb-4 border-b border-zinc-800">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-cyan-950/80 border border-cyan-700/50">
+                  <Snowflake className="w-5 h-5 text-cyan-400" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-serif font-bold text-white">Borradores Congelados</h2>
+                  <p className="text-xs text-cyan-400/80 font-mono">Selecciona una factura para restaurarla y continuar</p>
+                </div>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setShowDraftsModal(false)}
+                className="p-1.5 text-zinc-500 hover:text-white rounded-lg hover:bg-zinc-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto py-4 space-y-3">
+              {savedDrafts.length === 0 ? (
+                <div className="py-12 text-center text-zinc-500 font-mono space-y-2">
+                  <Snowflake className="w-10 h-10 mx-auto text-zinc-700 opacity-40" />
+                  <p className="text-sm">No hay borradores congelados guardados.</p>
+                  <p className="text-xs text-zinc-600">Al presionar "Congelar" en una factura, aparecerá aquí.</p>
+                </div>
+              ) : (
+                savedDrafts.map((draft, idx) => {
+                  const draftItemsCount = draft.items?.length || 0;
+                  const draftTotal = (draft.items || []).reduce((acc, it) => acc + (Number(it.subtotal) || (Number(it.costPrice || 0) * Number(it.quantity || 0))), 0);
+                  const supObj = suppliers.find(s => s.id === draft.supplierId);
+                  const formattedDate = draft.createdAt 
+                    ? new Date(draft.createdAt).toLocaleString('es-MX', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+                    : draft.date || 'Hoy';
+
+                  return (
+                    <div 
+                      key={draft.id || `draft-${idx}`}
+                      className="p-4 rounded-xl bg-zinc-900/70 border border-zinc-800 hover:border-cyan-500/50 transition-all flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono font-bold text-cyan-300">
+                            {supObj ? supObj.name : 'Proveedor General'}
+                          </span>
+                          {draft.isCredit && (
+                            <span className="text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30 px-1.5 py-0.5 rounded font-mono">
+                              Crédito
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-zinc-400 font-mono flex items-center gap-3">
+                          <span>📦 {draftItemsCount} {draftItemsCount === 1 ? 'artículo' : 'artículos'}</span>
+                          <span>•</span>
+                          <span className="text-emerald-400 font-bold">${draftTotal.toFixed(2)} USD</span>
+                          <span>•</span>
+                          <span className="text-zinc-500 text-[11px]">{formattedDate}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                        <button
+                          type="button"
+                          onClick={() => handleRestoreDraft(draft, false)}
+                          className="px-3 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-zinc-950 rounded-lg text-xs font-bold uppercase transition-colors cursor-pointer shadow-md"
+                        >
+                          Cargar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRestoreDraft(draft, true)}
+                          className="px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 rounded-lg text-xs font-bold uppercase transition-colors cursor-pointer"
+                          title="Cargar a la tabla y eliminar de la lista de borradores"
+                        >
+                          Cargar y Liberar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteDraft(draft.id, e)}
+                          className="p-1.5 text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer"
+                          title="Eliminar borrador"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-zinc-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowDraftsModal(false)}
+                className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-xs font-bold uppercase transition-colors"
+              >
+                Cerrar
               </button>
             </div>
           </div>

@@ -62,15 +62,29 @@ export default function PortalApp() {
 
     const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
     const updatedVault = { ...currentVault };
+    const pm = (tx.paymentMethod || '').toLowerCase();
+    const rate = settings.exchangeRate || 42.5;
     
     if (tx.isIncome) {
-      if (tx.paymentMethod === 'Efectivo' || tx.paymentMethod === 'Efectivo USD') updatedVault.usd += (tx.amount || 0);
-      else if (tx.paymentMethod === 'Efectivo BS') updatedVault.bs += (tx.amount || 0);
-      else updatedVault.bankUsd += (tx.amount || 0);
+      if (pm === 'efectivo' || pm === 'efectivo usd') {
+        updatedVault.usd += (tx.amount || 0);
+      } else if (pm === 'efectivo bs') {
+        updatedVault.bs += ((tx.amount || 0) * rate);
+      } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco bs') || pm.includes('bio')) {
+        updatedVault.bankBs += ((tx.amount || 0) * rate);
+      } else {
+        updatedVault.bankUsd += (tx.amount || 0);
+      }
     } else {
-      if (tx.paymentMethod === 'Efectivo' || tx.paymentMethod === 'Efectivo USD') updatedVault.usd -= (tx.amount || 0);
-      else if (tx.paymentMethod === 'Efectivo BS') updatedVault.bs -= (tx.amount || 0);
-      else updatedVault.bankUsd -= (tx.amount || 0);
+      if (pm === 'efectivo' || pm === 'efectivo usd') {
+        updatedVault.usd -= (tx.amount || 0);
+      } else if (pm === 'efectivo bs') {
+        updatedVault.bs -= ((tx.amount || 0) * rate);
+      } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco bs') || pm.includes('bio')) {
+        updatedVault.bankBs -= ((tx.amount || 0) * rate);
+      } else {
+        updatedVault.bankUsd -= (tx.amount || 0);
+      }
     }
     
     const newSettings = { ...settings, centralVaultBalance: updatedVault };

@@ -115,10 +115,7 @@ export default function App() {
     return saved ? JSON.parse(saved) : [];
   });
   // Global Ledger States
-  const [transactions, setTransactions] = useState<Transaction[]>(() => {
-    const saved = localStorage.getItem('kalu_sales_history');
-    return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
-  });
+  const [transactions, setTransactions] = useState<Transaction[]>(() => INITIAL_TRANSACTIONS);
   const [users, setUsers] = useState<UserIdentity[]>(() => {
     try {
       const saved = localStorage.getItem('kalu_users');
@@ -128,32 +125,15 @@ export default function App() {
     }
   });
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>(INITIAL_PAYMENT_METHODS);
-  const [activities, setActivities] = useState<ActivityStream[]>(() => {
-    const saved = localStorage.getItem('kalu_activities');
-    return saved ? JSON.parse(saved) : INITIAL_ACTIVITIES;
-  });
+  const [activities, setActivities] = useState<ActivityStream[]>(() => []);
 
   // Toast stack
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
 
   // Finanzas consolidadas: centralVaultBalance ahora reside en settings.centralVaultBalance
-
-
-  const [balance, setBalance] = useState<number>(() => {
-    const saved = localStorage.getItem('kalu_balance');
-    return saved ? parseFloat(saved) : 0;
-  });
-  const [totalSalesCount, setTotalSalesCount] = useState<number>(() => {
-    const saved = localStorage.getItem('kalu_sales_count');
-    return saved ? parseInt(saved) : 0;
-  });
-  const [totalSalesRevenue, setTotalSalesRevenue] = useState<number>(() => {
-    const saved = localStorage.getItem('kalu_sales_revenue');
-    return saved ? parseFloat(saved) : 0;
-  });
-
-  
-
+  const [balance, setBalance] = useState<number>(0);
+  const [totalSalesCount, setTotalSalesCount] = useState<number>(0);
+  const [totalSalesRevenue, setTotalSalesRevenue] = useState<number>(0);
 
   // Real-time Local API Listeners -> Local Listeners
   useEffect(() => {
@@ -162,24 +142,14 @@ export default function App() {
     }).catch(e => console.error("Error loading local products:", e));
 
     const unsubTransactions = onCollectionSnapshot('transactions', (data) => {
-      if (data && data.length > 0) {
-        const txs = data as Transaction[];
-        txs.sort((a, b) => {
-          if (a.id > b.id) return -1;
-          if (a.id < b.id) return 1;
-          return 0;
-        });
-        setTransactions(txs);
-      } else {
-        const saved = localStorage.getItem('kalu_sales_history');
-        if (saved) {
-           const parsed = JSON.parse(saved);
-           if (parsed.length > 0) {
-              setTransactions(parsed);
-              parsed.forEach((t: any) => addLocalDoc('transactions', t).catch(console.error));
-           }
-        }
-      }
+      const txs = Array.isArray(data) ? [...(data as Transaction[])] : [];
+      txs.sort((a, b) => {
+        if (a.id > b.id) return -1;
+        if (a.id < b.id) return 1;
+        return 0;
+      });
+      setTransactions(txs);
+      localStorage.setItem('kalu_sales_history', JSON.stringify(txs));
     });
 
     const unsubClients = onCollectionSnapshot('clients', (data) => {
@@ -568,10 +538,14 @@ export default function App() {
           deltaUsd += amt;
         } else if (m.includes('efectivo') && (m.includes('bs') || m.includes('ves'))) {
           deltaBs += orig || (amt * rate);
-        } else if (m.includes('movil') || m.includes('transfer') || m.includes('tarjeta') || m.includes('punto') || m.includes('bio')) {
+        } else if (m.includes('movil') || m.includes('móvil') || m.includes('transfer') || m.includes('tarjeta') || m.includes('punto') || m.includes('bio') || m.includes('banco bs') || p.currency === 'Bs' || p.currency === 'VES') {
+          // Bolívares electrónicos bancarios (Pago Móvil, Punto, Transferencia en Bs)
           deltaBankBs += orig || (amt * rate);
-        } else {
+        } else if (m.includes('zelle') || m.includes('banco usd') || m.includes('binance') || m.includes('dolar') || m.includes('usd') || p.currency === 'USD') {
           deltaBankUsd += amt;
+        } else {
+          // Por defecto cualquier otro método electrónico o no especificado en Bolívares va a bankBs
+          deltaBankBs += orig || (amt * rate);
         }
       });
     } else {
@@ -581,8 +555,10 @@ export default function App() {
         deltaUsd += amountPaid;
       } else if (pm.includes('efectivo') && (pm.includes('bs') || pm.includes('ves'))) {
         deltaBs += amountPaid * rate;
-      } else if (pm.includes('movil') || pm.includes('transfer') || pm.includes('tarjeta') || pm.includes('punto') || pm.includes('bio')) {
+      } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('tarjeta') || pm.includes('punto') || pm.includes('bio')) {
         deltaBankBs += amountPaid * rate;
+      } else if (pm.includes('zelle') || pm.includes('banco usd') || pm.includes('binance')) {
+        deltaBankUsd += amountPaid;
       } else if (!pm.includes('crédito') && !pm.includes('fiado') && !pm.includes('libreta')) {
         deltaUsd += amountPaid;
       }
@@ -1939,15 +1915,29 @@ export default function App() {
 
                  const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
                  const updatedVault = { ...currentVault };
+                 const pm = (tx.paymentMethod || '').toLowerCase();
+                 const rate = settings.exchangeRate || 42.5;
                  
                  if (tx.isIncome) {
-                    if (tx.paymentMethod === 'Efectivo' || tx.paymentMethod === 'Efectivo USD') updatedVault.usd += (tx.amount || 0);
-                    else if (tx.paymentMethod === 'Efectivo BS') updatedVault.bs += (tx.amount || 0);
-                    else updatedVault.bankUsd += (tx.amount || 0);
+                    if (pm === 'efectivo' || pm === 'efectivo usd') {
+                      updatedVault.usd += (tx.amount || 0);
+                    } else if (pm === 'efectivo bs') {
+                      updatedVault.bs += ((tx.amount || 0) * rate);
+                    } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco bs') || pm.includes('bio')) {
+                      updatedVault.bankBs += ((tx.amount || 0) * rate);
+                    } else {
+                      updatedVault.bankUsd += (tx.amount || 0);
+                    }
                  } else {
-                    if (tx.paymentMethod === 'Efectivo' || tx.paymentMethod === 'Efectivo USD') updatedVault.usd -= (tx.amount || 0);
-                    else if (tx.paymentMethod === 'Efectivo BS') updatedVault.bs -= (tx.amount || 0);
-                    else updatedVault.bankUsd -= (tx.amount || 0);
+                    if (pm === 'efectivo' || pm === 'efectivo usd') {
+                      updatedVault.usd -= (tx.amount || 0);
+                    } else if (pm === 'efectivo bs') {
+                      updatedVault.bs -= ((tx.amount || 0) * rate);
+                    } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco bs') || pm.includes('bio')) {
+                      updatedVault.bankBs -= ((tx.amount || 0) * rate);
+                    } else {
+                      updatedVault.bankUsd -= (tx.amount || 0);
+                    }
                  }
                  
                  handleUpdateSettings({ centralVaultBalance: updatedVault });

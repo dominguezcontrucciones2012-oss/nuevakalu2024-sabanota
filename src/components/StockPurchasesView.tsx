@@ -1,19 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { SupplierProfile, CheeseProduct } from '../types';
 import { Mic, Zap, ScanText, Plus, Trash2, Save, Bot, Snowflake, X, Check, RefreshCw } from 'lucide-react';
-import { extractInvoiceData } from '../services/ocrService';
+import { extractInvoiceData, extractDictationData, normalizeTextForMatching } from '../services/ocrService';
 import { parseSafeDecimal } from '../utils';
 
 export interface PurchaseItem {
   uiId: string;
   productId: string;
   name: string;
-  quantityKg: number;
-  purchasePrice: number;
-  marginPercent: number;
-  sellingPrice: number;
+  quantityKg: number | string;
+  purchasePrice: number | string;
+  marginPercent: number | string;
+  sellingPrice: number | string;
   unit?: 'Kg' | 'Und' | 'Bulto';
-  contentPerBulto?: number;
+  contentPerBulto?: number | string;
   previousCost?: number;
 }
 
@@ -50,7 +50,9 @@ export default function StockPurchasesView({
   const [supplierId, setSupplierId] = useState('');
   const [isCredit, setIsCredit] = useState(true);
   const [aiInput, setAiInput] = useState('');
+  const [isListening, setIsListening] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
   const [frozenInvoices, setFrozenInvoices] = useState<FrozenInvoice[]>([]);
   const [showFrozenModal, setShowFrozenModal] = useState(false);
 
@@ -85,6 +87,24 @@ export default function StockPurchasesView({
     }
   }, [items, supplierId, isCredit]);
 
+  // Matching Engine Preventivo
+  const findMatchingProduct = (targetName: string): CheeseProduct | undefined => {
+    if (!targetName) return undefined;
+    const cleanTarget = normalizeTextForMatching(targetName);
+    if (!cleanTarget) return undefined;
+
+    // 1. Coincidencia exacta limpia
+    let match = products.find(p => normalizeTextForMatching(p.name) === cleanTarget);
+    if (match) return match;
+
+    // 2. Coincidencia por contención (subcadena)
+    match = products.find(p => {
+      const cleanP = normalizeTextForMatching(p.name);
+      return cleanP.length >= 3 && (cleanP.includes(cleanTarget) || cleanTarget.includes(cleanP));
+    });
+    return match;
+  };
+
   const handleFreezePurchase = () => {
     if (items.length === 0) {
       onAddNotification('No hay productos en la factura para congelar.', 'warning');
@@ -114,6 +134,39 @@ export default function StockPurchasesView({
     onAddNotification('Factura congelada y guardada en lista de espera', 'success');
   };
 
+  const toggleVoiceDictation = () => {
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      return;
+    }
+
+    if (!('webkitSpeechRecognition' in window)) {
+      onAddNotification('Su navegador no soporta entrada de voz.', 'warning');
+      return;
+    }
+    const recognition = new (window as any).webkitSpeechRecognition();
+    recognitionRef.current = recognition;
+    recognition.lang = 'es-ES';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onresult = (event: any) => {
+      let transcript = '';
+      for (let i = 0; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      setAiInput(transcript);
+    };
+    recognition.onerror = (event: any) => {
+      console.error('Speech error', event.error);
+      setIsListening(false);
+    };
+    recognition.onend = () => setIsListening(false);
+    
+    recognition.start();
+  };
+
   const handleSeleccionarFotoFactura = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const file = e.target.files[0];
@@ -125,10 +178,11 @@ export default function StockPurchasesView({
         
         // Supplier Matching
         if (extracted.proveedor?.nombre) {
-          const supNombreLow = extracted.proveedor.nombre.toLowerCase();
+          const supNombreNorm = normalizeTextForMatching(extracted.proveedor.nombre);
           const matchedSup = suppliers.find(s => 
-            s.name.toLowerCase().includes(supNombreLow) || 
-            (s.idNumber && extracted.proveedor.rif && s.idNumber.includes(extracted.proveedor.rif))
+            normalizeTextForMatching(s.name).includes(supNombreNorm) || 
+            supNombreNorm.includes(normalizeTextForMatching(s.name)) ||
+            (s.idNumber && extracted.proveedor.rif && s.idNumber.replace(/[^a-zA-Z0-9]/g, '').toLowerCase().includes(extracted.proveedor.rif.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()))
           );
           if (matchedSup) {
             setSupplierId(matchedSup.id);
@@ -138,26 +192,30 @@ export default function StockPurchasesView({
           }
         }
         
-        // Product Matching
+        // Product Matching con Engine Preventivo
         if (extracted.items && extracted.items.length > 0) {
           const newPurchaseItems: PurchaseItem[] = extracted.items.map(item => {
-            const itemNameLow = item.nombre.toLowerCase();
-            const matchedProd = products.find(p => p.name.toLowerCase() === itemNameLow || p.name.toLowerCase().includes(itemNameLow));
+            const matchedProd = findMatchingProduct(item.nombre);
             
-            const currentMargin = matchedProd ? (matchedProd.sellingPrice - matchedProd.purchasePrice) / matchedProd.sellingPrice : 0.3;
+            const currentMargin = matchedProd && matchedProd.sellingPrice > matchedProd.purchasePrice 
+              ? (matchedProd.sellingPrice - matchedProd.purchasePrice) / matchedProd.sellingPrice 
+              : 0.3;
             const safeMargin = isNaN(currentMargin) || currentMargin >= 1 || currentMargin <= 0 ? 0.3 : currentMargin;
             const newSellingPrice = item.costo_unitario / (1 - safeMargin);
+
+            const isBulto = item.unidad === 'Bulto';
+            const resolvedUnit = isBulto ? 'Bulto' : (matchedProd?.unit || (item.unidad === 'Und' ? 'Und' : 'Kg'));
 
             return {
               uiId: `itm-${Date.now()}-${Math.random()}`,
               productId: matchedProd ? matchedProd.id : '',
-              name: matchedProd ? matchedProd.name : `[NUEVO] ${item.nombre.toUpperCase()}`,
+              name: matchedProd ? matchedProd.name : item.nombre.toUpperCase().trim(),
               quantityKg: item.cantidad,
               purchasePrice: item.costo_unitario,
-              marginPercent: safeMargin * 100,
+              marginPercent: Math.round(safeMargin * 100),
               sellingPrice: parseFloat(newSellingPrice.toFixed(2)),
-              unit: (item.unidad as any) === 'Bulto' ? 'Bulto' : (item.unidad === 'Und' ? 'Und' : 'Kg'),
-              contentPerBulto: (item.unidad as any) === 'Bulto' ? 1 : undefined,
+              unit: resolvedUnit as any,
+              contentPerBulto: isBulto ? 10 : undefined,
               previousCost: matchedProd ? matchedProd.purchasePrice : undefined
             };
           });
@@ -206,52 +264,76 @@ export default function StockPurchasesView({
       }
 
       if (field === 'name') {
-        const prod = products.find(p => p.name.toLowerCase() === String(value).toLowerCase());
-        if (prod && updated.productId !== prod.id) {
+        const prod = findMatchingProduct(String(value));
+        if (prod) {
           updated.productId = prod.id;
           updated.name = prod.name;
           updated.purchasePrice = prod.purchasePrice;
           updated.sellingPrice = prod.sellingPrice;
           updated.marginPercent = prod.sellingPrice > 0 ? Number((((prod.sellingPrice - prod.purchasePrice) / prod.sellingPrice) * 100).toFixed(1)) : 30;
           if (prod.unit) updated.unit = prod.unit as any;
-        } else if (!prod) {
+        } else {
           updated.productId = '';
         }
       }
       
       if (field === 'purchasePrice') {
-        const cost = parseSafeDecimal(value);
-        updated.purchasePrice = cost;
-        const margin = parseSafeDecimal(updated.marginPercent) || 30;
-        if (margin > 0 && margin < 100) {
-          updated.sellingPrice = parseFloat((cost / (1 - (margin / 100))).toFixed(2));
+        const costStr = String(value);
+        // Si el usuario escribe caracteres intermedios como '.' o ',', respetamos el string
+        const costNum = parseSafeDecimal(value);
+        const marginNum = parseSafeDecimal(updated.marginPercent) || 30;
+        if (!costStr.endsWith('.') && !costStr.endsWith(',')) {
+          updated.sellingPrice = parseFloat((costNum * (1 + (marginNum / 100))).toFixed(2));
         }
       }
 
       if (field === 'sellingPrice') {
-        const sell = parseSafeDecimal(value);
-        updated.sellingPrice = sell;
-        const cost = parseSafeDecimal(updated.purchasePrice);
-        if (sell > 0 && sell >= cost) {
-          updated.marginPercent = parseFloat((((sell - cost) / sell) * 100).toFixed(1));
+        const sellStr = String(value);
+        const sellNum = parseSafeDecimal(value);
+        const costNum = parseSafeDecimal(updated.purchasePrice);
+        if (!sellStr.endsWith('.') && !sellStr.endsWith(',') && costNum > 0 && sellNum >= costNum) {
+          updated.marginPercent = parseFloat((((sellNum - costNum) / costNum) * 100).toFixed(1));
         }
       }
 
       if (field === 'marginPercent') {
-        const margin = parseSafeDecimal(value);
-        updated.marginPercent = margin;
-        const cost = parseSafeDecimal(updated.purchasePrice);
-        if (cost > 0 && margin >= 0 && margin < 100) {
-          updated.sellingPrice = parseFloat((cost / (1 - (margin / 100))).toFixed(2));
+        const marginStr = String(value);
+        const marginNum = parseSafeDecimal(value);
+        const costNum = parseSafeDecimal(updated.purchasePrice);
+        if (!marginStr.endsWith('.') && !marginStr.endsWith(',')) {
+          updated.sellingPrice = parseFloat((costNum * (1 + (marginNum / 100))).toFixed(2));
         }
       }
 
-      if (field === 'quantityKg') {
-        updated.quantityKg = parseSafeDecimal(value);
-      }
+      return updated;
+    }));
+  };
 
-      if (field === 'contentPerBulto') {
-        updated.contentPerBulto = parseSafeDecimal(value);
+  const handleBlurItem = (uiId: string, field: 'purchasePrice' | 'sellingPrice' | 'marginPercent' | 'quantityKg' | 'contentPerBulto') => {
+    setItems(prev => prev.map(item => {
+      if (item.uiId !== uiId) return item;
+      const updated = { ...item };
+      
+      const costNum = parseSafeDecimal(updated.purchasePrice);
+      const marginNum = parseSafeDecimal(updated.marginPercent);
+      const sellNum = parseSafeDecimal(updated.sellingPrice);
+      const qtyNum = parseSafeDecimal(updated.quantityKg);
+
+      if (field === 'purchasePrice') {
+        updated.purchasePrice = costNum;
+        updated.sellingPrice = parseFloat((costNum * (1 + ((marginNum || 30) / 100))).toFixed(2));
+      } else if (field === 'marginPercent') {
+        updated.marginPercent = marginNum;
+        updated.sellingPrice = parseFloat((costNum * (1 + (marginNum / 100))).toFixed(2));
+      } else if (field === 'sellingPrice') {
+        updated.sellingPrice = sellNum;
+        if (costNum > 0 && sellNum >= costNum) {
+          updated.marginPercent = parseFloat((((sellNum - costNum) / costNum) * 100).toFixed(1));
+        }
+      } else if (field === 'quantityKg') {
+        updated.quantityKg = qtyNum;
+      } else if (field === 'contentPerBulto') {
+        updated.contentPerBulto = parseSafeDecimal(updated.contentPerBulto);
       }
 
       return updated;
@@ -262,17 +344,54 @@ export default function StockPurchasesView({
     setItems(items.filter(i => i.uiId !== uiId));
   };
 
-  const handleProcessAI = () => {
+  const handleProcessAI = async () => {
     if (!aiInput.trim()) {
       onAddNotification('Por favor ingrese o dicte el texto de la compra.', 'warning');
       return;
     }
-    // Simulate AI parsing
-    onAddNotification('Procesando entrada con IA...', 'info');
-    setTimeout(() => {
-      onAddNotification('Interpretación inteligente completada.', 'success');
-      setAiInput('');
-    }, 1000);
+    
+    setIsScanning(true);
+    onAddNotification('Interpretando orden con IA...', 'info');
+    try {
+      const inventoryNames = products.map(p => p.name);
+      const extracted = await extractDictationData(aiInput, exchangeRate, inventoryNames);
+      
+      if (extracted && extracted.length > 0) {
+        const newPurchaseItems: PurchaseItem[] = extracted.map(item => {
+          const matchedProd = findMatchingProduct(item.nombre);
+          const currentMargin = matchedProd && matchedProd.sellingPrice > matchedProd.purchasePrice 
+            ? (matchedProd.sellingPrice - matchedProd.purchasePrice) / matchedProd.sellingPrice 
+            : 0.3;
+          const safeMargin = isNaN(currentMargin) || currentMargin >= 1 || currentMargin <= 0 ? 0.3 : currentMargin;
+          const newSellingPrice = item.costo_unitario / (1 - safeMargin);
+          const isBulto = item.unidad === 'Bulto';
+
+          return {
+            uiId: `itm-${Date.now()}-${Math.random()}`,
+            productId: matchedProd ? matchedProd.id : '',
+            name: matchedProd ? matchedProd.name : item.nombre.toUpperCase().trim(),
+            quantityKg: item.cantidad,
+            purchasePrice: item.costo_unitario,
+            marginPercent: Math.round(safeMargin * 100),
+            sellingPrice: parseFloat(newSellingPrice.toFixed(2)),
+            unit: isBulto ? 'Bulto' : (item.unidad === 'Und' ? 'Und' : 'Kg'),
+            contentPerBulto: isBulto ? 10 : undefined,
+            previousCost: matchedProd ? matchedProd.purchasePrice : undefined
+          };
+        });
+
+        setItems(prev => [...prev, ...newPurchaseItems]);
+        onAddNotification(`IA procesó ${newPurchaseItems.length} artículos exitosamente.`, 'success');
+        setAiInput('');
+      } else {
+        onAddNotification('No se detectaron artículos en la orden dictada.', 'warning');
+      }
+    } catch (e: any) {
+      console.error(e);
+      onAddNotification(e.message || 'Error procesando texto con IA.', 'warning');
+    } finally {
+      setIsScanning(false);
+    }
   };
 
   const handleSavePurchase = () => {
@@ -284,25 +403,36 @@ export default function StockPurchasesView({
       onAddNotification('No hay productos en la lista para cargar.', 'warning');
       return;
     }
-    const invalidItems = items.some(i => i.quantityKg <= 0 || i.purchasePrice <= 0);
+    const invalidItems = items.some(i => (Number(i.quantityKg) || 0) <= 0 || (Number(i.purchasePrice) || 0) <= 0);
     if (invalidItems) {
       onAddNotification('Todos los productos deben tener cantidad y costo mayor a cero.', 'warning');
       return;
     }
 
+    // CONVERSIÓN MATEMÁTICA Y EMPAREJAMIENTO ESTRICTO A FORMATO CANÓNICO DE INVENTARIO
     const normalizedItems = items.map(item => {
-      let finalQty = item.quantityKg;
-      let finalPurchasePrice = item.purchasePrice;
-      
-      if (item.unit === 'Bulto' && item.contentPerBulto && item.contentPerBulto > 0) {
-        finalQty = item.quantityKg * item.contentPerBulto;
-        finalPurchasePrice = item.purchasePrice / item.contentPerBulto;
-      }
+      // 1. Re-verificar emparejamiento por si el nombre fue editado a mano
+      const matchedProd = item.productId ? products.find(p => p.id === item.productId) : findMatchingProduct(item.name);
+      const resolvedId = matchedProd ? matchedProd.id : item.productId;
+      const resolvedName = matchedProd ? matchedProd.name : item.name.trim();
+
+      // 2. Conversión estricta de Bultos a Unidades Granulares
+      const isBulto = item.unit === 'Bulto';
+      const bultoMultiplier = isBulto && item.contentPerBulto && item.contentPerBulto > 0 ? Number(item.contentPerBulto) : 1;
+
+      const finalQty = (Number(item.quantityKg) || 0) * bultoMultiplier;
+      const finalPurchasePrice = bultoMultiplier > 1 ? (Number(item.purchasePrice) || 0) / bultoMultiplier : (Number(item.purchasePrice) || 0);
+      const finalSellingPrice = bultoMultiplier > 1 ? (Number(item.sellingPrice) || 0) / bultoMultiplier : (Number(item.sellingPrice) || 0);
+      const finalUnit = isBulto ? 'Und' : (item.unit || (matchedProd?.unit || 'Kg'));
 
       return {
         ...item,
+        productId: resolvedId,
+        name: resolvedName,
         quantityKg: finalQty,
-        purchasePrice: finalPurchasePrice
+        purchasePrice: parseFloat(finalPurchasePrice.toFixed(4)),
+        sellingPrice: parseFloat(finalSellingPrice.toFixed(2)),
+        unit: finalUnit as any
       };
     });
 
@@ -356,7 +486,12 @@ export default function StockPurchasesView({
           </div>
 
           <div className="flex gap-2 items-center bg-black/40 border border-editorial-border rounded-lg p-2 focus-within:border-amber-500/50 transition-colors">
-            <button className="p-2 text-editorial-text-muted hover:text-amber-500 transition-colors cursor-pointer" title="Dictado por voz">
+            <button 
+              type="button"
+              onClick={toggleVoiceDictation} 
+              className={`p-2 transition-colors cursor-pointer rounded ${isListening ? 'text-red-500 animate-pulse bg-red-500/20' : 'text-editorial-text-muted hover:text-amber-500'}`} 
+              title={isListening ? 'Escuchando... clic para parar' : 'Dictado por voz'}
+            >
               <Mic className="w-5 h-5" />
             </button>
             <input
@@ -417,13 +552,15 @@ export default function StockPurchasesView({
                           className="w-full min-w-[220px] bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-sans placeholder:text-editorial-text-muted/50"
                         />
                       </td>
+                      {/* CANTIDAD Y UNIDAD */}
                       <td className="py-2 px-3">
                         <div className="flex items-center gap-1">
                           <input 
                             type="text"
                             inputMode="decimal"
-                            value={item.quantityKg === 0 ? '' : item.quantityKg}
+                            value={item.quantityKg === 0 || item.quantityKg === '0' ? '' : item.quantityKg}
                             onChange={(e) => handleUpdateItem(item.uiId, 'quantityKg', e.target.value)}
+                            onBlur={() => handleBlurItem(item.uiId, 'quantityKg')}
                             className="w-16 bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono"
                             placeholder="0"
                           />
@@ -446,45 +583,55 @@ export default function StockPurchasesView({
                               title="Contenido por bulto"
                               value={item.contentPerBulto || ''}
                               onChange={(e) => handleUpdateItem(item.uiId, 'contentPerBulto', e.target.value)}
+                              onBlur={() => handleBlurItem(item.uiId, 'contentPerBulto')}
                               className="w-16 bg-amber-500/10 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 focus:outline-none focus:border-amber-500 font-mono placeholder:text-amber-500/30"
                               placeholder="Cnt/Blt"
                             />
                           )}
                         </div>
                       </td>
+
+                      {/* COSTO ($) */}
                       <td className="py-2 px-3">
                         <div className="flex flex-col gap-1 relative">
                           <input 
                             type="text"
                             inputMode="decimal"
-                            value={item.purchasePrice === 0 ? '' : item.purchasePrice}
+                            value={item.purchasePrice === 0 || item.purchasePrice === '0' ? '' : item.purchasePrice}
                             onChange={(e) => handleUpdateItem(item.uiId, 'purchasePrice', e.target.value)}
-                            className={`w-full bg-black/30 border rounded px-2 py-1.5 text-xs text-white focus:outline-none font-mono ${item.previousCost !== undefined && item.previousCost !== item.purchasePrice ? 'border-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.2)]' : 'border-editorial-border focus:border-amber-500'}`}
+                            onBlur={() => handleBlurItem(item.uiId, 'purchasePrice')}
+                            className={`w-full bg-black/30 border rounded px-2 py-1.5 text-xs text-white focus:outline-none font-mono ${item.previousCost !== undefined && item.previousCost !== parseSafeDecimal(item.purchasePrice) ? 'border-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.2)]' : 'border-editorial-border focus:border-amber-500'}`}
                             placeholder="0.00"
                           />
-                          {item.previousCost !== undefined && item.previousCost !== item.purchasePrice && (
+                          {item.previousCost !== undefined && item.previousCost !== parseSafeDecimal(item.purchasePrice) && (
                             <div className="absolute -bottom-5 left-0 whitespace-nowrap bg-amber-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded shadow-lg animate-pulse z-10">
                               ⚠️ Antes ${item.previousCost.toFixed(2)}
                             </div>
                           )}
                         </div>
                       </td>
+
+                      {/* % GANANCIA */}
                       <td className="py-2 px-3">
                         <input 
                           type="text"
                           inputMode="decimal"
                           value={item.marginPercent === undefined || item.marginPercent === null ? '' : item.marginPercent}
                           onChange={(e) => handleUpdateItem(item.uiId, 'marginPercent', e.target.value)}
+                          onBlur={() => handleBlurItem(item.uiId, 'marginPercent')}
                           className="w-full bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono"
                           placeholder="30"
                         />
                       </td>
+
+                      {/* P. VENTA ($) */}
                       <td className="py-2 px-3">
                         <input 
                           type="text"
                           inputMode="decimal"
-                          value={item.sellingPrice === 0 ? '' : item.sellingPrice}
+                          value={item.sellingPrice === 0 || item.sellingPrice === '0' ? '' : item.sellingPrice}
                           onChange={(e) => handleUpdateItem(item.uiId, 'sellingPrice', e.target.value)}
+                          onBlur={() => handleBlurItem(item.uiId, 'sellingPrice')}
                           className="w-full bg-black/30 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 font-bold focus:outline-none focus:border-amber-500 font-mono"
                           placeholder="0.00"
                         />

@@ -9,7 +9,7 @@ const ai = new GoogleGenAI({
 export const askGemini = async (prompt: string, context: string = "Eres un asistente experto en finanzas y control de inventario."): Promise<string> => {
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.7-flash',
       contents: [
         { role: 'user', parts: [{ text: `${context}\n\nPregunta: ${prompt}` }] }
       ],
@@ -18,17 +18,17 @@ export const askGemini = async (prompt: string, context: string = "Eres un asist
       }
     });
 
-    return response.text || "No se pudo generar una respuesta.";
+    return response.text || "No pude generar una respuesta clara.";
   } catch (error) {
-    console.error("Error calling Gemini API:", error);
-    return "Error al conectar con el Asistente IA. Por favor, verifica tu conexión o clave de API.";
+    console.error("Error al consultar Gemini:", error);
+    return "Ocurrió un error al procesar tu solicitud con la IA.";
   }
 };
 
 export const askGeminiWithImage = async (prompt: string, base64Image: string, mimeType: string, context: string = "Eres un sistema contable OCR de la Quesería Kalu."): Promise<string> => {
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.7-flash',
       contents: [
         { 
           role: 'user', 

@@ -17,6 +17,17 @@ export interface InvoiceData {
   items: ExtractedInvoiceItem[];
 }
 
+export function normalizeTextForMatching(str: string): string {
+  if (!str) return '';
+  return str
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // remove diacritics / accents
+    .replace(/[^a-z0-9\s]/g, ' ')   // remove special chars
+    .replace(/\s+/g, ' ')            // collapse multiple spaces
+    .trim();
+}
+
 export async function extractInvoiceData(file: File, bcvRate: number, inventoryNames: string[] = []): Promise<InvoiceData> {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   
@@ -29,28 +40,33 @@ export async function extractInvoiceData(file: File, bcvRate: number, inventoryN
   const mimeType = file.type || 'image/jpeg';
 
   const promptText = `
-    Eres un asistente experto en contabilidad. Extrae los datos de esta factura de compra en formato JSON estricto.
+    Eres un asistente experto en contabilidad y auditoría de inventarios para comercios.
+    Extrae los datos de esta factura de compra en formato JSON estricto.
     
-    REGLAS ESTRICTAS:
-    1. Responde ÚNICAMENTE con un objeto JSON válido, sin bloques de código markdown ni texto adicional.
-    2. UNIDADES: Normaliza estrictamente las cantidades a 'Und', 'Lt', 'Kg' o 'Bulto'. Si la factura dice "Cajas", "Paquetes" o "Bultos", pon 'Bulto'.
-    3. MONEDA Y CONVERSIÓN: Detecta si la factura está en USD o BS. 
-       La tasa de cambio actual es: ${bcvRate} Bs/$. 
-       Si los precios originales están en BS, debes calcular el equivalente en USD dividiendo entre ${bcvRate} y devolver el "costo_unitario" y "costo_total" en USD.
-       Si ya está en USD, devuélvelos tal cual.
-    4. NOMBRES DE PRODUCTOS: Empareja inteligentemente los productos de la factura con nuestro catálogo.
-       CATÁLOGO ACTUAL: ${inventoryNames.length > 0 ? inventoryNames.join(", ") : "Vacío"}.
-       Si el nombre de la factura tiene errores ortográficos o variaciones (ej. 'Kary' por 'Cali', 'Mavesa 25' por 'Mavesa 250G'), debes devolver EXACTAMENTE el nombre de nuestro catálogo que corresponda.
-       Si el producto definitivamente no existe en el catálogo, devuelve el nombre original tal como viene en la factura.
+    REGLAS DE ORO:
+    1. Responde ÚNICAMENTE con un objeto JSON válido (sin bloques markdown ni explicaciones adicionales).
+    2. UNIDADES Y BULTOS:
+       - Si la factura menciona "Bulto", "Caja", "Fardo", "Saco", "Paquete" o abreviaciones como "BTO", "CJ", "PQ", clasifícalo como 'Bulto'.
+       - Si es por peso o volumen: 'Kg' o 'Lt'.
+       - Para unidades sueltas: 'Und'.
+    3. MONEDA Y CONVERSIÓN:
+       - Tasa de cambio BCV oficial: ${bcvRate} Bs/$.
+       - Si la factura o renglón está en Bolívares (Bs), conviértelo a USD dividiendo entre ${bcvRate}.
+       - Si está en USD o dólares ($), mantén los montos en USD.
+       - "costo_unitario" y "costo_total" DEBEN ser números en USD mayores a 0.
+    4. EMPAREJAMIENTO CON CATÁLOGO EXISTENTE (Evitar duplicados):
+       - CATÁLOGO ACTUAL: ${inventoryNames.length > 0 ? inventoryNames.join(", ") : "Vacío"}.
+       - Si un ítem de la factura corresponde a un producto del catálogo (incluso con variaciones ortográficas, sinónimos o abreviaciones como 'Arroz Prim' -> 'Arroz Primo'), devuelve EXACTAMENTE el nombre que aparece en el catálogo.
+       - Si definitivamente es un producto nuevo que no está en el catálogo, devuelve su nombre comercial limpio en mayúsculas.
     
     ESTRUCTURA JSON REQUERIDA:
     {
-      "proveedor": { "nombre": "Nombre de la empresa o persona", "rif": "J-12345678" },
+      "proveedor": { "nombre": "Nombre de la empresa o proveedor", "rif": "J-12345678" },
       "factura": "Número de factura o control",
       "fecha": "YYYY-MM-DD",
-      "moneda_detectada": "USD" o "BS",
+      "moneda_detectada": "USD" | "BS",
       "items": [
-        { "nombre": "Producto", "cantidad": 0, "unidad": "Und", "costo_unitario": 0, "costo_total": 0 }
+        { "nombre": "Nombre Canónico o Nuevo", "cantidad": 0, "unidad": "Und" | "Kg" | "Lt" | "Bulto", "costo_unitario": 0, "costo_total": 0 }
       ]
     }
   `;
@@ -75,62 +91,48 @@ export async function extractInvoiceData(file: File, bcvRate: number, inventoryN
     }
   };
 
-  const maxRetries = 3;
-  let attempt = 0;
+  const modelsToTry = ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest'];
+  let lastError: any = null;
 
-  while (attempt < maxRetries) {
+  for (const model of modelsToTry) {
     try {
-      // Intentos 0 y 1: gemini-2.5-flash. Intento 2 (respaldo): gemini-2.5-pro
-      const model = attempt < 2 ? 'gemini-2.5-flash' : 'gemini-2.5-pro';
-      
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
         const errBody = await response.text();
-        console.error(`Gemini API Error (Intento ${attempt + 1} con ${model}):`, errBody);
-        
-        if (response.status === 503 || response.status === 429 || response.status >= 500) {
-          throw new Error(`RETRY_ERROR_${response.status}`);
-        }
-        throw new Error(`FATAL: Error de Google (HTTP ${response.status}): Revisa tu conexión o API Key.`);
+        console.warn(`[OCR Engine] Falló modelo ${model} (HTTP ${response.status}): ${errBody.slice(0, 100)}`);
+        lastError = new Error(`Error en modelo ${model} (HTTP ${response.status})`);
+        continue; // Try next model immediately
       }
 
       const data = await response.json();
-      
       if (data.candidates && data.candidates.length > 0) {
-        let textResponse = data.candidates[0].content.parts[0].text;
-        
-        textResponse = textResponse.replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
+        let textResponse = data.candidates[0].content?.parts?.[0]?.text || '';
+        textResponse = textResponse.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
         
         const parsedJson = JSON.parse(textResponse) as InvoiceData;
-        return parsedJson;
-      } else {
-        throw new Error('Respuesta de IA vacía o formato incorrecto.');
+        if (parsedJson && parsedJson.items) {
+          // Sanitizar y asegurar valores numéricos
+          parsedJson.items = parsedJson.items.map(it => ({
+            ...it,
+            cantidad: Math.max(0.01, Number(it.cantidad) || 1),
+            costo_unitario: Math.max(0, Number(it.costo_unitario) || 0),
+            costo_total: Math.max(0, Number(it.costo_total) || 0)
+          }));
+          return parsedJson;
+        }
       }
-    } catch (error: any) {
-      if (error.message && error.message.startsWith('FATAL:')) {
-        throw new Error(error.message.replace('FATAL: ', ''));
-      }
-      
-      attempt++;
-      if (attempt >= maxRetries) {
-        console.error('Error procesando OCR tras varios intentos:', error);
-        throw new Error('Fallo al extraer los datos de la factura con IA tras múltiples reintentos.');
-      }
-      
-      const pauseMs = attempt === 1 ? 1500 : 3000;
-      console.warn(`Reintentando OCR en ${pauseMs}ms... (Intento ${attempt + 1}/${maxRetries}). Error previo: ${error.message}`);
-      await new Promise(res => setTimeout(res, pauseMs));
+    } catch (err: any) {
+      console.warn(`[OCR Engine] Error intentando modelo ${model}:`, err.message);
+      lastError = err;
     }
   }
-  
-  throw new Error('Fallo inesperado en el flujo de OCR.');
+
+  throw lastError || new Error('No fue posible procesar la factura con la IA.');
 }
 
 export async function extractDictationData(text: string, bcvRate: number = 45, inventoryNames: string[] = []): Promise<ExtractedInvoiceItem[]> {
@@ -141,29 +143,31 @@ export async function extractDictationData(text: string, bcvRate: number = 45, i
   }
 
   const promptText = `
-    Analiza este texto dictado de una compra/factura: "${text}".
-    Extrae los artículos comprados, cantidades y precios/costos en formato JSON estricto.
+    Eres un asistente contable y de compras de alta precisión.
+    Analiza esta orden o dictado de mercancía: "${text}".
+    Tasa BCV de referencia: ${bcvRate} Bs/$.
+    
+    CATÁLOGO ACTUAL DE PRODUCTOS:
+    ${inventoryNames.length > 0 ? inventoryNames.join(", ") : "Vacío"}
 
-    REGLAS:
-    1. Responde ÚNICAMENTE con un JSON válido.
-    2. UNIDADES: Normaliza a 'Und', 'Kg' o 'Bulto'.
-    3. MONEDA: Si el dictado menciona Bolívares o Bs, convierte a USD dividiendo entre ${bcvRate}.
-    4. CATÁLOGO ACTUAL: ${inventoryNames.length > 0 ? inventoryNames.join(", ") : "Vacío"}.
-       Empareja con el catálogo si coincide.
+    REGLAS DE EXTRACCIÓN:
+    1. Devuelve ÚNICAMENTE un JSON válido.
+    2. UNIDADES: Clasifica en 'Und', 'Kg', 'Lt' o 'Bulto' (si dice bultos, sacos, paquetes o cajas).
+    3. MONEDA: Si el dictado menciona precios en Bolívares o Bs, convierte a USD dividiendo entre ${bcvRate}.
+    4. PRECIOS/COSTOS: Si solo se menciona el total del producto, calcula el costo unitario (total / cantidad).
+    5. EMPAREJAMIENTO: Empareja cada ítem con el nombre exacto del catálogo si existe, corrigiendo nombres hablados.
     
     ESTRUCTURA JSON:
     {
       "items": [
-        { "nombre": "Nombre del producto", "cantidad": 0, "unidad": "Und", "costo_unitario": 0, "costo_total": 0 }
+        { "nombre": "Nombre Exacto o Nuevo", "cantidad": 1, "unidad": "Und" | "Kg" | "Lt" | "Bulto", "costo_unitario": 0, "costo_total": 0 }
       ]
     }
   `;
 
   const payload = {
     contents: [
-      {
-        parts: [{ text: promptText }]
-      }
+      { parts: [{ text: promptText }] }
     ],
     generationConfig: {
       temperature: 0.1,
@@ -171,23 +175,36 @@ export async function extractDictationData(text: string, bcvRate: number = 45, i
     }
   };
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  const modelsToTry = ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest'];
+  for (const model of modelsToTry) {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
 
-  if (!response.ok) {
-    throw new Error(`Error en API de Gemini: HTTP ${response.status}`);
+      if (!response.ok) continue;
+
+      const data = await response.json();
+      if (data.candidates && data.candidates.length > 0) {
+        let textResponse = data.candidates[0].content?.parts?.[0]?.text || '';
+        textResponse = textResponse.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
+        const parsed = JSON.parse(textResponse);
+        if (parsed.items && Array.isArray(parsed.items)) {
+          return parsed.items.map((it: any) => ({
+            ...it,
+            cantidad: Math.max(0.01, Number(it.cantidad) || 1),
+            costo_unitario: Math.max(0, Number(it.costo_unitario) || 0),
+            costo_total: Math.max(0, Number(it.costo_total) || 0)
+          }));
+        }
+      }
+    } catch (e) {
+      console.warn(`[Dictation Engine] Falló modelo ${model}:`, e);
+    }
   }
 
-  const data = await response.json();
-  if (data.candidates && data.candidates.length > 0) {
-    let textResponse = data.candidates[0].content.parts[0].text;
-    textResponse = textResponse.replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
-    const parsed = JSON.parse(textResponse);
-    return parsed.items || [];
-  }
   return [];
 }
 
@@ -247,31 +264,26 @@ export async function structureVoiceNoteWithAI(text: string, bcvRate: number = 4
     }
   };
 
-  try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+  for (const model of ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest']) {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
 
-    if (!response.ok) {
-      return {
-        title: 'Nota de Voz',
-        category: 'nota_general',
-        summary: text,
-        suggestedAction: 'Sin conexión IA'
-      };
-    }
+      if (!response.ok) continue;
 
-    const data = await response.json();
-    if (data.candidates && data.candidates.length > 0) {
-      let textResponse = data.candidates[0].content.parts[0].text;
-      textResponse = textResponse.replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
-      const parsed = JSON.parse(textResponse);
-      return parsed;
+      const data = await response.json();
+      if (data.candidates && data.candidates.length > 0) {
+        let textResponse = data.candidates[0].content.parts[0].text;
+        textResponse = textResponse.replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
+        const parsed = JSON.parse(textResponse);
+        return parsed;
+      }
+    } catch (e) {
+      console.warn("[VoiceNote Engine] Error:", e);
     }
-  } catch (e) {
-    console.error("Error estructurando nota con IA:", e);
   }
 
   return {
@@ -288,26 +300,32 @@ export async function pingGeminiAPI(): Promise<{ ok: boolean; message: string }>
     return { ok: false, message: 'Falta configurar VITE_GEMINI_API_KEY en el archivo .env' };
   }
 
-  try {
-    const payload = {
-      contents: [{ parts: [{ text: 'ping' }] }],
-      generationConfig: { maxOutputTokens: 5 }
-    };
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+  const models = ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest'];
+  let lastErr = '';
 
-    if (!response.ok) {
+  for (const m of models) {
+    try {
+      const payload = {
+        contents: [{ parts: [{ text: 'ping' }] }],
+        generationConfig: { maxOutputTokens: 5 }
+      };
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (response.ok) {
+        return { ok: true, message: `Conexión con Gemini IA activa (${m}).` };
+      }
       const errText = await response.text();
-      return { ok: false, message: `Error de API (HTTP ${response.status}): ${errText.slice(0, 100)}` };
+      lastErr = `HTTP ${response.status}: ${errText.slice(0, 80)}`;
+    } catch (err: any) {
+      lastErr = err.message;
     }
-
-    return { ok: true, message: 'Conexión con Gemini IA activa y verificada.' };
-  } catch (err: any) {
-    return { ok: false, message: `Error de red o conexión: ${err.message}` };
   }
+
+  return { ok: false, message: `Error de conexión: ${lastErr}` };
 }
 
 function fileToBase64(file: File): Promise<string> {
