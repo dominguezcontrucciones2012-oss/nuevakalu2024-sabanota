@@ -59,7 +59,7 @@ export default function AIAssistantWidget() {
             <h4 className="text-xs font-bold text-zinc-100">Asistente Kalu</h4>
             <div className="flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span className="text-[9px] text-zinc-400 font-mono uppercase">En línea (Gemini 2.5)</span>
+              <span className="text-[9px] text-zinc-400 font-mono uppercase">En línea (Gemini 3.7)</span>
             </div>
           </div>
         </div>

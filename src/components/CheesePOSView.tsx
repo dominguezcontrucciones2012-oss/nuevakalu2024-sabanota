@@ -4,6 +4,7 @@ import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, Aler
 import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '../utils';
 
 import { fetchCollection, addLocalDoc, updateLocalDoc, deleteLocalDoc, batchDeleteLocalDocs, onCollectionSnapshot } from '../services/localApi';
+import { updateLocalProduct } from '../services/productApi';
 
 interface CheesePOSViewProps {
   exchangeRate: number;
@@ -34,6 +35,7 @@ interface CheesePOSViewProps {
   onAddNotification: (msg: string, type: 'success' | 'info' | 'warning') => void;
   onVoidSale: (transactionId: string, items: any[]) => void;
   onUpdateSettings?: (newSettings: Partial<any>) => void;
+  onUpdateProduct?: (id: string, updated: Partial<CheeseProduct>) => Promise<void> | void;
 }
 
 import { getVIPLevelInfo } from '../config/vipMatrix';
@@ -62,7 +64,8 @@ export default function CheesePOSView({
   dailyRevenue,
   onAddNotification,
   onVoidSale,
-  onUpdateSettings
+  onUpdateSettings,
+  onUpdateProduct
 }: CheesePOSViewProps) {
   // Helper para procesar números y precios de manera segura (Regla estricta 2)
   const parseNum = (val: any) => parseSafeDecimal(val);
@@ -3282,9 +3285,18 @@ export default function CheesePOSView({
                           const newBarcodes = [...new Set([...(p.barcodes || []), unknownBarcode])];
                           if (p.barcode && !newBarcodes.includes(p.barcode)) newBarcodes.push(p.barcode);
                           
-                          await updateLocalDoc('products', p.id, {
+                          // 1. Persistir directamente en el archivo products_db.json via /api/products/:id
+                          await updateLocalProduct(p.id, {
                             barcodes: newBarcodes
                           });
+
+                          // 2. Actualizar el estado global en CRMApp (si está disponible)
+                          if (onUpdateProduct) {
+                            await onUpdateProduct(p.id, { barcodes: newBarcodes });
+                          } else {
+                            // Sincronización fallback en objeto local
+                            p.barcodes = newBarcodes;
+                          }
                           
                           // After linking, add 1 to cart
                           handleAddToCart(p, 1);

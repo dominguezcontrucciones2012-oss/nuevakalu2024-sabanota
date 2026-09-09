@@ -91,7 +91,7 @@ export async function extractInvoiceData(file: File, bcvRate: number, inventoryN
     }
   };
 
-  const modelsToTry = ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest'];
+  const modelsToTry = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
   let lastError: any = null;
 
   for (const model of modelsToTry) {
@@ -175,7 +175,7 @@ export async function extractDictationData(text: string, bcvRate: number = 45, i
     }
   };
 
-  const modelsToTry = ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest'];
+  const modelsToTry = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
   for (const model of modelsToTry) {
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
@@ -264,7 +264,7 @@ export async function structureVoiceNoteWithAI(text: string, bcvRate: number = 4
     }
   };
 
-  for (const model of ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest']) {
+  for (const model of ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest']) {
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
         method: 'POST',
@@ -300,7 +300,7 @@ export async function pingGeminiAPI(): Promise<{ ok: boolean; message: string }>
     return { ok: false, message: 'Falta configurar VITE_GEMINI_API_KEY en el archivo .env' };
   }
 
-  const models = ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest'];
+  const models = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
   let lastErr = '';
 
   for (const m of models) {
@@ -335,4 +335,86 @@ function fileToBase64(file: File): Promise<string> {
     reader.onload = () => resolve(reader.result as string);
     reader.onerror = error => reject(error);
   });
+}
+
+export interface ParsedTripDeparture {
+  driver?: string;
+  cheeseProductName?: string;
+  dispatchedKg?: number;
+  costPerKg?: number;
+  cashTakenUsd?: number;
+  cashTakenBs?: number;
+  bankTakenUsd?: number;
+  bankTakenBs?: number;
+}
+
+export async function parseTripDepartureWithAI(text: string, bcvRate: number = 813, productNames: string[] = []): Promise<ParsedTripDeparture> {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey || apiKey.includes('REPLACE_WITH_GEMINI_KEY')) {
+    throw new Error('API Key de Gemini no configurada.');
+  }
+
+  const promptText = `
+    Eres el asistente operativo de la Quesería Kalu.
+    Analiza esta orden hablada de salida para una gira/viaje a San Juan: "${text}".
+    Tasa BCV actual: ${bcvRate} Bs/$.
+    
+    CATÁLOGO DISPONIBLE DE PRODUCTOS DE QUESO:
+    ${productNames.length > 0 ? productNames.join(', ') : 'QUESO DURO, QUESO SEMIDURO, QUESO BLANCO, QUESO PAISA'}
+    
+    RESPONSABLES POSIBLES:
+    - Daisy Corro
+    - Juan Carlos Domínguez
+
+    INSTRUCCIONES DE EXTRACCIÓN:
+    1. Devuelve ÚNICAMENTE un JSON válido sin markdown.
+    2. Identifica si menciona un responsable (Daisy o Juan Carlos). Si no menciona ninguno, omite el campo.
+    3. Extrae la cantidad en kilogramos (dispatchedKg) y el tipo de queso. Empareja con el catálogo más cercano.
+    4. Si menciona costo por kilo ($/Kg), extráelo en costPerKg.
+    5. Extrae el efectivo en dólares adelantado (cashTakenUsd).
+    6. Extrae el efectivo en bolívares adelantado (cashTakenBs).
+    7. Extrae fondos adelantados desde Banco / Pago Móvil / Transferencia en Bolívares (bankTakenBs) o en Dólares (bankTakenUsd).
+    
+    ESTRUCTURA JSON:
+    {
+      "driver": "Daisy Corro" | "Juan Carlos Domínguez",
+      "cheeseProductName": "Nombre del Producto del Catálogo",
+      "dispatchedKg": 0,
+      "costPerKg": 0,
+      "cashTakenUsd": 0,
+      "cashTakenBs": 0,
+      "bankTakenUsd": 0,
+      "bankTakenBs": 0
+    }
+  `;
+
+  const payload = {
+    contents: [{ parts: [{ text: promptText }] }],
+    generationConfig: {
+      temperature: 0.1,
+      response_mime_type: "application/json"
+    }
+  };
+
+  const models = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+  for (const m of models) {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) continue;
+      const data = await response.json();
+      if (data.candidates && data.candidates.length > 0) {
+        let textResponse = data.candidates[0].content.parts[0].text;
+        textResponse = textResponse.replace(/^```json\n?/i, '').replace(/\n?```$/i, '').trim();
+        return JSON.parse(textResponse) as ParsedTripDeparture;
+      }
+    } catch (e) {
+      console.warn(`[Trip Voice Assistant] Error en modelo ${m}:`, e);
+    }
+  }
+
+  return {};
 }

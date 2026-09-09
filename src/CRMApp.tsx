@@ -17,7 +17,8 @@ import {
   RevenuePoint,
   KardexMovement,
   CheeseTrip,
-  CentralVaultBalance
+  CentralVaultBalance,
+  AdminAccountEntry
 } from './types';
 
 import {
@@ -43,6 +44,7 @@ import DashboardView from './components/DashboardView';
 // New specialized ERP Views
 import CheesePOSView from './components/CheesePOSView';
 import CheeseInventoryView from './components/CheeseInventoryView';
+import { PurchaseItem } from './components/StockPurchasesView';
 import KardexView from './components/KardexView';
 import CheeseTripsView from './components/CheeseTripsView';
 import ClientsCreditView from './components/ClientsCreditView';
@@ -141,6 +143,12 @@ export default function App() {
       if (data && data.length) setCheeseProducts(data);
     }).catch(e => console.error("Error loading local products:", e));
 
+    const unsubProducts = onCollectionSnapshot('products', (data) => {
+      if (data && data.length > 0) {
+        setCheeseProducts(data as CheeseProduct[]);
+      }
+    });
+
     const unsubTransactions = onCollectionSnapshot('transactions', (data) => {
       const txs = Array.isArray(data) ? [...(data as Transaction[])] : [];
       txs.sort((a, b) => {
@@ -228,6 +236,7 @@ export default function App() {
     });
 
     return () => {
+      unsubProducts();
       unsubTransactions();
       unsubClients();
       unsubSuppliers();
@@ -387,7 +396,7 @@ export default function App() {
 
     let customerName = 'Cliente de Mostrador';
 
-    // If client credit was used
+    // If client credit was used or there is an outstanding debt balance
     if (clientId) {
       const selectedClient = clients.find(c => c.id === clientId);
       if (selectedClient) {
@@ -396,22 +405,17 @@ export default function App() {
       setClients((prevClients) =>
         prevClients.map((c) => {
           if (c.id === clientId) {
-            const isCreditType = paymentMethodType === 'credit' || paymentMethodType === 'Crédito' || paymentMethodType === 'Crédito / Fiado' || paymentMethodType === 'Libreta de Queso' || paymentMethodType === 'Mundo Kalu';
-            // Regla: 1 punto por cada $1 pagado al contado / inicial de inmediato
+            // Regla matemática: si quedó saldo pendiente (debtAmount > 0), sumar a la deuda del cliente
+            // Regla de fidelidad: 1 punto por cada $1 efectivamente pagado/abonado
             const addedPoints = Math.round(Number(amountPaid || 0));
-            let updatedClient;
-            if (isCreditType) {
-              updatedClient = {
-                ...c,
-                outstandingDebt: Number(c.outstandingDebt || 0) + debtAmount,
-                loyaltyPoints: Number(c.loyaltyPoints || 0) + addedPoints
-              };
-            } else {
-              updatedClient = {
-                ...c,
-                loyaltyPoints: Number(c.loyaltyPoints || 0) + Math.round(Number(saleTotal || 0))
-              };
-            }
+            const newOutstandingDebt = Number(c.outstandingDebt || 0) + debtAmount;
+            
+            const updatedClient = {
+              ...c,
+              outstandingDebt: newOutstandingDebt,
+              loyaltyPoints: Number(c.loyaltyPoints || 0) + addedPoints
+            };
+
             // Persist client updates to Local API
             updateLocalDoc('clients', clientId, { 
               outstandingDebt: updatedClient.outstandingDebt,
@@ -423,8 +427,8 @@ export default function App() {
         })
       );
 
-      const isCreditTypeForBill = paymentMethodType === 'credit' || paymentMethodType === 'Crédito' || paymentMethodType === 'Crédito / Fiado' || paymentMethodType === 'Libreta de Queso';
-      if (isCreditTypeForBill && debtAmount > 0) {
+      // Si existe un remanente por cobrar (debtAmount > 0), generar automáticamente el documento de cuenta por cobrar
+      if (debtAmount > 0) {
         const newBill: AccountBill = {
           id: `bill-rcv-${Date.now()}`,
           type: 'receivable',
@@ -433,7 +437,7 @@ export default function App() {
           amount: debtAmount,
           dueDate: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
           status: 'Pendiente',
-          notes: `Consumo de tienda a crédito`
+          notes: `Consumo de tienda a crédito (Remanente de factura por $${debtAmount.toFixed(2)} USD)`
         };
         setBills((prev) => [newBill, ...prev]);
       }
@@ -754,7 +758,7 @@ export default function App() {
   const handleCreateTrip = async (trip: Omit<CheeseTrip, 'id'>) => {
     try {
       const newTrip: CheeseTrip = { ...trip, id: crypto.randomUUID() };
-      await addLocalDoc('trips', newTrip);
+      await addLocalDoc('cheeseTrips', newTrip);
 
       // Descontar inventario
       const prod = cheeseProducts.find(p => p.id === trip.cheeseProductId);
@@ -792,7 +796,33 @@ export default function App() {
         }
       }
 
-      addNotification('Viaje San Juan registrado con éxito', 'success');
+      // INYECCIÓN CONTABLE A LA FICHA DE LA ADMINISTRADORA (DEBE / CARGO)
+      const currentRate = settings.exchangeRate || 45;
+      const bankUsdEquiv = (trip.bankTakenUsd || 0) + ((trip.bankTakenBs || 0) / currentRate);
+      const cashUsdEquiv = (trip.cashTakenUsd || 0) + ((trip.cashTakenBs || 0) / currentRate);
+      const totalBagUsd = trip.totalBagValueUsd || (trip.dispatchedCostValue + cashUsdEquiv + bankUsdEquiv);
+      
+      const adminEntry: AdminAccountEntry = {
+        id: `LEDGER-GIRA-${Date.now()}`,
+        date: new Date().toISOString(),
+        timestamp: Date.now(),
+        adminName: trip.driverOrResponsible || 'Daisy Corro',
+        type: 'FONDEO_GIRA',
+        concept: `Salida Gira San Juan #${trip.tripNumber} (${trip.dispatchedKg}Kg Queso + Efectivo + Banco)`,
+        category: 'Gira San Juan',
+        amountUsd: (trip.cashTakenUsd || 0) + (trip.bankTakenUsd || 0) + trip.dispatchedCostValue,
+        amountBs: (trip.cashTakenBs || 0) + (trip.bankTakenBs || 0),
+        exchangeRateAtDate: currentRate,
+        debitUsd: totalBagUsd,
+        creditUsd: 0,
+        balanceAfterUsd: totalBagUsd,
+        referenceId: newTrip.id,
+        status: 'conciliado',
+        createdAt: new Date().toISOString()
+      };
+      await addLocalDoc('adminLedger', adminEntry);
+
+      addNotification('Viaje San Juan registrado e inyectado a la Ficha Administradora', 'success');
     } catch (err) {
       console.error('Error creating trip:', err);
       addNotification('Error al registrar el viaje', 'warning');
@@ -817,9 +847,6 @@ export default function App() {
         settledAt: new Date().toISOString()
       });
 
-
-      // If there was a client assigned to the trip, we reduce their debt by the total settlement value (total returned goods + money)
-      // Actually, let's just reduce the client debt by the total settled amount (Total Liquidado = Mercancía + Dinero)
       const trip = cheeseTrips.find(t => t.id === tripId);
       if (trip && trip.clientId && settlementData.totalSettlementValueUsd) {
         await updateLocalDoc('clients', trip.clientId, {
@@ -827,7 +854,31 @@ export default function App() {
         });
       }
 
-      addNotification('Viaje liquidado y bóveda actualizada', 'success');
+      // INYECCIÓN CONTABLE DE LIQUIDACIÓN A LA FICHA DE LA ADMINISTRADORA (HABER / DESCARGO)
+      const currentRate = settlementData.bcvRateAtSettlement || settings.exchangeRate || 45;
+      const totalSettledUsd = settlementData.totalSettlementValueUsd || 0;
+      
+      const adminSettleEntry: AdminAccountEntry = {
+        id: `LEDGER-SETTLE-${Date.now()}`,
+        date: new Date().toISOString(),
+        timestamp: Date.now(),
+        adminName: trip?.driverOrResponsible || 'Daisy Corro',
+        type: 'LIQUIDACION_GIRA',
+        concept: `Liquidación & Cierre Gira San Juan #${trip?.tripNumber || ''} (Facturas + Retorno Efectivo)`,
+        category: 'Gira San Juan',
+        amountUsd: totalSettledUsd,
+        amountBs: (settlementData.cashReturnedBs || 0) + (settlementData.bankReturnedBs || 0),
+        exchangeRateAtDate: currentRate,
+        debitUsd: 0,
+        creditUsd: totalSettledUsd,
+        balanceAfterUsd: 0,
+        referenceId: tripId,
+        status: 'conciliado',
+        createdAt: new Date().toISOString()
+      };
+      await addLocalDoc('adminLedger', adminSettleEntry);
+
+      addNotification('Viaje liquidado y cuenta de administradora conciliada', 'success');
     } catch (err) {
       console.error('Error settling trip:', err);
       addNotification('Error al liquidar el viaje', 'warning');
@@ -992,7 +1043,7 @@ export default function App() {
   // 3. Purchase load (Carga de compras + balance owed increment)
   const handleLoadPurchase = async (purchase: {
     supplierId: string;
-    items: { productId: string; quantityKg: number; purchasePrice: number; sellingPrice: number; marginPercent: number; name: string; createNewItem?: boolean; }[];
+    items: (PurchaseItem | { productId: string; quantityKg: number | string; purchasePrice: number | string; sellingPrice?: number | string; marginPercent?: number | string; name: string; createNewItem?: boolean; })[];
     isCredit: boolean;
     paymentMethod?: string;
   }) => {
@@ -1006,7 +1057,10 @@ export default function App() {
     try {
       // Process each item asynchronously in Local API
       for (const item of purchase.items) {
-        totalCost += (item.quantityKg || 0) * (item.purchasePrice || 0);
+        const itemQty = Number(item.quantityKg) || 0;
+        const itemCost = Number(item.purchasePrice) || 0;
+        const itemSelling = Number(item.sellingPrice) || 0;
+        totalCost += itemQty * itemCost;
 
         let prod = cheeseProducts.find(p => p.id === item.productId);
 
@@ -1015,9 +1069,9 @@ export default function App() {
             id: crypto.randomUUID(),
             name: item.name || 'Producto Nuevo (IA)',
             category: 'Fresco', // Default or guess
-            stockKg: item.quantityKg,
-            purchasePrice: item.purchasePrice,
-            sellingPrice: item.sellingPrice || 0,
+            stockKg: itemQty,
+            purchasePrice: itemCost,
+            sellingPrice: itemSelling,
             alertThreshold: 5,
             agingDays: 0,
             origin: selectedSup?.name || '',
@@ -1031,9 +1085,9 @@ export default function App() {
           const currentStock = prod.stockKg || 0;
           // Update product document atomically
           await updateLocalDoc('products', prod.id, {
-            stockKg: (cheeseProducts.find(p => p.id === prod.id)?.stockKg || 0) + Number(item.quantityKg),
-            purchasePrice: item.purchasePrice,
-            sellingPrice: item.sellingPrice > 0 ? item.sellingPrice : (prod.sellingPrice || 0)
+            stockKg: (cheeseProducts.find(p => p.id === prod.id)?.stockKg || 0) + itemQty,
+            purchasePrice: itemCost,
+            sellingPrice: itemSelling > 0 ? itemSelling : (prod.sellingPrice || 0)
           });
         }
 
@@ -1047,11 +1101,11 @@ export default function App() {
             productName: prod.name,
             unit: prod.unit || 'Kg',
             type: 'ENTRADA_COMPRA',
-            quantity: Number(item.quantityKg),
+            quantity: itemQty,
             previousStock: currentStock,
-            newStock: currentStock + Number(item.quantityKg),
-            unitCost: Number(item.purchasePrice),
-            totalCost: Number(item.purchasePrice * item.quantityKg),
+            newStock: currentStock + itemQty,
+            unitCost: itemCost,
+            totalCost: itemCost * itemQty,
             referenceId: purchaseTxId,
             userOrCashier: 'Sistema de Compras'
           };
@@ -1120,48 +1174,96 @@ export default function App() {
     setCheeseProducts((prev) => {
       const nextProducts = [...prev];
       purchase.items.forEach(item => {
+        const itemQty = Number(item.quantityKg) || 0;
+        const itemCost = Number(item.purchasePrice) || 0;
+        const itemSelling = Number(item.sellingPrice) || 0;
         const pIndex = nextProducts.findIndex(p => p.id === item.productId);
         if (pIndex !== -1) {
           nextProducts[pIndex] = {
             ...nextProducts[pIndex],
-            stockKg: nextProducts[pIndex].stockKg + Number(item.quantityKg),
-            purchasePrice: Number(item.purchasePrice),
-            sellingPrice: item.sellingPrice > 0 ? item.sellingPrice : nextProducts[pIndex].sellingPrice
+            stockKg: nextProducts[pIndex].stockKg + itemQty,
+            purchasePrice: itemCost,
+            sellingPrice: itemSelling > 0 ? itemSelling : nextProducts[pIndex].sellingPrice
           };
         }
       });
       return nextProducts;
     });
 
-    const txItems = purchase.items.map(i => ({
-      name: i.name,
-      kg: Number(i.quantityKg),
-      pricePerKg: Number(i.purchasePrice),
-      totalUsd: Number(i.quantityKg * i.purchasePrice),
-      totalBs: Number((i.quantityKg * i.purchasePrice) * (settings.exchangeRate || 42.50))
-    }));
+    const txItems = purchase.items.map(i => {
+      const itemQty = Number(i.quantityKg) || 0;
+      const itemCost = Number(i.purchasePrice) || 0;
+      return {
+        name: i.name,
+        kg: itemQty,
+        pricePerKg: itemCost,
+        totalUsd: itemQty * itemCost,
+        totalBs: (itemQty * itemCost) * (settings.exchangeRate || 42.50)
+      };
+    });
 
     // Generate transaction for Ledger ('Entrega')
-    const newTx: Transaction = {
-      id: `TX-${Date.now()}`,
-      entity: selectedSup.name,
-      supplierId: selectedSup.id,
-      category: 'compras',
-      date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-      invoiceNumber: purchaseTxId,
-      amount: totalCost,
-      isIncome: purchase.isCredit, // True si suma al haber del quesero
-      status: 'Completado',
-      paymentMethod: purchase.isCredit ? 'A la Libreta' : (purchase.paymentMethod || 'Efectivo / Caja Chica'),
-      notes: `Recibido ${purchase.items.map(i=>i.quantityKg + 'kg').join(', ')}. ${purchase.isCredit ? 'Carga a Cuentas por Pagar.' : 'Pagado al contado.'}`,
-      items: txItems,
-      createdAt: Date.now()
-    };
-    
-    setTransactions((prev) => [newTx, ...prev]);
-    try {
-      addLocalDoc('transactions', newTx);
-    } catch (e) { console.error(e); }
+    if (purchase.isCredit) {
+      const deliveryTx: Transaction = {
+        id: `TX-${Date.now()}`,
+        entity: selectedSup.name,
+        supplierId: selectedSup.id,
+        category: 'compras',
+        date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+        invoiceNumber: purchaseTxId,
+        amount: totalCost,
+        isIncome: true, // Suma al haber del quesero
+        status: 'Completado',
+        paymentMethod: 'A la Libreta',
+        notes: `Recibido ${purchase.items.map(i=>i.quantityKg + 'kg').join(', ')}. Carga a Cuentas por Pagar.`,
+        items: txItems,
+        createdAt: Date.now()
+      };
+      
+      setTransactions((prev) => [deliveryTx, ...prev]);
+      try {
+        addLocalDoc('transactions', deliveryTx);
+      } catch (e) { console.error(e); }
+    } else {
+      // Compra al Contado: Generar ciclo completo (Entrega de Queso [+] y Pago Inmediato al Contado [-])
+      const nowMs = Date.now();
+      const deliveryTx: Transaction = {
+        id: `TX-ENT-${nowMs}`,
+        entity: selectedSup.name,
+        supplierId: selectedSup.id,
+        category: 'compras',
+        date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+        invoiceNumber: purchaseTxId,
+        amount: totalCost,
+        isIncome: true, // Entrada/Entrega de queso (+Suma en libreta)
+        status: 'Completado',
+        paymentMethod: 'Contado (Entrega)',
+        notes: `Entrega de ${purchase.items.map(i=>i.quantityKg + 'kg').join(', ')} (${purchase.paymentMethod || 'Efectivo / Caja Chica'}).`,
+        items: txItems,
+        createdAt: nowMs
+      };
+
+      const paymentTx: Transaction = {
+        id: `TX-PAG-${nowMs + 1}`,
+        entity: selectedSup.name,
+        supplierId: selectedSup.id,
+        category: 'compras',
+        date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+        invoiceNumber: `PAGO-${purchaseTxId}`,
+        amount: totalCost,
+        isIncome: false, // Cancelación/Pago inmediato (-Resta en libreta)
+        status: 'Completado',
+        paymentMethod: purchase.paymentMethod || 'Efectivo / Caja Chica',
+        notes: `Pago al contado cancelado de inmediato por compra de queso.`,
+        createdAt: nowMs + 1
+      };
+
+      setTransactions((prev) => [paymentTx, deliveryTx, ...prev]);
+      try {
+        addLocalDoc('transactions', deliveryTx);
+        addLocalDoc('transactions', paymentTx);
+      } catch (e) { console.error(e); }
+    }
 
     // Add activity
     const newAct: ActivityStream = {
@@ -1789,6 +1891,7 @@ export default function App() {
               dailySalesCount={totalSalesCount}
               dailyRevenue={totalSalesRevenue}
               onAddNotification={(msg, type) => addNotification(msg, type)}
+              onUpdateProduct={handleUpdateProduct}
             />
           )}
 
@@ -1845,6 +1948,7 @@ export default function App() {
               transactions={transactions}
               businessBalance={balance}
               totalSalesRevenue={totalSalesRevenue}
+              products={cheeseProducts}
               onAddExpense={handleAddExpense}
               onAddNotification={addNotification}
             />
@@ -1897,51 +2001,61 @@ export default function App() {
                 });
               }}
               onAddTransaction={(tx) => {
-                 const newTx: Transaction = {
-                   id: `TX-${Date.now().toString().slice(-4)}`,
-                   entity: 'Bóveda Banco Central',
-                   date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-                   invoiceNumber: `BOV-${Math.floor(Math.random() * 9000 + 1000)}`,
-                   status: 'Completado',
-                   ...tx
-                 } as Transaction;
-                 
-                 setTransactions(prev => [newTx, ...prev]);
-                 try {
-                   addLocalDoc('transactions', newTx);
-                 } catch (e) {
-                   console.error(e);
-                 }
+                  const nowMs = Date.now();
+                  const newTx: Transaction = {
+                    id: `TX-${nowMs.toString().slice(-4)}-${Math.floor(Math.random() * 1000)}`,
+                    entity: 'Bóveda Banco Central',
+                    date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+                    invoiceNumber: `BOV-${Math.floor(Math.random() * 9000 + 1000)}`,
+                    status: 'Completado',
+                    createdAt: nowMs,
+                    ...tx
+                  } as Transaction;
+                  
+                  setTransactions(prev => [newTx, ...prev]);
+                  try {
+                    addLocalDoc('transactions', newTx);
+                  } catch (e) {
+                    console.error(e);
+                  }
 
-                 const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
-                 const updatedVault = { ...currentVault };
-                 const pm = (tx.paymentMethod || '').toLowerCase();
-                 const rate = settings.exchangeRate || 42.5;
-                 
-                 if (tx.isIncome) {
-                    if (pm === 'efectivo' || pm === 'efectivo usd') {
-                      updatedVault.usd += (tx.amount || 0);
-                    } else if (pm === 'efectivo bs') {
-                      updatedVault.bs += ((tx.amount || 0) * rate);
-                    } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco bs') || pm.includes('bio')) {
-                      updatedVault.bankBs += ((tx.amount || 0) * rate);
+                  const pm = (tx.paymentMethod || '').toLowerCase();
+                  const rate = settings.exchangeRate || 42.5;
+                  
+                  setSettings(prevSettings => {
+                    const currentVault = prevSettings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+                    const updatedVault = { ...currentVault };
+                    
+                    if (tx.isIncome) {
+                       if (pm === 'efectivo' || pm === 'efectivo usd') {
+                         updatedVault.usd += (tx.amount || 0);
+                       } else if (pm === 'efectivo bs') {
+                         updatedVault.bs += ((tx.amount || 0) * rate);
+                       } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco / pago móvil') || pm.includes('banco bs') || pm.includes('bio')) {
+                         updatedVault.bankBs += ((tx.amount || 0) * rate);
+                       } else {
+                         updatedVault.bankUsd += (tx.amount || 0);
+                       }
                     } else {
-                      updatedVault.bankUsd += (tx.amount || 0);
+                       if (pm === 'efectivo' || pm === 'efectivo usd') {
+                         updatedVault.usd -= (tx.amount || 0);
+                       } else if (pm === 'efectivo bs') {
+                         updatedVault.bs -= ((tx.amount || 0) * rate);
+                       } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco / pago móvil') || pm.includes('banco bs') || pm.includes('bio')) {
+                         updatedVault.bankBs -= ((tx.amount || 0) * rate);
+                       } else {
+                         updatedVault.bankUsd -= (tx.amount || 0);
+                       }
                     }
-                 } else {
-                    if (pm === 'efectivo' || pm === 'efectivo usd') {
-                      updatedVault.usd -= (tx.amount || 0);
-                    } else if (pm === 'efectivo bs') {
-                      updatedVault.bs -= ((tx.amount || 0) * rate);
-                    } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco bs') || pm.includes('bio')) {
-                      updatedVault.bankBs -= ((tx.amount || 0) * rate);
-                    } else {
-                      updatedVault.bankUsd -= (tx.amount || 0);
+                    
+                    try {
+                      updateLocalDoc('settings', 'general', { centralVaultBalance: updatedVault });
+                    } catch (err) {
+                      console.error('Error updating vault balance doc:', err);
                     }
-                 }
-                 
-                 handleUpdateSettings({ centralVaultBalance: updatedVault });
-              }}
+                    return { ...prevSettings, centralVaultBalance: updatedVault };
+                  });
+               }}
             />
           )}
 

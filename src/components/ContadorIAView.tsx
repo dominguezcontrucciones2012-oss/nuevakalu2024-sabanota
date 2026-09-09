@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { Lock, Mic, Calculator, BrainCircuit, Image as ImageIcon, Receipt, Calendar, ArrowRight, Truck } from 'lucide-react';
+import { Lock, Mic, Calculator, BrainCircuit, Image as ImageIcon, Receipt, Calendar, ArrowRight, Truck, Scale, ShieldCheck, UserCheck } from 'lucide-react';
 import InvoiceUploadView from './contador/InvoiceUploadView';
 import AIAssistantWidget from './contador/AIAssistantWidget';
 import VoiceNotesView from './contador/VoiceNotesView';
 import PhotoAlbumView from './contador/PhotoAlbumView';
 import CentralVaultView from './contador/CentralVaultView';
 import BudgetControlView from './contador/BudgetControlView';
+import AdminAccountLedgerView from './contador/AdminAccountLedgerView';
 import CheeseTripsView from './CheeseTripsView';
 import { CentralVaultBalance, Transaction, CheeseTrip, CheeseProduct, ClientProfile, SupplierProfile } from '../types';
 
@@ -52,6 +53,13 @@ export default function ContadorIAView({
   }
 
   const modules = [
+    {
+      id: 'admin-ledger',
+      title: 'Ficha Global Administradora',
+      desc: 'Cuenta corriente fiduciaria (Debe/Haber), control de fondos, balance de giras y validador de voz Gemini 3.7.',
+      icon: Scale,
+      color: 'amber'
+    },
     {
       id: 'central-vault',
       title: 'Bóveda Banco Central',
@@ -161,6 +169,21 @@ export default function ContadorIAView({
     );
   }
 
+  if (activeModule === 'admin-ledger') {
+    return (
+      <div className="relative h-full">
+        <AdminAccountLedgerView
+          onBack={() => setActiveModule(null)}
+          exchangeRate={exchangeRate}
+          vaultBalance={vaultBalance}
+          cheeseTrips={cheeseTrips}
+          onAddNotification={onAddNotification}
+        />
+        <AIAssistantWidget />
+      </div>
+    );
+  }
+
   if (activeModule === 'photo-album') {
     return (
       <div className="relative h-full">
@@ -200,39 +223,38 @@ export default function ContadorIAView({
   return (
     <div className="flex flex-col h-full bg-editorial-bg overflow-y-auto">
       {/* Header Info */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-6 border-b border-editorial-border/50 shrink-0 bg-editorial-card">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 sm:p-6 border-b border-editorial-border/50 shrink-0 bg-editorial-card gap-3">
         <div>
-          <h2 className="text-2xl font-serif font-black text-white flex items-center gap-3">
+          <h2 className="text-xl sm:text-2xl font-serif font-black text-white flex items-center gap-2 sm:gap-3">
             <BrainCircuit className="w-6 h-6 text-brand-accent" />
             EL CONTADOR <span className="text-brand-accent italic font-normal">IA</span>
           </h2>
-          <p className="text-xs text-editorial-text-muted font-sans mt-1">Dictado por voz, conciliación bancaria y contabilidad automatizada.</p>
+          <p className="text-xs text-editorial-text-muted font-sans mt-0.5">Control Financiero, Ficha Administradora, Bóveda y Giras.</p>
         </div>
-        <div className="flex items-center gap-2 mt-4 sm:mt-0">
-          <div className="px-3 py-1 bg-brand-accent/10 border border-brand-accent/20 rounded flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-brand-accent animate-pulse"></span>
-            <span className="text-[10px] font-mono text-brand-accent uppercase tracking-widest">IA Activa</span>
-          </div>
+
+        <div className="hidden sm:flex px-2.5 py-1 bg-brand-accent/10 border border-brand-accent/20 rounded items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-brand-accent animate-pulse"></span>
+          <span className="text-[10px] font-mono text-brand-accent uppercase tracking-widest">IA Activa</span>
         </div>
       </div>
 
-      {/* Main Content (Native Dashboard) */}
-      <div className="p-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-5xl mx-auto">
+      {/* Main Content (Catálogo de Módulos Grandes) */}
+      <div className="p-4 sm:p-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 max-w-5xl mx-auto">
           {modules.map((mod) => (
             <button 
               key={mod.id}
               onClick={() => setActiveModule(mod.id)}
-              className={`bg-editorial-card/50 border border-editorial-border hover:border-${mod.color}-500/50 p-6 rounded-xl flex flex-col text-left transition-all duration-300 hover:shadow-lg hover:shadow-${mod.color}-500/10 group cursor-pointer`}
+              className="bg-editorial-card/50 border border-editorial-border hover:border-amber-500/50 p-5 sm:p-6 rounded-xl flex flex-col text-left transition-all duration-300 hover:shadow-lg group cursor-pointer"
             >
-              <div className={`w-14 h-14 rounded-2xl bg-${mod.color}-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-300`}>
-                <mod.icon className={`w-7 h-7 text-${mod.color}-500`} />
+              <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-amber-500/10 flex items-center justify-center mb-4 sm:mb-6 group-hover:scale-110 transition-transform duration-300">
+                <mod.icon className="w-6 h-6 sm:w-7 sm:h-7 text-amber-500" />
               </div>
-              <h3 className="text-xl font-serif font-bold text-white mb-2">{mod.title}</h3>
-              <p className="text-sm text-editorial-text-muted mb-6 flex-1">{mod.desc}</p>
+              <h3 className="text-lg sm:text-xl font-serif font-bold text-white mb-1.5">{mod.title}</h3>
+              <p className="text-xs sm:text-sm text-editorial-text-muted mb-4 sm:mb-6 flex-1 leading-relaxed">{mod.desc}</p>
               
-              <div className="flex items-center text-xs font-mono uppercase tracking-widest text-editorial-text-muted group-hover:text-white transition-colors">
-                <span className="mr-2">Ingresar al módulo</span>
+              <div className="flex items-center text-xs font-mono uppercase tracking-widest text-editorial-text-muted group-hover:text-amber-400 transition-colors">
+                <span className="mr-2">Abrir módulo</span>
                 <ArrowRight className="w-4 h-4" />
               </div>
             </button>

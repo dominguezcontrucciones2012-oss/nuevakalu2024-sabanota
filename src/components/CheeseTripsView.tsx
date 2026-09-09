@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
-import { CheeseTrip, CheeseProduct, ClientProfile, TripInvoice, Transaction } from '../types';
+import React, { useState, useRef } from 'react';
+import { CheeseTrip, CheeseProduct, ClientProfile, Transaction } from '../types';
 import { 
-  Truck, Plus, Search, Trash2, Banknote
+  Truck, Plus, Search, Banknote, CreditCard, Mic, Sparkles, Loader2, Bot, CheckSquare
 } from 'lucide-react';
 import { formatCurrency } from '../utils';
+import { parseTripDepartureWithAI } from '../services/ocrService';
 
 interface CheeseTripsViewProps {
   cheeseTrips: CheeseTrip[];
@@ -32,7 +33,6 @@ export default function CheeseTripsView({
 }: CheeseTripsViewProps) {
   const [activeTab, setActiveTab] = useState<'en_ruta' | 'liquidados'>('en_ruta');
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [selectedTrip, setSelectedTrip] = useState<CheeseTrip | null>(null);
 
   // New Trip Form State
   const [clientId, setClientId] = useState(''); // Will store the selected fixed responsible
@@ -40,23 +40,169 @@ export default function CheeseTripsView({
   const [cheeseSearch, setCheeseSearch] = useState('');
   const [cheeseId, setCheeseId] = useState('');
   const [showProductResults, setShowProductResults] = useState(false);
-  const [dispatchedKg, setDispatchedKg] = useState(0);
-  const [costPerKg, setCostPerKg] = useState(0);
+  const [dispatchedKg, setDispatchedKg] = useState<string>('');
+  const [costPerKg, setCostPerKg] = useState<string>('');
   
-  const [cashTakenUsd, setCashTakenUsd] = useState(0);
-  const [cashTakenBs, setCashTakenBs] = useState(0);
+  const [cashTakenUsd, setCashTakenUsd] = useState<string>('');
+  const [cashTakenBs, setCashTakenBs] = useState<string>('');
+  const [bankTaken, setBankTaken] = useState<string>('');
+  const [bankCurrency, setBankCurrency] = useState<'USD' | 'BS'>('BS');
 
-  // Settlement Form State
-  const [cashUsd, setCashUsd] = useState(0);
-  const [cashBs, setCashBs] = useState(0);
-  const [bankBs, setBankBs] = useState(0);
-  const [bankUsd, setBankUsd] = useState(0);
-  
-  // Facturas de Víveres
-  const [invoiceItems, setInvoiceItems] = useState<{description: string, quantity: number, totalCostUsd: number}[]>([]);
-  const [newItemDesc, setNewItemDesc] = useState('');
-  const [newItemQty, setNewItemQty] = useState(1);
-  const [newItemCost, setNewItemCost] = useState(0);
+  // Voice AI States
+  const [isListening, setIsListening] = useState(false);
+  const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [voiceTranscription, setVoiceTranscription] = useState('');
+  const recognitionRef = useRef<any>(null);
+  const isManuallyListeningRef = useRef<boolean>(false);
+  const accumulatedTranscriptRef = useRef<string>('');
+
+  const toggleVoiceDictation = async () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      onAddNotification('El reconocimiento de voz no está soportado en este navegador.', 'warning');
+      return;
+    }
+
+    // Si ya está grabando y el usuario vuelve a presionar el botón: APAGAR Y PROCESAR
+    if (isManuallyListeningRef.current) {
+      isManuallyListeningRef.current = false;
+      setIsListening(false);
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      
+      const fullText = accumulatedTranscriptRef.current.trim();
+      if (fullText) {
+        await processVoiceWithAI(fullText);
+      } else {
+        onAddNotification('No se detectó ninguna instrucción de voz.', 'warning');
+      }
+      return;
+    }
+
+    // Si está apagado: ENCENDER EN MODO CONTINUO HASTA QUE SE APAGUE MANUALMENTE
+    try {
+      accumulatedTranscriptRef.current = '';
+      setVoiceTranscription('');
+      isManuallyListeningRef.current = true;
+      setIsListening(true);
+
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'es-VE';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      recognition.onstart = () => {
+        setIsListening(true);
+      };
+
+      recognition.onresult = (event: any) => {
+        let currentInterim = '';
+        let finalChunk = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalChunk += event.results[i][0].transcript + ' ';
+          } else {
+            currentInterim += event.results[i][0].transcript;
+          }
+        }
+        if (finalChunk) {
+          accumulatedTranscriptRef.current += finalChunk;
+        }
+        setVoiceTranscription((accumulatedTranscriptRef.current + ' ' + currentInterim).trim());
+      };
+
+      recognition.onerror = (event: any) => {
+        console.warn('Speech recognition warning/error:', event.error);
+        if (event.error === 'not-allowed') {
+          isManuallyListeningRef.current = false;
+          setIsListening(false);
+          onAddNotification('Permiso de micrófono denegado.', 'warning');
+        }
+      };
+
+      recognition.onend = () => {
+        // Si el usuario no lo apagó explícitamente y el navegador cortó por silencio, reiniciar automáticamente
+        if (isManuallyListeningRef.current) {
+          try {
+            recognition.start();
+          } catch (err) {
+            console.log('Restarting recognition...', err);
+          }
+        } else {
+          setIsListening(false);
+        }
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (e) {
+      console.error(e);
+      isManuallyListeningRef.current = false;
+      setIsListening(false);
+      onAddNotification('No se pudo inicializar el micrófono.', 'warning');
+    }
+  };
+
+  const processVoiceWithAI = async (spokenText: string) => {
+    if (!spokenText.trim()) return;
+    setIsAiProcessing(true);
+    try {
+      const availableCheeseNames = cheeseProducts.filter(p => p.stockKg > 0).map(p => p.name);
+      const parsed = await parseTripDepartureWithAI(spokenText, exchangeRate, availableCheeseNames);
+
+      if (parsed.driver) {
+        setDriver(parsed.driver);
+      }
+
+      if (parsed.cheeseProductName) {
+        const matchedProd = cheeseProducts.find(p => 
+          p.name.toLowerCase().includes((parsed.cheeseProductName || '').toLowerCase()) ||
+          (parsed.cheeseProductName || '').toLowerCase().includes(p.name.toLowerCase())
+        );
+        if (matchedProd) {
+          setCheeseId(matchedProd.id);
+          setCheeseSearch(matchedProd.name);
+          setCostPerKg(String(parsed.costPerKg || matchedProd.purchasePrice || ''));
+        }
+      }
+
+      if (parsed.dispatchedKg !== undefined && parsed.dispatchedKg > 0) {
+        setDispatchedKg(String(parsed.dispatchedKg));
+      }
+
+      if (parsed.costPerKg !== undefined && parsed.costPerKg > 0) {
+        setCostPerKg(String(parsed.costPerKg));
+      }
+
+      if (parsed.cashTakenUsd !== undefined && parsed.cashTakenUsd > 0) {
+        setCashTakenUsd(String(parsed.cashTakenUsd));
+      }
+
+      if (parsed.cashTakenBs !== undefined && parsed.cashTakenBs > 0) {
+        setCashTakenBs(String(parsed.cashTakenBs));
+      }
+
+      if (parsed.bankTakenBs !== undefined && parsed.bankTakenBs > 0) {
+        setBankTaken(String(parsed.bankTakenBs));
+        setBankCurrency('BS');
+      } else if (parsed.bankTakenUsd !== undefined && parsed.bankTakenUsd > 0) {
+        setBankTaken(String(parsed.bankTakenUsd));
+        setBankCurrency('USD');
+      }
+
+      onAddNotification('✨ Datos de salida completados por Gemini 3.7.', 'success');
+    } catch (err: any) {
+      console.error('Error procesando dictado de viaje:', err);
+      onAddNotification('Error al procesar la orden con la IA.', 'warning');
+    } finally {
+      setIsAiProcessing(false);
+    }
+  };
 
   const filteredTrips = cheeseTrips.filter(t => 
     activeTab === 'en_ruta' ? t.status === 'en_ruta' : t.status === 'liquidado'
@@ -66,37 +212,67 @@ export default function CheeseTripsView({
     e.preventDefault();
     const prod = cheeseProducts.find(p => p.id === cheeseId);
     
-    // Validación de Bolsa Combinada: Al menos Queso > 0 o Efectivo > 0
-    if ((!prod || dispatchedKg <= 0) && cashTakenUsd <= 0 && cashTakenBs <= 0) {
-      onAddNotification('Debe despachar queso o registrar retiro de efectivo para iniciar el viaje.', 'warning');
+    const numDispatchedKg = Number(dispatchedKg) || 0;
+    const numCostPerKg = Number(costPerKg) || 0;
+    const numCashTakenUsd = Number(cashTakenUsd) || 0;
+    const numCashTakenBs = Number(cashTakenBs) || 0;
+    const numBankTaken = Number(bankTaken) || 0;
+    
+    const numBankTakenBs = bankCurrency === 'BS' ? numBankTaken : 0;
+    const numBankTakenUsd = bankCurrency === 'USD' ? numBankTaken : 0;
+
+    // Validación de Bolsa Combinada: Al menos Queso > 0 o Fondos (Efectivo/Banco) > 0
+    if ((!prod || numDispatchedKg <= 0) && numCashTakenUsd <= 0 && numCashTakenBs <= 0 && numBankTaken <= 0) {
+      onAddNotification('Debe despachar queso o registrar retiro de fondos (efectivo o banco) para iniciar el viaje.', 'warning');
       return;
     }
 
     let client = clients.find(c => c.name.toLowerCase() === driver.toLowerCase());
     
-    const dispatchedCostValue = (prod && dispatchedKg > 0) ? (dispatchedKg * costPerKg) : 0;
-    const totalCashValueUsd = cashTakenUsd + (cashTakenBs / exchangeRate);
-    const totalBagValueUsd = dispatchedCostValue + totalCashValueUsd;
+    const dispatchedCostValue = (prod && numDispatchedKg > 0) ? (numDispatchedKg * numCostPerKg) : 0;
+    const cashUsdEquivalent = numCashTakenUsd + (numCashTakenBs / exchangeRate);
+    const bankUsdEquivalent = numBankTakenUsd + (numBankTakenBs / exchangeRate);
+    const totalBagValueUsd = dispatchedCostValue + cashUsdEquivalent + bankUsdEquivalent;
 
-    // Registrar Transacciones de Efectivo en Bóveda si aplica
-    if (totalCashValueUsd > 0 && onAddTransaction) {
-      if (cashTakenUsd > 0) {
+    // Registrar Transacciones de Egreso de Fondos en Bóveda si aplica
+    if (onAddTransaction) {
+      if (numCashTakenUsd > 0) {
         onAddTransaction({
           category: 'gastos',
-          amount: cashTakenUsd,
+          amount: numCashTakenUsd,
           isIncome: false,
-          notes: `Adelanto / Fondeo Gira San Juan (USD) - Responsable: ${driver}`,
+          notes: `Adelanto / Fondeo Gira San Juan (Efectivo USD) - Responsable: ${driver}`,
           paymentMethod: 'Efectivo USD',
           entity: driver
         });
       }
-      if (cashTakenBs > 0) {
+      if (numCashTakenBs > 0) {
         onAddTransaction({
           category: 'gastos',
-          amount: cashTakenBs,
+          amount: numCashTakenBs / exchangeRate, // Monto base USD para el registro normalizado
           isIncome: false,
-          notes: `Adelanto / Fondeo Gira San Juan (BS) - Responsable: ${driver}`,
+          notes: `Adelanto / Fondeo Gira San Juan (Efectivo Bs. ${numCashTakenBs.toLocaleString('es-VE')}) - Responsable: ${driver}`,
           paymentMethod: 'Efectivo BS',
+          entity: driver
+        });
+      }
+      if (numBankTakenBs > 0) {
+        onAddTransaction({
+          category: 'gastos',
+          amount: numBankTakenBs / exchangeRate,
+          isIncome: false,
+          notes: `Adelanto / Fondeo Gira San Juan (Banco / Pago Móvil Bs. ${numBankTakenBs.toLocaleString('es-VE')}) - Responsable: ${driver}`,
+          paymentMethod: 'Banco / Pago Móvil',
+          entity: driver
+        });
+      }
+      if (numBankTakenUsd > 0) {
+        onAddTransaction({
+          category: 'gastos',
+          amount: numBankTakenUsd,
+          isIncome: false,
+          notes: `Adelanto / Fondeo Gira San Juan (Banco Digital USD $${numBankTakenUsd.toFixed(2)}) - Responsable: ${driver}`,
+          paymentMethod: 'Banco USD / Zelle',
           entity: driver
         });
       }
@@ -106,17 +282,19 @@ export default function CheeseTripsView({
       tripNumber: cheeseTrips.length + 1,
       date: new Date().toISOString(),
       destination: 'San Juan',
-      clientId: client?.id || driver, // Si no existe, usamos el nombre como ID para que no reviente
+      clientId: client?.id || driver,
       clientName: driver,
       driverOrResponsible: driver,
       status: 'en_ruta',
       cheeseProductId: prod ? prod.id : '',
-      cheeseProductName: prod ? prod.name : 'Viaje Solo Efectivo',
-      dispatchedKg,
-      costPerKgUsd: costPerKg,
+      cheeseProductName: prod ? prod.name : 'Viaje Solo Fondos',
+      dispatchedKg: numDispatchedKg,
+      costPerKgUsd: numCostPerKg,
       dispatchedCostValue,
-      cashTakenUsd,
-      cashTakenBs,
+      cashTakenUsd: numCashTakenUsd,
+      cashTakenBs: numCashTakenBs,
+      bankTakenUsd: numBankTakenUsd,
+      bankTakenBs: numBankTakenBs,
       totalBagValueUsd,
       invoices: [],
       totalInvoicesValueUsd: 0,
@@ -133,51 +311,13 @@ export default function CheeseTripsView({
     // Reset Form
     setCheeseId('');
     setCheeseSearch('');
-    setDispatchedKg(0);
-    setCostPerKg(0);
-    setCashTakenUsd(0);
-    setCashTakenBs(0);
+    setDispatchedKg('');
+    setCostPerKg('');
+    setCashTakenUsd('');
+    setCashTakenBs('');
+    setBankTaken('');
+    setBankCurrency('BS');
     setShowCreateModal(false);
-  };
-
-  const handleAddInvoiceItem = () => {
-    if (!newItemDesc.trim() || newItemCost <= 0 || newItemQty <= 0) return;
-    setInvoiceItems([...invoiceItems, { description: newItemDesc, quantity: newItemQty, totalCostUsd: newItemCost }]);
-    setNewItemDesc('');
-    setNewItemQty(1);
-    setNewItemCost(0);
-  };
-
-  const handleRemoveInvoiceItem = (index: number) => {
-    setInvoiceItems(invoiceItems.filter((_, i) => i !== index));
-  };
-
-  const handleSettleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedTrip) return;
-
-    // En la nueva lógica, ya no se registran facturas ni caja fuerte desde aquí.
-    // Solo se asienta el balance reportado para cerrar el viaje.
-    const totalLiquidado = cashUsd + (cashBs / exchangeRate) + (bankBs / exchangeRate) + bankUsd + invoiceItems.reduce((sum, item) => sum + item.totalCostUsd, 0); 
-    const totalViveres = invoiceItems.reduce((sum, item) => sum + item.totalCostUsd, 0);
-    const netProfit = totalLiquidado - selectedTrip.dispatchedCostValue;
-
-    onSettleTrip(selectedTrip.id, {
-      totalInvoicesValueUsd: totalViveres,
-      cashReturnedUsd: cashUsd,
-      cashReturnedBs: cashBs,
-      bankReturnedBs: bankBs,
-      bankReturnedUsd: bankUsd,
-      bcvRateAtSettlement: exchangeRate,
-      totalSettlementValueUsd: totalLiquidado,
-      netProfitUsd: netProfit
-    });
-    setSelectedTrip(null);
-    setCashUsd(0);
-    setCashBs(0);
-    setBankBs(0);
-    setBankUsd(0);
-    setInvoiceItems([]);
   };
 
   const searchedProducts = cheeseProducts.filter(p => 
@@ -248,33 +388,73 @@ export default function CheeseTripsView({
               
               {(trip.dispatchedKg > 0 || trip.dispatchedCostValue > 0) && (
                 <div className="flex justify-between border-t border-editorial-border/30 pt-1">
-                  <span className="text-editorial-text-muted">Queso ({trip.dispatchedKg}Kg):</span>
-                  <span className="text-editorial-text-primary">{formatCurrency(trip.dispatchedCostValue)}</span>
+                  <span className="text-editorial-text-muted">Queso ({trip.dispatchedKg} Kg):</span>
+                  <span className="text-editorial-text-primary font-bold">{formatCurrency(trip.dispatchedCostValue)}</span>
                 </div>
               )}
               
-              {((trip.cashTakenUsd || 0) > 0 || (trip.cashTakenBs || 0) > 0) && (
+              {(trip.cashTakenUsd || 0) > 0 && (
                 <div className="flex justify-between border-t border-editorial-border/30 pt-1">
-                  <span className="text-editorial-text-muted">Efectivo Bóveda:</span>
-                  <span className="text-editorial-text-primary">
-                    {formatCurrency((trip.cashTakenUsd || 0) + ((trip.cashTakenBs || 0) / exchangeRate))}
-                  </span>
+                  <span className="text-editorial-text-muted">Efectivo USD (Divisa):</span>
+                  <span className="text-emerald-400 font-bold">{formatCurrency(trip.cashTakenUsd || 0)}</span>
                 </div>
               )}
 
-              <div className="flex justify-between border-t border-editorial-border pt-2 mt-2">
-                <span className="text-editorial-text-muted">Bolsa Total:</span>
-                <span className="text-amber-500 font-bold text-sm">{formatCurrency(trip.totalBagValueUsd || trip.dispatchedCostValue)}</span>
-              </div>
+              {(trip.cashTakenBs || 0) > 0 && (
+                <div className="flex justify-between border-t border-editorial-border/30 pt-1">
+                  <span className="text-editorial-text-muted">Efectivo Bs:</span>
+                  <div className="text-right">
+                    <span className="text-emerald-400 font-bold">Bs. {(trip.cashTakenBs || 0).toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    <span className="text-[10px] text-editorial-text-muted block">({formatCurrency((trip.cashTakenBs || 0) / exchangeRate)})</span>
+                  </div>
+                </div>
+              )}
+
+              {((trip.bankTakenBs || 0) > 0 || (trip.bankTakenUsd || 0) > 0) && (
+                <div className="flex justify-between border-t border-editorial-border/30 pt-1">
+                  <span className="text-editorial-text-muted">Banco / Electrónico:</span>
+                  <div className="text-right">
+                    {(trip.bankTakenUsd || 0) > 0 && (
+                      <span className="text-cyan-400 font-bold block">{formatCurrency(trip.bankTakenUsd || 0)}</span>
+                    )}
+                    {(trip.bankTakenBs || 0) > 0 && (
+                      <>
+                        <span className="text-cyan-400 font-bold block">Bs. {(trip.bankTakenBs || 0).toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        <span className="text-[10px] text-editorial-text-muted block">({formatCurrency((trip.bankTakenBs || 0) / exchangeRate)})</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {(() => {
+                const cheeseVal = trip.dispatchedCostValue || 0;
+                const usdVal = trip.cashTakenUsd || 0;
+                const bsValInUsd = (trip.cashTakenBs || 0) / exchangeRate;
+                const bankUsdVal = (trip.bankTakenUsd || 0) + ((trip.bankTakenBs || 0) / exchangeRate);
+                const computedTotalBag = cheeseVal + usdVal + bsValInUsd + bankUsdVal;
+
+                return (
+                  <div className="flex justify-between border-t border-editorial-border pt-2 mt-2">
+                    <span className="text-editorial-text-muted font-bold">Bolsa Total:</span>
+                    <span className="text-amber-500 font-bold text-sm">{formatCurrency(computedTotalBag)}</span>
+                  </div>
+                );
+              })()}
             </div>
 
             {trip.status === 'en_ruta' ? (
               <div className="mt-4 pt-4 border-t border-editorial-border space-y-2">
                 <button
-                  onClick={() => onNavigateToModule && onNavigateToModule('invoice-upload', { tripId: trip.id })}
-                  className="w-full mt-2 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded text-xs font-bold uppercase transition-colors cursor-pointer"
+                  onClick={() => {
+                    if (onNavigateToModule) {
+                      onNavigateToModule('invoice-upload', { tripId: trip.id });
+                    }
+                  }}
+                  className="w-full mt-2 py-2.5 bg-amber-500 hover:bg-amber-600 active:scale-95 text-white rounded text-xs font-bold uppercase transition-all shadow-md cursor-pointer flex items-center justify-center gap-2"
                 >
-                  Cerrar & Liquidar Viaje
+                  <CheckSquare className="w-4 h-4" />
+                  Cargar Mercancía &amp; Gastos
                 </button>
               </div>
             ) : (
@@ -301,9 +481,56 @@ export default function CheeseTripsView({
       </div>
 
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-editorial-card border border-editorial-border p-6 rounded shadow-xl w-full max-w-lg">
-            <h2 className="font-serif text-2xl font-bold text-editorial-text-primary mb-4">Nueva Salida de Viaje</h2>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-editorial-card border border-editorial-border p-6 rounded shadow-xl w-full max-w-lg relative max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <h2 className="font-serif text-2xl font-bold text-editorial-text-primary">Nueva Salida de Viaje</h2>
+                <p className="text-xs text-editorial-text-muted mt-0.5 font-mono">Gira San Juan • Fondeo y Carga</p>
+              </div>
+              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/30 rounded">
+                <Bot className="w-3.5 h-3.5 text-amber-500" />
+                <span className="text-[10px] font-mono font-bold text-amber-500 uppercase">Gemini 3.7</span>
+              </div>
+            </div>
+
+            {/* Smart Voice Dictation Assistant Box */}
+            <div className="bg-editorial-bg border border-editorial-border rounded p-3 mb-4 flex items-center justify-between gap-3">
+              <div className="flex-1">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                  <span className="text-[11px] font-bold text-editorial-text-primary font-mono uppercase tracking-wider">Dictado por Voz IA</span>
+                </div>
+                <p className="text-[11px] text-editorial-text-muted leading-tight">
+                  {isListening ? (
+                    <span className="text-rose-400 font-bold animate-pulse">Escuchando... Di: "Me llevo 200 kg de queso, 100 dólares y 20000 bolívares"</span>
+                  ) : isAiProcessing ? (
+                    <span className="text-amber-500 font-bold flex items-center gap-1.5">
+                      <Loader2 className="w-3 h-3 animate-spin" /> Procesando con Gemini 3.7...
+                    </span>
+                  ) : voiceTranscription ? (
+                    <span className="text-editorial-text-primary italic">"{voiceTranscription}"</span>
+                  ) : (
+                    "Presiona el micrófono y dicta la salida en lenguaje natural."
+                  )}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={toggleVoiceDictation}
+                disabled={isAiProcessing}
+                className={`p-3 rounded-full transition-all shadow-md flex items-center justify-center cursor-pointer ${
+                  isListening 
+                    ? 'bg-rose-500 text-white animate-pulse shadow-rose-500/50 ring-4 ring-rose-500/30' 
+                    : 'bg-amber-500 hover:bg-amber-600 text-white shadow-amber-500/20'
+                }`}
+                title={isListening ? "Detener y procesar dictado (Clic para apagar)" : "Iniciar dictado continuo por voz"}
+              >
+                <Mic className={`w-4 h-4 ${isListening ? 'animate-bounce' : ''}`} />
+              </button>
+            </div>
+
             <form onSubmit={handleCreateSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs font-mono uppercase text-editorial-text-muted mb-1">Responsable Fijo</label>
@@ -361,34 +588,118 @@ export default function CheeseTripsView({
 
                 <div>
                   <label className="block text-xs font-mono uppercase text-editorial-text-muted mb-1">Kg Despachados</label>
-                  <input type="number" step="0.1" value={dispatchedKg} onChange={e => setDispatchedKg(Number(e.target.value))} className="w-full bg-editorial-bg border border-editorial-border rounded p-2 text-sm text-editorial-text-primary" />
+                  <input 
+                    type="number" 
+                    step="any"
+                    placeholder="0"
+                    value={dispatchedKg} 
+                    onFocus={e => e.target.select()}
+                    onChange={e => setDispatchedKg(e.target.value)} 
+                    className="w-full bg-editorial-bg border border-editorial-border rounded p-2 text-sm text-editorial-text-primary font-mono focus:border-amber-500 outline-none" 
+                  />
                 </div>
               </div>
               
               <div>
                 <label className="block text-xs font-mono uppercase text-editorial-text-muted mb-1">Costo Acordado ($/Kg)</label>
-                <input type="number" step="0.01" value={costPerKg} onChange={e => setCostPerKg(Number(e.target.value))} className="w-full bg-editorial-bg border border-editorial-border rounded p-2 text-sm text-editorial-text-primary" />
+                <input 
+                  type="number" 
+                  step="any"
+                  placeholder="0.00"
+                  value={costPerKg} 
+                  onFocus={e => e.target.select()}
+                  onChange={e => setCostPerKg(e.target.value)} 
+                  className="w-full bg-editorial-bg border border-editorial-border rounded p-2 text-sm text-editorial-text-primary font-mono focus:border-amber-500 outline-none" 
+                />
               </div>
 
               <div className="border-t border-editorial-border/50 pt-4 mt-2">
                 <h3 className="text-sm font-bold font-serif text-editorial-text-primary mb-3 flex items-center gap-2">
-                  <Banknote className="w-4 h-4 text-emerald-500" /> Adelanto Efectivo (Bóveda Central)
+                  <Banknote className="w-4 h-4 text-emerald-500" /> Adelanto en Efectivo (Bóveda Central)
                 </h3>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-mono uppercase text-editorial-text-muted mb-1">Entregar USD</label>
-                    <input type="number" step="0.01" min="0" value={cashTakenUsd} onChange={e => setCashTakenUsd(Number(e.target.value))} className="w-full bg-editorial-bg border border-editorial-border rounded p-2 text-sm text-emerald-400 font-bold" />
+                    <label className="block text-xs font-mono uppercase text-editorial-text-muted mb-1">Entregar USD ($)</label>
+                    <input 
+                      type="number" 
+                      step="any" 
+                      min="0" 
+                      placeholder="0.00"
+                      value={cashTakenUsd} 
+                      onFocus={e => e.target.select()}
+                      onChange={e => setCashTakenUsd(e.target.value)} 
+                      className="w-full bg-editorial-bg border border-editorial-border rounded p-2 text-sm text-emerald-400 font-bold font-mono focus:border-emerald-500 outline-none" 
+                    />
                   </div>
                   <div>
                     <label className="block text-xs font-mono uppercase text-editorial-text-muted mb-1">Entregar Bs</label>
-                    <input type="number" step="0.01" min="0" value={cashTakenBs} onChange={e => setCashTakenBs(Number(e.target.value))} className="w-full bg-editorial-bg border border-editorial-border rounded p-2 text-sm text-emerald-400 font-bold" />
+                    <input 
+                      type="number" 
+                      step="any" 
+                      min="0" 
+                      placeholder="0.00"
+                      value={cashTakenBs} 
+                      onFocus={e => e.target.select()}
+                      onChange={e => setCashTakenBs(e.target.value)} 
+                      className="w-full bg-editorial-bg border border-editorial-border rounded p-2 text-sm text-emerald-400 font-bold font-mono focus:border-emerald-500 outline-none" 
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-editorial-border/50 pt-4 mt-2">
+                <h3 className="text-sm font-bold font-serif text-editorial-text-primary mb-3 flex items-center gap-2">
+                  <CreditCard className="w-4 h-4 text-cyan-400" /> Adelanto Banco / Electrónico (Bóveda Digital)
+                </h3>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-2">
+                    <label className="block text-xs font-mono uppercase text-editorial-text-muted mb-1">Monto a Transferir / Pago Móvil</label>
+                    <input 
+                      type="number" 
+                      step="any" 
+                      min="0" 
+                      placeholder="0.00"
+                      value={bankTaken} 
+                      onFocus={e => e.target.select()}
+                      onChange={e => setBankTaken(e.target.value)} 
+                      className="w-full bg-editorial-bg border border-editorial-border rounded p-2 text-sm text-cyan-400 font-bold font-mono focus:border-cyan-500 outline-none" 
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-mono uppercase text-editorial-text-muted mb-1">Moneda</label>
+                    <select
+                      value={bankCurrency}
+                      onChange={e => setBankCurrency(e.target.value as 'USD' | 'BS')}
+                      className="w-full bg-editorial-bg border border-editorial-border rounded p-2 text-sm text-cyan-400 font-bold font-mono focus:border-cyan-500 outline-none"
+                    >
+                      <option value="BS">Bs (PM / Transf)</option>
+                      <option value="USD">USD ($ Digital)</option>
+                    </select>
                   </div>
                 </div>
               </div>
 
               <div className="flex justify-end gap-3 pt-4 mt-6 border-t border-editorial-border">
-                <button type="button" onClick={() => setShowCreateModal(false)} className="px-4 py-2 text-xs font-bold font-mono uppercase text-editorial-text-muted hover:text-editorial-text-primary transition-colors cursor-pointer">Cancelar</button>
-                <button type="submit" className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded text-xs font-bold uppercase transition-colors cursor-pointer">Registrar Salida</button>
+                <button 
+                  type="button" 
+                  onClick={() => {
+                    if (isManuallyListeningRef.current) {
+                      isManuallyListeningRef.current = false;
+                      setIsListening(false);
+                      try { recognitionRef.current?.stop(); } catch (e) {}
+                    }
+                    setShowCreateModal(false);
+                  }} 
+                  className="px-4 py-2 text-xs font-bold font-mono uppercase text-editorial-text-muted hover:text-editorial-text-primary transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  type="submit" 
+                  className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded text-xs font-bold uppercase transition-colors cursor-pointer"
+                >
+                  Registrar Salida
+                </button>
               </div>
             </form>
           </div>

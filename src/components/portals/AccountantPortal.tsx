@@ -9,15 +9,17 @@ import {
   Sparkles,
   RefreshCw,
   LogOut,
-  ChevronRight
+  ChevronRight,
+  Scale
 } from 'lucide-react';
 import { MobilePortalsViewProps } from '../MobilePortalsView';
 import CentralVaultView from '../contador/CentralVaultView';
 import InvoiceUploadView from '../contador/InvoiceUploadView';
 import VoiceNotesView from '../contador/VoiceNotesView';
 import CheeseTripsView from '../CheeseTripsView';
+import AdminAccountLedgerView from '../contador/AdminAccountLedgerView';
 
-type TabType = 'boveda' | 'facturas' | 'voz' | 'giras';
+type TabType = 'ficha' | 'boveda' | 'facturas' | 'voz' | 'giras';
 
 export default function AccountantPortal({
   products = [],
@@ -33,11 +35,21 @@ export default function AccountantPortal({
   onAddTransaction = () => {},
   onAddNotification = () => {}
 }: MobilePortalsViewProps) {
-  const [activeTab, setActiveTab] = useState<TabType>('boveda');
+  const [activeTab, setActiveTab] = useState<TabType>('ficha');
+  const [activeTripId, setActiveTripId] = useState<string | undefined>(undefined);
 
   // Helper para volver al inicio del CRM si se desea
   const handleExit = () => {
     window.location.href = '/';
+  };
+
+  const handleNavigateToModule = (moduleId: string | null, params?: any) => {
+    if (moduleId === 'invoice-upload') {
+      setActiveTripId(params?.tripId);
+      setActiveTab('facturas');
+    } else if (moduleId === 'cheese-trips' || moduleId === 'giras') {
+      setActiveTab('giras');
+    }
   };
 
   return (
@@ -77,10 +89,22 @@ export default function AccountantPortal({
 
       {/* Main Content Area */}
       <main className="flex-1 w-full max-w-2xl mx-auto flex flex-col relative overflow-x-hidden">
+        {activeTab === 'ficha' && (
+          <div className="flex-1 w-full animate-fadeIn">
+            <AdminAccountLedgerView
+              onBack={() => setActiveTab('ficha')}
+              exchangeRate={exchangeRate}
+              vaultBalance={vaultBalance}
+              cheeseTrips={cheeseTrips}
+              onAddNotification={onAddNotification}
+            />
+          </div>
+        )}
+
         {activeTab === 'boveda' && (
           <div className="flex-1 w-full animate-fadeIn">
             <CentralVaultView
-              onBack={() => setActiveTab('boveda')}
+              onBack={() => setActiveTab('ficha')}
               vaultBalance={vaultBalance}
               exchangeRate={exchangeRate}
               transactions={transactions}
@@ -96,7 +120,11 @@ export default function AccountantPortal({
         {activeTab === 'facturas' && (
           <div className="flex-1 w-full animate-fadeIn">
             <InvoiceUploadView
-              onBack={() => setActiveTab('boveda')}
+              onBack={() => {
+                setActiveTripId(undefined);
+                setActiveTab('giras');
+              }}
+              settlingTripId={activeTripId}
               products={products}
               suppliers={suppliers}
               exchangeRate={exchangeRate}
@@ -128,6 +156,7 @@ export default function AccountantPortal({
               onUpdateTrip={onUpdateTrip}
               onSettleTrip={onSettleTrip}
               onAddNotification={onAddNotification}
+              onNavigateToModule={handleNavigateToModule}
               onAddTransaction={onAddTransaction}
             />
           </div>
@@ -138,12 +167,25 @@ export default function AccountantPortal({
       <nav className="fixed bottom-0 left-0 right-0 z-40 bg-neutral-900/95 backdrop-blur-lg border-t border-neutral-800 shadow-2xl safe-area-bottom">
         <div className="max-w-2xl mx-auto flex items-center justify-around px-2 py-2">
           
+          {/* Tab 0: Ficha Administradora */}
+          <button
+            onClick={() => setActiveTab('ficha')}
+            className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
+              activeTab === 'ficha'
+                ? 'text-amber-400 font-bold bg-amber-400/10'
+                : 'text-neutral-400 hover:text-neutral-200'
+            }`}
+          >
+            <Scale className={`w-5 h-5 mb-0.5 transition-transform ${activeTab === 'ficha' ? 'scale-110' : ''}`} />
+            <span className="text-[9px] tracking-tight">Ficha</span>
+          </button>
+
           {/* Tab 1: Bóveda Central */}
           <button
             onClick={() => setActiveTab('boveda')}
             className={`flex flex-col items-center justify-center flex-1 py-1 rounded-xl transition-all cursor-pointer ${
               activeTab === 'boveda'
-                ? 'text-amber-400 font-bold bg-amber-400/10'
+                ? 'text-cyan-400 font-bold bg-cyan-400/10'
                 : 'text-neutral-400 hover:text-neutral-200'
             }`}
           >

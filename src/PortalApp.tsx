@@ -45,12 +45,14 @@ export default function PortalApp() {
   }, []);
 
   const handleAddTransaction = (tx: Partial<any>) => {
+    const nowMs = Date.now();
     const newTx = {
-      id: `TX-${Date.now().toString().slice(-4)}`,
+      id: `TX-${nowMs.toString().slice(-4)}-${Math.floor(Math.random() * 1000)}`,
       entity: 'Bóveda Banco Central',
       date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
       invoiceNumber: `BOV-${Math.floor(Math.random() * 9000 + 1000)}`,
       status: 'Completado',
+      createdAt: nowMs,
       ...tx
     };
     setTransactions((prev) => [newTx as any, ...prev]);
@@ -60,40 +62,42 @@ export default function PortalApp() {
       console.error(e);
     }
 
-    const currentVault = settings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
-    const updatedVault = { ...currentVault };
     const pm = (tx.paymentMethod || '').toLowerCase();
     const rate = settings.exchangeRate || 42.5;
     
-    if (tx.isIncome) {
-      if (pm === 'efectivo' || pm === 'efectivo usd') {
-        updatedVault.usd += (tx.amount || 0);
-      } else if (pm === 'efectivo bs') {
-        updatedVault.bs += ((tx.amount || 0) * rate);
-      } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco bs') || pm.includes('bio')) {
-        updatedVault.bankBs += ((tx.amount || 0) * rate);
+    setSettings(prevSettings => {
+      const currentVault = prevSettings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+      const updatedVault = { ...currentVault };
+      
+      if (tx.isIncome) {
+        if (pm === 'efectivo' || pm === 'efectivo usd') {
+          updatedVault.usd += (tx.amount || 0);
+        } else if (pm === 'efectivo bs') {
+          updatedVault.bs += ((tx.amount || 0) * rate);
+        } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco / pago móvil') || pm.includes('banco bs') || pm.includes('bio')) {
+          updatedVault.bankBs += ((tx.amount || 0) * rate);
+        } else {
+          updatedVault.bankUsd += (tx.amount || 0);
+        }
       } else {
-        updatedVault.bankUsd += (tx.amount || 0);
+        if (pm === 'efectivo' || pm === 'efectivo usd') {
+          updatedVault.usd -= (tx.amount || 0);
+        } else if (pm === 'efectivo bs') {
+          updatedVault.bs -= ((tx.amount || 0) * rate);
+        } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco / pago móvil') || pm.includes('banco bs') || pm.includes('bio')) {
+          updatedVault.bankBs -= ((tx.amount || 0) * rate);
+        } else {
+          updatedVault.bankUsd -= (tx.amount || 0);
+        }
       }
-    } else {
-      if (pm === 'efectivo' || pm === 'efectivo usd') {
-        updatedVault.usd -= (tx.amount || 0);
-      } else if (pm === 'efectivo bs') {
-        updatedVault.bs -= ((tx.amount || 0) * rate);
-      } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco bs') || pm.includes('bio')) {
-        updatedVault.bankBs -= ((tx.amount || 0) * rate);
-      } else {
-        updatedVault.bankUsd -= (tx.amount || 0);
+      
+      try {
+        updateLocalDoc('settings', 'general', { centralVaultBalance: updatedVault });
+      } catch (err) {
+        console.error('Error updating vault balance doc:', err);
       }
-    }
-    
-    const newSettings = { ...settings, centralVaultBalance: updatedVault };
-    setSettings(newSettings);
-    try {
-      updateLocalDoc('settings', 'general', { centralVaultBalance: updatedVault });
-    } catch (e) {
-      console.error(e);
-    }
+      return { ...prevSettings, centralVaultBalance: updatedVault };
+    });
   };
 
   const handleUpdateVault = async (updates: any) => {
@@ -114,7 +118,34 @@ export default function PortalApp() {
       const newTrip = { ...trip, id: crypto.randomUUID() };
       setCheeseTrips(prev => [newTrip, ...prev]);
       await addLocalDoc('cheeseTrips', newTrip);
-      addNotification('Viaje registrado con éxito', 'success');
+
+      // INYECCIÓN CONTABLE A LA FICHA DE LA ADMINISTRADORA (DEBE / CARGO)
+      const currentRate = settings.exchangeRate || 45;
+      const bankUsdEquiv = (trip.bankTakenUsd || 0) + ((trip.bankTakenBs || 0) / currentRate);
+      const cashUsdEquiv = (trip.cashTakenUsd || 0) + ((trip.cashTakenBs || 0) / currentRate);
+      const totalBagUsd = trip.totalBagValueUsd || (trip.dispatchedCostValue + cashUsdEquiv + bankUsdEquiv);
+      
+      const adminEntry = {
+        id: `LEDGER-GIRA-${Date.now()}`,
+        date: new Date().toISOString(),
+        timestamp: Date.now(),
+        adminName: trip.driverOrResponsible || 'Daisy Corro',
+        type: 'FONDEO_GIRA',
+        concept: `Salida Gira San Juan #${trip.tripNumber} (${trip.dispatchedKg}Kg Queso + Efectivo + Banco)`,
+        category: 'Gira San Juan',
+        amountUsd: (trip.cashTakenUsd || 0) + (trip.bankTakenUsd || 0) + (trip.dispatchedCostValue || 0),
+        amountBs: (trip.cashTakenBs || 0) + (trip.bankTakenBs || 0),
+        exchangeRateAtDate: currentRate,
+        debitUsd: totalBagUsd,
+        creditUsd: 0,
+        balanceAfterUsd: totalBagUsd,
+        referenceId: newTrip.id,
+        status: 'conciliado',
+        createdAt: new Date().toISOString()
+      };
+      await addLocalDoc('adminLedger', adminEntry);
+
+      addNotification('Viaje registrado e inyectado a la Ficha Administradora', 'success');
     } catch (err) {
       console.error(err);
       addNotification('Error al registrar viaje', 'warning');

@@ -109,6 +109,8 @@ app.patch('/api/products/:id', (req, res) => {
       
       data[index] = { ...current, ...updates };
       fs.writeFileSync(productsDbFile, JSON.stringify(data, null, 2));
+      io.emit('collection_delta', { action: 'update', collection: 'products', doc: data[index] });
+      io.emit('collection_updated', 'products');
       res.json({ success: true, product: data[index] });
     } else {
       res.status(404).json({ error: 'Producto no encontrado' });
@@ -128,6 +130,8 @@ app.post('/api/products', (req, res) => {
     const newProduct = { id: req.body.id || Date.now().toString(), ...req.body };
     data.push(newProduct);
     fs.writeFileSync(productsDbFile, JSON.stringify(data, null, 2));
+    io.emit('collection_delta', { action: 'add', collection: 'products', doc: newProduct });
+    io.emit('collection_updated', 'products');
     res.json({ success: true, product: newProduct });
   } catch (error) {
     console.error(error);
@@ -143,6 +147,8 @@ app.delete('/api/products/:id', (req, res) => {
     const data = JSON.parse(fs.readFileSync(productsDbFile, 'utf8'));
     const filtered = data.filter(p => String(p.id) !== String(req.params.id));
     fs.writeFileSync(productsDbFile, JSON.stringify(filtered, null, 2));
+    io.emit('collection_delta', { action: 'delete', collection: 'products', doc: { id: req.params.id } });
+    io.emit('collection_updated', 'products');
     res.json({ success: true });
   } catch (error) {
     console.error(error);

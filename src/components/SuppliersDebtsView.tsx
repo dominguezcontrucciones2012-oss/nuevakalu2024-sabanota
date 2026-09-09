@@ -1197,15 +1197,16 @@ export default function SuppliersDebtsView({
                                 }
                                 const nowMs = Date.now();
                                 const liqAmount = Number(workerCalculatedSalary) || 0;
+                                // Registro informativo de auditoría interna sin impacto monetario de egreso en tesorería
                                 await addLocalDoc('transactions', {
                                   id: `TX-LIQ-${nowMs}`,
-                                  category: 'gastos',
-                                  amount: liqAmount,
+                                  category: 'ajuste_interno',
+                                  amount: 0,
                                   isIncome: false,
                                   entity: s.name,
                                   supplierId: s.id,
                                   date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-                                  notes: `Pago Liquidado / Finalizado de nómina para ${s.name} ($${liqAmount.toFixed(2)} USD). Cuenta reseteada a $0.00.`,
+                                  notes: `Cierre de Nómina / Liquidación interna para ${s.name} (Acumulado cerrado: $${liqAmount.toFixed(2)} USD). Cuenta reseteada a $0.00.`,
                                   paymentMethod: 'Cierre Administrativo',
                                   status: 'Completado',
                                   createdAt: nowMs

@@ -306,6 +306,8 @@ export interface CheeseTrip {
   dispatchedCostValue: number;
   cashTakenUsd?: number;
   cashTakenBs?: number;
+  bankTakenUsd?: number;
+  bankTakenBs?: number;
   totalBagValueUsd?: number;
   invoices: TripInvoice[];
   totalInvoicesValueUsd: number;
@@ -318,5 +320,33 @@ export interface CheeseTrip {
   netProfitUsd: number;
   notes?: string;
   settledAt?: string;
+  createdAt: string;
+}
+
+export type LedgerEntryType = 
+  | 'FONDEO_GIRA'          // Entrega de queso/efectivo para salir a San Juan (Cargo / Debe)
+  | 'LIQUIDACION_GIRA'      // Retorno de facturas/dinero al cerrar el viaje (Abono / Haber)
+  | 'GASTO_MULTICANAL'      // Gasto registrado por voz/foto/nota menor (Abono / Haber)
+  | 'EXTRACCION_BOVEDA'     // Retiro de efectivo de la Bóveda para compras (Cargo / Debe)
+  | 'PAGO_PROVEEDOR'        // Pago liquidado directamente a un productor (Abono / Haber)
+  | 'AJUSTE_MANUAL';        // Ajuste administrativo justificado
+
+export interface AdminAccountEntry {
+  id: string;
+  date: string;
+  timestamp: number;
+  adminName: string;
+  type: LedgerEntryType;
+  concept: string;
+  category: 'Gira San Juan' | 'Caja Chica' | 'Proveedores' | 'Bóveda' | 'Operativo';
+  amountUsd: number;
+  amountBs: number;
+  exchangeRateAtDate: number;
+  debitUsd: number;         // Cargo / Debe (Fondos recibidos bajo custodia)
+  creditUsd: number;        // Abono / Haber (Gastos/Facturas/Reintegros justificados)
+  balanceAfterUsd: number;  // Saldo acumulado
+  referenceId?: string;
+  mediaAttachmentUrl?: string;
+  status: 'conciliado' | 'pendiente_revision';
   createdAt: string;
 }
