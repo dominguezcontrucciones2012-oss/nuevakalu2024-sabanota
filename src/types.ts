@@ -209,6 +209,9 @@ export interface SupplierProfile {
   pin?: string;
   isCheeseProducer?: boolean;
   isEmployee?: boolean;
+  totalKgHistorical?: number;
+  totalMovementsCount?: number;
+  totalDeliveriesUsd?: number;
 }
 
 export interface AccountBill {
