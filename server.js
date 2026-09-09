@@ -23,6 +23,8 @@ console.log('🔑 Contraseña de Aplicación (.env):', process.env.EMAIL_PASS ? 
 console.log('📱 WhatsApp API Configurada:', process.env.WHATSAPP_API_URL || process.env.WHATSAPP_API_KEY ? 'SÍ' : 'Modo Simulación / Local');
 console.log('----------------------------------------------------');
 
+const PORT = process.env.PORT || 3001;
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -31,6 +33,12 @@ const io = new Server(server, {
 
 app.use(cors());
 app.use(express.json());
+
+// Servir la build estática de producción de Vite si existe la carpeta dist
+const distDir = path.join(__dirname, 'dist');
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
+}
 
 io.on('connection', (socket) => {
   console.log('A client connected via WebSocket:', socket.id);
