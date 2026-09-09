@@ -1,11 +1,48 @@
 export const getUnitLabel = (product: any): string => {
-  if (product && typeof product.unit === 'string' && product.unit.trim() !== '') {
-    const u = product.unit.trim().toLowerCase();
-    if (u === 'i' || u === 'item' || u === 'items') return 'Und';
-    return product.unit;
+  const rawUnit = typeof product === 'string' ? product : (product?.unit || '');
+  if (typeof rawUnit === 'string' && rawUnit.trim() !== '') {
+    const u = rawUnit.trim().toLowerCase();
+    if (u === 'i' || u === 'item' || u === 'items' || u === 'und' || u === 'unidad' || u === 'unidades' || u === 'y' || u === 'u' || u === 'un') {
+      return 'Und';
+    }
+    if (u === 'kg' || u === 'kilo' || u === 'kilos' || u === 'kilogramo' || u === 'k') {
+      return 'Kg';
+    }
+    if (u === 'lt' || u === 'litro' || u === 'litros' || u === 'l') {
+      return 'Lt';
+    }
+    if (u === 'bto' || u === 'bulto' || u === 'bultos' || u === 'b') {
+      return 'Bto';
+    }
+    // Si la unidad guardada es válida estándar
+    if (['Kg', 'Und', 'Lt', 'Bto'].includes(rawUnit.trim())) {
+      return rawUnit.trim();
+    }
   }
+
+  const name = (product?.name || '').toLowerCase();
   const cat = (product?.category || '').toLowerCase();
-  if (cat.includes('queso') || cat.includes('pesable') || cat.includes('charcuteria') || cat.includes('lacteo')) {
+
+  // Queso, lácteos y productos pesables por kilo
+  if (
+    cat.includes('queso') ||
+    name.includes('queso') ||
+    name.includes('cuajada') ||
+    name.includes('mozzarella') ||
+    name.includes('suero') ||
+    name.includes('por kilo') ||
+    name.includes('por kg') ||
+    name.includes('granel') ||
+    name === 'papa' ||
+    name === 'cebolla' ||
+    name === 'tomate fresco' ||
+    name === 'zanahoria' ||
+    name === 'repollo' ||
+    name === 'platano' ||
+    name === 'ajo' ||
+    name === 'caraotas negras' ||
+    name === 'carne molida'
+  ) {
     return 'Kg';
   }
   return 'Und';

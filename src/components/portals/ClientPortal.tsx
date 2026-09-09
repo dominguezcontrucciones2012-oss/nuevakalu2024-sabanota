@@ -1,5 +1,6 @@
 import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
 import React, { useState } from 'react';
+import { getUnitLabel } from '../../utils';
 
 
 import {
@@ -1458,7 +1459,7 @@ export default function ClientPortal({
                                     <p className="font-bold text-slate-200 text-[10.5px] max-w-[150px] truncate leading-tight">{p.name}</p>
                                   </div>
                                   <p className="text-[10px] text-emerald-400 font-mono mt-0.5">
-                                    ${Number(p.sellingPrice || 0).toFixed(2)} <span className="text-slate-500 text-[8px]">/{p.unit}</span>
+                                    ${Number(p.sellingPrice || 0).toFixed(2)} <span className="text-slate-500 text-[8px]">/{getUnitLabel(p)}</span>
                                   </p>
                                 </div>
                               </div>

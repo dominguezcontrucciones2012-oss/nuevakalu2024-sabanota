@@ -2,17 +2,22 @@ node_modules/
 dist/
 build/
 .env
+.env*
 .env.local
+.env.*.local
+*.key
+*.pem
+*.p12
+*.json_credentials
+credentials.json
+service-account*.json
 *.db
+*.sqlite*
 *.log
 .firebase/
 coverage/
 .DS_Store
-.env*
-!.env.example
-.env.*.local
-*.key
-*.pem
 
 uploads/
 scratch/
+

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { OperatingExpense, Transaction, CheeseProduct } from '../types';
+import { getUnitLabel } from '../utils';
 import {
   TrendingUp,
   CircleDollarSign,
@@ -428,7 +429,7 @@ export default function FinancesAnalysisView({
                     </div>
                     <div className="flex justify-between items-baseline">
                       <h4 className="font-serif text-2xl font-bold text-editorial-text-primary">{marginPct.toFixed(1)}%</h4>
-                      <span className="text-[10px] font-mono text-editorial-text-muted">Ganancia: +${profitPerUnit.toFixed(2)}/{p.unit || 'Kg'}</span>
+                      <span className="text-[10px] font-mono text-editorial-text-muted">Ganancia: +${profitPerUnit.toFixed(2)}/{getUnitLabel(p)}</span>
                     </div>
                     <div className="w-full h-2 bg-editorial-card border border-editorial-border rounded-full overflow-hidden">
                       <div className={`h-full ${barColor} rounded-full transition-all duration-500`} style={{ width: `${Math.min(100, marginPct)}%` }} />
@@ -438,7 +439,7 @@ export default function FinancesAnalysisView({
                       <span>•</span>
                       <span>Venta: ${p.sellingPrice.toFixed(2)}</span>
                       <span>•</span>
-                      <span>Stock: {p.stockKg} {p.unit || 'Kg'}</span>
+                      <span>Stock: {p.stockKg} {getUnitLabel(p)}</span>
                     </div>
                   </div>
                 );
