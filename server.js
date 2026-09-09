@@ -181,8 +181,6 @@ app.post('/api/upload', upload.array('files', 10), (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3001;
-
 // Configuración de Nodemailer (Email de Recuperación)
 const transporter = nodemailer.createTransport({
   service: 'gmail',
