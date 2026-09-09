@@ -150,14 +150,31 @@ export default function App() {
     });
 
     const unsubTransactions = onCollectionSnapshot('transactions', (data) => {
-      const txs = Array.isArray(data) ? [...(data as Transaction[])] : [];
-      txs.sort((a, b) => {
-        if (a.id > b.id) return -1;
-        if (a.id < b.id) return 1;
-        return 0;
-      });
-      setTransactions(txs);
-      localStorage.setItem('kalu_sales_history', JSON.stringify(txs));
+      if (data && Array.isArray(data) && data.length > 0) {
+        const txs = [...(data as Transaction[])];
+        txs.sort((a, b) => {
+          if (a.id > b.id) return -1;
+          if (a.id < b.id) return 1;
+          return 0;
+        });
+        setTransactions(txs);
+        localStorage.setItem('kalu_sales_history', JSON.stringify(txs));
+      } else {
+        // RESCATE AUTOMÁTICO: Si el servidor devuelve vacío, recuperar del almacenamiento local del navegador
+        try {
+          const saved = localStorage.getItem('kalu_sales_history');
+          if (saved) {
+            const localTxs = JSON.parse(saved);
+            if (Array.isArray(localTxs) && localTxs.length > 0) {
+              setTransactions(localTxs);
+              // Re-sincronizar de inmediato al servidor para persistir
+              localTxs.forEach((t: any) => addLocalDoc('transactions', t).catch(console.error));
+            }
+          }
+        } catch (err) {
+          console.error("Error al rescatar transacciones de localStorage:", err);
+        }
+      }
     });
 
     const unsubClients = onCollectionSnapshot('clients', (data) => {
