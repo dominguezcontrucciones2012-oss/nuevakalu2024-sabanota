@@ -213,37 +213,53 @@ app.post('/api/send-recovery', async (req, res) => {
 
     const messageText = `🔒 *Mundo Kalu - Seguridad*\n\nHola *${name || 'Usuario'}*,\nTu código de verificación para restablecer tu PIN es:\n\n👉 *${code}*\n\n_Por seguridad, no compartas este código con nadie._`;
 
-    // Leer credenciales genéricas desde las variables de entorno
-    const waApiUrl = process.env.WHATSAPP_API_URL || process.env.MESSAGING_API_URL || process.env.WHATSAPP_URL;
-    const waApiKey = process.env.WHATSAPP_API_KEY || process.env.API_KEY || process.env.WHATSAPP_TOKEN;
+    // Leer credenciales desde las variables de entorno o defaults de Meta Cloud API
+    const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || '176436486459';
+    const waApiKey = process.env.WHATSAPP_API_KEY || process.env.API_KEY || process.env.WHATSAPP_TOKEN || 'EAAY389ZAVFIsBSfZCrtZAsZBR912JKe5GAfJYQbD9ez6ZCjFcsZBNXjZAM6VIgZBykEhluXIHM1trOZBArZCFT3nZCECAty9jNmBD5lOzugmN0IjtbUdYxkhv4llvK40aY90Nfvc384QJanZBKmQgX65d6ATwGZBnLfKB30xsjgyYEPVUQvKhvWZCZBs9Nx8I2G3KLZBv8L9bgZDZD';
+    const waApiUrl = process.env.WHATSAPP_API_URL || (phoneId ? `https://graph.facebook.com/v20.0/${phoneId}/messages` : null);
 
-    if (waApiUrl) {
+    if (waApiUrl && waApiKey) {
       try {
-        console.log(`[Robot WhatsApp] Despachando PIN ${code} a ${cleanPhone} vía API externa...`);
+        console.log(`[Robot WhatsApp] Despachando PIN ${code} a ${cleanPhone} vía Meta Cloud API (${waApiUrl})...`);
+        
+        // Estructura oficial de Meta Cloud API
+        const isMetaCloudApi = waApiUrl.includes('graph.facebook.com');
+        const payload = isMetaCloudApi ? {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: cleanPhone,
+          type: 'text',
+          text: {
+            preview_url: false,
+            body: messageText
+          }
+        } : {
+          phone: cleanPhone,
+          to: cleanPhone,
+          message: messageText,
+          body: messageText,
+          text: messageText
+        };
+
         const response = await fetch(waApiUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...(waApiKey ? { 'Authorization': `Bearer ${waApiKey}`, 'x-api-key': waApiKey } : {})
+            'Authorization': `Bearer ${waApiKey}`,
+            'x-api-key': waApiKey
           },
-          body: JSON.stringify({
-            phone: cleanPhone,
-            to: cleanPhone,
-            message: messageText,
-            body: messageText,
-            text: messageText
-          })
+          body: JSON.stringify(payload)
         });
 
         if (!response.ok) {
           const errText = await response.text();
-          console.error('[Robot WhatsApp] Error en respuesta del proveedor:', response.status, errText);
+          console.error('[Robot WhatsApp] Error en respuesta de Meta/Proveedor:', response.status, errText);
           return res.status(502).json({ error: 'Error en la pasarela de WhatsApp', details: errText });
         }
 
         const data = await response.json().catch(() => ({ success: true }));
         console.log('[Robot WhatsApp] Mensaje enviado exitosamente:', data);
-        return res.json({ success: true, channel: 'whatsapp', recipient: cleanPhone });
+        return res.json({ success: true, channel: 'whatsapp', recipient: cleanPhone, data });
       } catch (error) {
         console.error('[Robot WhatsApp] Error de conexión:', error.message);
         return res.status(500).json({ error: 'Error conectando con el servicio de WhatsApp', details: error.message });
