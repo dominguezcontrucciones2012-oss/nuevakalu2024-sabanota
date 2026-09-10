@@ -770,6 +770,20 @@ app.post('/api/run-debt-check', async (req, res) => {
   }
 });
 
+// Endpoint de Política de Privacidad para Meta / WhatsApp Business API
+app.get(['/privacidad', '/api/privacidad'], (req, res) => {
+  res.send(`
+    <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; line-height: 1.6; color: #333;">
+        <h2 style="color: #0f172a; border-bottom: 2px solid #10b981; padding-bottom: 10px;">Política de Privacidad de Sistemakalu Sabanota</h2>
+        <p><strong>Última actualización:</strong> Septiembre 2026</p>
+        <h3>1. Uso de la información</h3>
+        <p>Sistemakalu Sabanota utiliza WhatsApp exclusivamente para enviar notificaciones operativas, recibos y gestión de inventario.</p>
+        <h3>2. Protección de datos</h3>
+        <p>Los datos de contacto no se venden ni se comparten con terceros bajo ninguna circunstancia.</p>
+    </div>
+  `);
+});
+
 server.listen(PORT, () => {
   console.log(`Backend server (Uploader & WS) running on port ${PORT}`);
   console.log(`Saving databases and files to: ${uploadDir}`);
