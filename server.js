@@ -327,6 +327,47 @@ app.post('/api/send-recovery', async (req, res) => {
   }
 });
 
+// --- WHATSAPP BUSINESS WEBHOOK ENDPOINTS ---
+
+// 1. Verificación del Webhook por Meta (GET)
+app.get('/api/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'kalu_sabanota_secure_token_2026';
+
+  if (mode && token) {
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      console.log('[WhatsApp Webhook] ✅ Handshake de verificación completado con Meta.');
+      return res.status(200).send(challenge);
+    } else {
+      console.warn('[WhatsApp Webhook] ❌ Token de verificación inválido:', token);
+      return res.sendStatus(403);
+    }
+  }
+
+  res.sendStatus(400);
+});
+
+// 2. Recepción de Eventos / Mensajes Entrantes de Meta (POST)
+app.post('/api/webhook', (req, res) => {
+  const body = req.body;
+
+  if (body.object) {
+    if (body.entry && body.entry[0]?.changes && body.entry[0].changes[0]?.value?.messages) {
+      const message = body.entry[0].changes[0].value.messages[0];
+      const from = message.from;
+      const msgBody = message.text?.body || message.type;
+      console.log(`[WhatsApp Webhook] 📩 Mensaje entrante de ${from}: "${msgBody}"`);
+    }
+    // Meta exige responder 200 OK inmediatamente para no reenviar el payload
+    return res.status(200).send('EVENT_RECEIVED');
+  }
+
+  res.sendStatus(404);
+});
+
 // --- GENERIC COLLECTIONS API ---
 
 const getCollectionFilePath = (name) => path.join(uploadDir, `${name}_db.json`);
