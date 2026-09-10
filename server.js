@@ -214,7 +214,7 @@ app.post('/api/send-recovery', async (req, res) => {
     const messageText = `🔒 *Mundo Kalu - Seguridad*\n\nHola *${name || 'Usuario'}*,\nTu código de verificación para restablecer tu PIN es:\n\n👉 *${code}*\n\n_Por seguridad, no compartas este código con nadie._`;
 
     // Leer credenciales desde las variables de entorno o defaults de Meta Cloud API
-    const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || '176436486459';
+    const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || '104868122692292';
     const waApiKey = process.env.WHATSAPP_API_KEY || process.env.API_KEY || process.env.WHATSAPP_TOKEN || 'EAAY389ZAVFIsBSfZCrtZAsZBR912JKe5GAfJYQbD9ez6ZCjFcsZBNXjZAM6VIgZBykEhluXIHM1trOZBArZCFT3nZCECAty9jNmBD5lOzugmN0IjtbUdYxkhv4llvK40aY90Nfvc384QJanZBKmQgX65d6ATwGZBnLfKB30xsjgyYEPVUQvKhvWZCZBs9Nx8I2G3KLZBv8L9bgZDZD';
     const waApiUrl = process.env.WHATSAPP_API_URL || (phoneId ? `https://graph.facebook.com/v20.0/${phoneId}/messages` : null);
 
