@@ -8,6 +8,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
+import { GoogleGenAI } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +16,10 @@ const __dirname = path.dirname(__filename);
 // Cargar .env asegurando la ruta absoluta a la raíz del proyecto
 dotenv.config({ path: path.join(__dirname, '.env') });
 dotenv.config(); // Cargar también fallback por si está en proceso general
+
+// Inicializar cliente de Google Gemini para el Robot Kalu
+const geminiApiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+const ai = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
 
 console.log('----------------------------------------------------');
 console.log('🤖 ESTADO DEL ROBOT DE COMUNICACIONES:');
@@ -366,22 +371,160 @@ app.get('/api/webhook', (req, res) => {
   res.sendStatus(400);
 });
 
-// 2. Recepción de Eventos / Mensajes Entrantes de Meta (POST)
-app.post('/api/webhook', (req, res) => {
-  const body = req.body;
+// Funciones auxiliares del Robot Kalu para WhatsApp
+function normalizeWhatsAppPhone(phone) {
+  if (!phone) return '';
+  let cleaned = String(phone).replace(/\D/g, '');
+  if (cleaned.startsWith('0') && cleaned.length === 11) {
+    cleaned = '58' + cleaned.substring(1);
+  }
+  return cleaned;
+}
 
-  if (body.object) {
-    if (body.entry && body.entry[0]?.changes && body.entry[0].changes[0]?.value?.messages) {
-      const message = body.entry[0].changes[0].value.messages[0];
-      const from = message.from;
-      const msgBody = message.text?.body || message.type;
-      console.log(`[WhatsApp Webhook] 📩 Mensaje entrante de ${from}: "${msgBody}"`);
-    }
-    // Meta exige responder 200 OK inmediatamente para no reenviar el payload
-    return res.status(200).send('EVENT_RECEIVED');
+function findClientByPhone(phone, clientsList) {
+  const normalizedInput = normalizeWhatsAppPhone(phone);
+  return clientsList.find(client => {
+    const clientPhone = normalizeWhatsAppPhone(client.phone || client.telefono || '');
+    return clientPhone === normalizedInput || clientPhone.endsWith(normalizedInput.slice(-10));
+  });
+}
+
+async function sendWhatsAppDirectMessage(toPhone, messageBody) {
+  const token = process.env.WHATSAPP_API_KEY;
+  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || '1344089325449515';
+
+  if (!token || !phoneId) {
+    console.warn('[Robot Kalu WhatsApp] Faltan credenciales de WhatsApp en el entorno.');
+    return;
   }
 
-  res.sendStatus(404);
+  try {
+    const response = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: toPhone,
+        type: 'text',
+        text: { body: messageBody }
+      })
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      console.error('[Robot Kalu WhatsApp] Error enviando respuesta:', data);
+    } else {
+      console.log(`[Robot Kalu WhatsApp] ✅ Respuesta despachada con éxito a ${toPhone}`);
+    }
+    return data;
+  } catch (error) {
+    console.error('[Robot Kalu WhatsApp] Excepción al enviar mensaje:', error.message);
+  }
+}
+
+// 2. Recepción de Eventos / Mensajes Entrantes de Meta y Cerebro Robot Kalu (POST)
+app.post('/api/webhook', async (req, res) => {
+  try {
+    const body = req.body;
+
+    if (body.object === 'whatsapp_business_account' || body.object) {
+      // Responder 200 OK de inmediato a Meta para cumplir el SLA
+      res.status(200).send('EVENT_RECEIVED');
+
+      for (const entry of body.entry || []) {
+        for (const change of entry.changes || []) {
+          const value = change.value;
+          if (value && value.messages && value.messages.length > 0) {
+            const message = value.messages[0];
+            const fromPhone = message.from;
+            const messageType = message.type;
+
+            console.log(`[Robot Kalu] 📩 Mensaje recibido de ${fromPhone} (Tipo: ${messageType})`);
+
+            // 1. FILTRO DE MULTIMEDIA Y CAPTURAS DE PAGO
+            if (messageType === 'image' || messageType === 'document') {
+              const replyText = "Hola 👋. Por este medio de WhatsApp no podemos recibir capturas ni comprobantes de pago por seguridad. Por favor, sube tu comprobante directamente a través de tu portal web personal.\n\nSi no recuerdas cómo ingresar, avísame y te guío paso a paso.";
+              await sendWhatsAppDirectMessage(fromPhone, replyText);
+              continue;
+            }
+
+            // 2. PROCESAMIENTO DE MENSAJES DE TEXTO CON GEMINI
+            if (messageType === 'text') {
+              const userText = message.text?.body || '';
+
+              // Cargar colecciones vivas del sistema
+              const clients = readCollection('clients');
+              const installments = readCollection('installments');
+              const products = readCollection('products');
+              const settings = readCollection('settings');
+              const generalSettings = Array.isArray(settings) ? (settings.find(s => s.id === 'general') || {}) : settings;
+
+              const client = findClientByPhone(fromPhone, clients);
+
+              if (!client) {
+                const unregisteredReply = `¡Hola! Gracias por escribirnos a Mundo Kalu. No logramos asociar tu número de teléfono con nuestros registros del sistema. Si ya eres cliente, por favor indícanos tu número de cédula o razón social para ayudarte.`;
+                await sendWhatsAppDirectMessage(fromPhone, unregisteredReply);
+                continue;
+              }
+
+              const clientId = client.id || client._id;
+              const pendingInstallments = installments.filter(inst => (String(inst.clientId) === String(clientId) || String(inst.client_id) === String(clientId)) && inst.status === 'pending');
+              const exchangeRate = Number(generalSettings.exchangeRate || generalSettings.bcvRate || 807.38);
+
+              // Contexto enriquecido para el motor de Inteligencia Artificial
+              const systemPrompt = `
+              Eres Kalu, el asistente virtual inteligente oficial de Mundo Kalu Sabanota.
+              Estás atendiendo al cliente: ${client.name || client.nombre || 'Cliente'}.
+              Tasa oficial BCV actual: ${exchangeRate} VES/USD.
+              
+              Deudas / Cuotas pendientes del cliente:
+              ${JSON.stringify(pendingInstallments, null, 2)}
+              
+              Inventario de productos (quesos y precios):
+              ${JSON.stringify(products.map(p => ({ id: p.id, name: p.name, price: p.price, stock: p.stock })), null, 2)}
+              
+              Reglas estrictas de comportamiento:
+              1. Saluda cordialmente por su nombre.
+              2. Si pregunta por sus deudas o saldo, dale montos exactos en USD y su equivalente en Bolívares usando la tasa BCV (${exchangeRate} Bs/$).
+              3. Si pregunta por productos, presentaciones de queso o precios, respóndele basándote estrictamente en el inventario provisto.
+              4. Si pregunta cómo entrar al portal o enviar pagos, explícale de forma clara que debe ingresar a su Portal del Cliente en la sección 'Pagos' con su número de cédula o teléfono.
+              5. Mantén respuestas concisas, amables y profesionales, adaptadas para WhatsApp.
+              `;
+
+              let botReply = "Disculpa, en este momento estoy experimentando dificultades técnicas. Intenta nuevamente en unos minutos.";
+
+              if (ai) {
+                try {
+                  const aiResponse = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: [
+                      { role: 'user', parts: [{ text: systemPrompt + "\n\nMensaje del cliente: " + userText }] }
+                    ]
+                  });
+                  botReply = aiResponse.text || botReply;
+                } catch (aiErr) {
+                  console.error('[Robot Kalu AI] Error generando respuesta con Gemini:', aiErr.message);
+                }
+              }
+
+              await sendWhatsAppDirectMessage(fromPhone, botReply);
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    res.sendStatus(404);
+  } catch (error) {
+    console.error('[Robot Kalu Webhook] Error en procesamiento:', error);
+    if (!res.headersSent) {
+      res.sendStatus(500);
+    }
+  }
 });
 
 // --- GENERIC COLLECTIONS API ---
