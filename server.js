@@ -424,6 +424,51 @@ async function sendWhatsAppDirectMessage(toPhone, messageBody) {
   }
 }
 
+async function downloadMetaMediaAsBase64(mediaId) {
+  const token = process.env.WHATSAPP_API_KEY;
+  if (!token || !mediaId) return null;
+
+  try {
+    // 1. Obtener la URL temporal de descarga del medio desde Meta Graph API
+    console.log(`[Robot Kalu Audio] 🔍 Consultando URL de descarga para mediaId: ${mediaId}...`);
+    const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!mediaRes.ok) {
+      console.error('[Robot Kalu Audio] Error obteniendo URL de audio de Meta:', mediaRes.status);
+      return null;
+    }
+    const mediaData = await mediaRes.json();
+    const directUrl = mediaData.url;
+
+    if (!directUrl) {
+      console.error('[Robot Kalu Audio] No se encontró URL directa en la respuesta de Meta.');
+      return null;
+    }
+
+    // 2. Descargar el archivo binario del audio
+    console.log(`[Robot Kalu Audio] 📥 Descargando archivo binario de audio...`);
+    const fileRes = await fetch(directUrl, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!fileRes.ok) {
+      console.error('[Robot Kalu Audio] Error descargando archivo de audio:', fileRes.status);
+      return null;
+    }
+
+    const arrayBuffer = await fileRes.arrayBuffer();
+    const base64Audio = Buffer.from(arrayBuffer).toString('base64');
+    console.log(`[Robot Kalu Audio] ✅ Audio descargado y convertido a Base64 (${base64Audio.length} caracteres).`);
+    return {
+      base64Audio,
+      mimeType: mediaData.mime_type || 'audio/ogg'
+    };
+  } catch (error) {
+    console.error('[Robot Kalu Audio] Excepción descargando audio:', error.message);
+    return null;
+  }
+}
+
 // 2. Recepción de Eventos / Mensajes Entrantes de Meta y Cerebro Robot Kalu (POST)
 app.post('/api/webhook', async (req, res) => {
   console.log('\n====================================================');
@@ -448,16 +493,25 @@ app.post('/api/webhook', async (req, res) => {
 
             console.log(`[Robot Kalu] 📩 Mensaje recibido de ${fromPhone} (Tipo: ${messageType})`);
 
-            // 1. FILTRO DE MULTIMEDIA Y CAPTURAS DE PAGO
+            // 1. FILTRO DE MULTIMEDIA (IMÁGENES / DOCUMENTOS)
             if (messageType === 'image' || messageType === 'document') {
               const replyText = "Hola 👋. Por este medio de WhatsApp no podemos recibir capturas ni comprobantes de pago por seguridad. Por favor, sube tu comprobante directamente a través de tu portal web personal.\n\nSi no recuerdas cómo ingresar, avísame y te guío paso a paso.";
               await sendWhatsAppDirectMessage(fromPhone, replyText);
               continue;
             }
 
-            // 2. PROCESAMIENTO DE MENSAJES DE TEXTO CON GEMINI
-            if (messageType === 'text') {
-              const userText = message.text?.body || '';
+            // 2. PROCESAMIENTO DE MENSAJES DE TEXTO Y NOTAS DE VOZ (AUDIO/OGG)
+            if (messageType === 'text' || messageType === 'audio' || messageType === 'voice') {
+              let userText = '';
+              let audioData = null;
+
+              if (messageType === 'text') {
+                userText = message.text?.body || '';
+              } else if (messageType === 'audio' || messageType === 'voice') {
+                const mediaId = message.audio?.id || message.voice?.id;
+                console.log(`[Robot Kalu] 🎙️ Procesando nota de voz recibida (Media ID: ${mediaId})...`);
+                audioData = await downloadMetaMediaAsBase64(mediaId);
+              }
 
               // Cargar colecciones vivas del sistema
               const clients = readCollection('clients');
@@ -492,21 +546,35 @@ app.post('/api/webhook', async (req, res) => {
               
               Reglas estrictas de comportamiento:
               1. Saluda cordialmente por su nombre.
-              2. Si pregunta por sus deudas o saldo, dale montos exactos en USD y su equivalente en Bolívares usando la tasa BCV (${exchangeRate} Bs/$).
-              3. Si pregunta por productos, presentaciones de queso o precios, respóndele basándote estrictamente en el inventario provisto.
-              4. Si pregunta cómo entrar al portal o enviar pagos, explícale de forma clara que debe ingresar a su Portal del Cliente en la sección 'Pagos' con su número de cédula o teléfono.
-              5. Mantén respuestas concisas, amables y profesionales, adaptadas para WhatsApp.
+              2. Si el cliente envió una nota de voz, escucha con atención su consulta y responde con claridad al contenido de su audio.
+              3. Si pregunta por sus deudas o saldo, dale montos exactos en USD y su equivalente en Bolívares usando la tasa BCV (${exchangeRate} Bs/$).
+              4. Si pregunta por productos, presentaciones de queso o precios, respóndele basándote estrictamente en el inventario provisto.
+              5. Si pregunta cómo entrar al portal o enviar pagos, explícale de forma clara que debe ingresar a su Portal del Cliente en la sección 'Pagos' con su número de cédula o teléfono.
+              6. Mantén respuestas concisas, amables y profesionales, adaptadas para WhatsApp.
               `;
 
               let botReply = "Disculpa, en este momento estoy experimentando dificultades técnicas. Intenta nuevamente en unos minutos.";
 
               if (ai) {
                 try {
+                  const parts = [{ text: systemPrompt }];
+
+                  if (audioData) {
+                    // Inyectar el audio en base64 para transcripción y respuesta multimodal directa con Gemini
+                    parts.push({
+                      inlineData: {
+                        mimeType: audioData.mimeType,
+                        data: audioData.base64Audio
+                      }
+                    });
+                    parts.push({ text: "Escucha la nota de voz del cliente arriba y responde a su consulta siguiendo las reglas del sistema." });
+                  } else {
+                    parts.push({ text: "Mensaje del cliente: " + userText });
+                  }
+
                   const aiResponse = await ai.models.generateContent({
                     model: 'gemini-2.5-flash',
-                    contents: [
-                      { role: 'user', parts: [{ text: systemPrompt + "\n\nMensaje del cliente: " + userText }] }
-                    ]
+                    contents: [{ role: 'user', parts }]
                   });
                   botReply = aiResponse.text || botReply;
                 } catch (aiErr) {
