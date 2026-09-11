@@ -67,7 +67,9 @@ export async function processInventoryCommand(command: string, products: any[]):
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify(payload)
     });
