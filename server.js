@@ -572,11 +572,22 @@ app.post('/api/webhook', async (req, res) => {
                     parts.push({ text: "Mensaje del cliente: " + userText });
                   }
 
-                  const aiResponse = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash',
-                    contents: [{ role: 'user', parts }]
-                  });
-                  botReply = aiResponse.text || botReply;
+                  let aiResponse = null;
+                  const modelsToTry = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+                  for (const m of modelsToTry) {
+                    try {
+                      aiResponse = await ai.models.generateContent({
+                        model: m,
+                        contents: [{ role: 'user', parts }]
+                      });
+                      if (aiResponse && aiResponse.text) break;
+                    } catch (mErr) {
+                      console.warn(`[Robot Kalu AI] Reintentando con modelo alternativo tras fallo en ${m}...`);
+                    }
+                  }
+                  if (aiResponse && aiResponse.text) {
+                    botReply = aiResponse.text;
+                  }
                 } catch (aiErr) {
                   console.error('[Robot Kalu AI] Error generando respuesta con Gemini:', aiErr.message);
                 }
