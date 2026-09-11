@@ -351,24 +351,23 @@ app.post('/api/send-recovery', async (req, res) => {
 // --- WHATSAPP BUSINESS WEBHOOK ENDPOINTS ---
 
 // 1. Verificación del Webhook por Meta (GET)
-app.get('/api/webhook', (req, res) => {
+app.get(['/api/webhook', '/webhook'], (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
   const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'kalu_sabanota_secure_token_2026';
 
-  if (mode && token) {
-    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-      console.log('[WhatsApp Webhook] ✅ Handshake de verificación completado con Meta.');
-      return res.status(200).send(challenge);
-    } else {
-      console.warn('[WhatsApp Webhook] ❌ Token de verificación inválido:', token);
-      return res.sendStatus(403);
-    }
-  }
+  console.log(`[WhatsApp Webhook GET] Verificando: mode=${mode}, token=${token}, challenge=${challenge}`);
 
-  res.sendStatus(400);
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    console.log('[WhatsApp Webhook] ✅ Handshake de verificación completado con Meta.');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.status(200).send(String(challenge));
+  } else {
+    console.warn('[WhatsApp Webhook] ❌ Token o modo inválido:', { mode, token, expectedToken: VERIFY_TOKEN });
+    return res.status(403).send('Verification token mismatch');
+  }
 });
 
 // Funciones auxiliares del Robot Kalu para WhatsApp
