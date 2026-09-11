@@ -573,7 +573,7 @@ app.post('/api/webhook', async (req, res) => {
                   }
 
                   let aiResponse = null;
-                  const modelsToTry = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+                  const modelsToTry = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
                   for (const m of modelsToTry) {
                     try {
                       aiResponse = await ai.models.generateContent({
