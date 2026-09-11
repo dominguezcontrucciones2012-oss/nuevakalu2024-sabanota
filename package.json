@@ -9,7 +9,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "deploy": "node deploy_seguro_produccion.mjs",
+    "data:sync-initial": "node seed_initial_data.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

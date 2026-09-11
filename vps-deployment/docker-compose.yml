@@ -28,7 +28,4 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - VITE_GEMINI_API_KEY=${VITE_GEMINI_API_KEY}
     volumes:
-      - uploads_data:/var/www/app/uploads
-
-volumes:
-  uploads_data:
+      - /root/kalu-crm/data:/var/www/app/uploads
