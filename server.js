@@ -427,6 +427,11 @@ async function sendWhatsAppDirectMessage(toPhone, messageBody) {
 
 // 2. Recepción de Eventos / Mensajes Entrantes de Meta y Cerebro Robot Kalu (POST)
 app.post('/api/webhook', async (req, res) => {
+  console.log('\n====================================================');
+  console.log('⚡ [WEBHOOK ENTRANTE] Meta acaba de tocar POST /api/webhook a las', new Date().toISOString());
+  console.log('📦 PAYLOAD COMPLETO RECIBIDO:\n', JSON.stringify(req.body, null, 2));
+  console.log('====================================================\n');
+
   try {
     const body = req.body;
 
