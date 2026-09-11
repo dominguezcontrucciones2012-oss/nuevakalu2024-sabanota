@@ -103,8 +103,7 @@ export async function extractInvoiceData(file: File, bcvRate: number, inventoryN
       });
 
       if (!response.ok) {
-        const errBody = await response.text();
-        console.warn(`[OCR Engine] Falló modelo ${model} (HTTP ${response.status}): ${errBody.slice(0, 100)}`);
+        console.warn(`[OCR Engine] Falló modelo ${model} (HTTP ${response.status})`);
         lastError = new Error(`Error en modelo ${model} (HTTP ${response.status})`);
         continue; // Try next model immediately
       }
