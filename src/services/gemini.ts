@@ -1,9 +1,9 @@
 import { GoogleGenAI } from '@google/genai';
 
 // Instanciar el cliente usando la nueva SDK
-// Es altamente recomendable usar variables de entorno para la API Key
+// Es mandatorio usar variables de entorno para la API Key
 const ai = new GoogleGenAI({ 
-  apiKey: import.meta.env.VITE_GEMINI_API_KEY || "AIzaSy_REPLACE_WITH_GEMINI_KEY" 
+  apiKey: import.meta.env.VITE_GEMINI_API_KEY || "" 
 });
 
 export const askGemini = async (prompt: string, context: string = "Eres un asistente experto en finanzas y control de inventario."): Promise<string> => {

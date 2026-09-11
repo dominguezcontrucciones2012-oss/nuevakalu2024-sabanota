@@ -17,14 +17,16 @@ services:
     build: .
     container_name: mi-web-api
     restart: always
+    env_file:
+      - ../.env
     environment:
       - UPLOAD_DIR=/var/www/app/uploads
       - PORT=3001
-      - WHATSAPP_PHONE_NUMBER_ID=1344089325449515
-      - WHATSAPP_API_KEY=EAAY389ZAVFIsBSez7uJZCnyP4O5eelvrOaGfPuZB9iZCYLG0FLf2zvCbtx6IEaADYgKupkGZBlmAM2ucyZBwnvRgtjTptbTGSZBap3mRT06cZBZB6N6NPu7ZBZCKQfUJZCrGkHdL6WtZB3c2UZC7HsS9WaPrdwsIgafx7HA1dIVc5Em9ZBAFtBWeHO3zZCJiEt4Vo9YAqoRmXAZDZD
-      - WHATSAPP_VERIFY_TOKEN=kalu_sabanota_secure_token_2026
-      - GEMINI_API_KEY=AIzaSyCeSsNVq2WNqs_CkxbI6Cs5XyBwE8L2o2o
-      - VITE_GEMINI_API_KEY=AIzaSyCeSsNVq2WNqs_CkxbI6Cs5XyBwE8L2o2o
+      - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID:-1344089325449515}
+      - WHATSAPP_API_KEY=${WHATSAPP_API_KEY}
+      - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN:-kalu_sabanota_secure_token_2026}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - VITE_GEMINI_API_KEY=${VITE_GEMINI_API_KEY}
     volumes:
       - uploads_data:/var/www/app/uploads
 
