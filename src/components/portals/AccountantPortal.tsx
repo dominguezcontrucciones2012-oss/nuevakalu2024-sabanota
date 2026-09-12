@@ -33,6 +33,7 @@ export default function AccountantPortal({
   onUpdateTrip = async () => {},
   onSettleTrip = async () => {},
   onAddTransaction = () => {},
+  onUpdateSupplier,
   onAddNotification = () => {}
 }: MobilePortalsViewProps) {
   const [activeTab, setActiveTab] = useState<TabType>('ficha');
@@ -49,39 +50,39 @@ export default function AccountantPortal({
       setActiveTab('facturas');
     } else if (moduleId === 'cheese-trips' || moduleId === 'giras') {
       setActiveTab('giras');
+    } else if (moduleId === 'voice-notes' || moduleId === 'voz') {
+      setActiveTab('voz');
+    } else if (moduleId === 'boveda') {
+      setActiveTab('boveda');
+    } else {
+      setActiveTab('ficha');
     }
   };
 
   return (
-    <div className="w-full min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-sans select-none pb-20">
+    <div className="flex flex-col min-h-screen bg-neutral-950 text-white font-sans selection:bg-amber-500 selection:text-neutral-900 pb-20">
       
-      {/* Top Mobile App Header */}
-      <header className="sticky top-0 z-30 bg-neutral-900/90 backdrop-blur-md border-b border-neutral-800 px-4 py-3 flex items-center justify-between shadow-md">
+      {/* Top Mobile Bar */}
+      <header className="sticky top-0 z-40 bg-neutral-900/90 backdrop-blur border-b border-neutral-800 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <button 
-            onClick={handleExit}
-            className="p-1.5 rounded-lg bg-neutral-800 text-neutral-400 hover:text-white hover:bg-neutral-700 transition-colors"
-            title="Volver al inicio"
-          >
-            <ArrowLeft className="w-4 h-4" />
-          </button>
+          <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-500">
+            <Scale className="w-5 h-5" />
+          </div>
           <div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <h1 className="text-xs font-mono font-bold tracking-wider uppercase text-amber-400 flex items-center gap-1">
-                Contador IA <Sparkles className="w-3 h-3 text-amber-400" />
-              </h1>
-            </div>
-            <p className="text-[10px] text-neutral-400">Portal Móvil de Administración</p>
+            <h1 className="font-serif font-bold text-sm leading-none text-neutral-100 flex items-center gap-1.5">
+              Portal Contable <span className="text-[10px] font-mono font-normal bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded">ADMIN</span>
+            </h1>
+            <span className="text-[10px] font-mono text-neutral-400">
+              Mundo Kalu • Daisy Corro
+            </span>
           </div>
         </div>
 
-        {/* BCV Exchange Rate Badge */}
         <div className="flex items-center gap-2">
-          <div className="bg-neutral-800/80 border border-neutral-700 px-2.5 py-1 rounded-full text-right">
-            <span className="text-[9px] font-mono text-neutral-400 block leading-none">BCV</span>
-            <span className="text-[11px] font-mono font-bold text-emerald-400">
-              Bs. {Number(exchangeRate).toFixed(2)}
+          <div className="text-right hidden sm:block">
+            <span className="text-[9px] font-mono uppercase text-neutral-500 block">Tasa BCV</span>
+            <span className="text-xs font-mono font-bold text-amber-400">
+              {exchangeRate.toFixed(2)} Bs/$
             </span>
           </div>
         </div>
@@ -96,6 +97,8 @@ export default function AccountantPortal({
               exchangeRate={exchangeRate}
               vaultBalance={vaultBalance}
               cheeseTrips={cheeseTrips}
+              suppliers={suppliers}
+              onUpdateSupplier={onUpdateSupplier}
               onAddNotification={onAddNotification}
             />
           </div>

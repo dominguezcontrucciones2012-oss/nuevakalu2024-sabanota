@@ -680,14 +680,9 @@ export default function ClientPortal({
                     </div>
                   </form>
 
-                  <div className="text-center text-[8px] text-zinc-500 space-y-3 mt-4">
-                    <div>
-                      <p>🔒 Conexión Protegida y Encriptada</p>
-                      <p>Kalu CRM S.A. de C.V.</p>
-                    </div>
-                    <a href="/?admin=true" className="inline-block text-zinc-600 hover:text-amber-500 transition-colors uppercase font-bold tracking-widest border border-zinc-800 rounded px-3 py-1.5 bg-zinc-900/50">
-                      Acceso Administrativo / Cajero
-                    </a>
+                  <div className="text-center text-[8px] text-zinc-500 space-y-1 mt-4">
+                    <p>🔒 Conexión Protegida y Encriptada</p>
+                    <p>Kalu CRM S.A. de C.V.</p>
                   </div>
                 </div>
               ) : (

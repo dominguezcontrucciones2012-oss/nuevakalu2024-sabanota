@@ -2047,6 +2047,7 @@ export default function App() {
               onCreateTrip={handleCreateTrip}
               onUpdateTrip={handleUpdateTrip}
               onSettleTrip={handleSettleTrip}
+              onUpdateSupplier={handleUpdateSupplier}
               onAddNotification={addNotification}
               onUpdateVault={async (updates) => {
                 await handleUpdateSettings({

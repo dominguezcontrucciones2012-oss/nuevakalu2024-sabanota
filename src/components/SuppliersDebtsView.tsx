@@ -40,6 +40,81 @@ const parseCustomDate = (dateStr: string): number => {
   return 0;
 };
 
+export const calculateDynamicBalances = (s: SupplierProfile, txList: Transaction[]) => {
+  const supNameClean = (s.name || '').trim().toLowerCase();
+  const supTxs = (txList || []).filter((d: any) => {
+    if (!d) return false;
+    const entityMatch = d.entity && String(d.entity).trim().toLowerCase() === supNameClean;
+    const supplierIdMatch = d.supplierId && String(d.supplierId) === String(s.id);
+    const entityIdMatch = d.entityId && String(d.entityId) === String(s.id);
+    return entityMatch || supplierIdMatch || entityIdMatch;
+  });
+
+  if (supTxs.length > 0) {
+    const getTxTime = (tx: any): number => {
+      if (!tx) return 0;
+      if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+      if (tx.timestamp) {
+        if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+        if (typeof tx.timestamp === 'number') return tx.timestamp;
+      }
+      if (tx.id && typeof tx.id === 'string') {
+        const parts = tx.id.split('-');
+        for (const part of parts) {
+          if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+        }
+      }
+      return parseCustomDate(tx.date || '') || 0;
+    };
+
+    const asc = [...supTxs].sort((a, b) => getTxTime(a) - getTxTime(b));
+    let running = 0;
+
+    if (s.isEmployee) {
+      asc.forEach(tx => {
+        const isLiquidation = (tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'));
+        const isBodegaDebt = !isLiquidation && (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda')));
+        const isPayroll = !isLiquidation && (tx.category === 'gastos' || tx.category === 'compras' || (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))));
+        
+        if (isLiquidation) {
+          running = 0;
+        } else if (isPayroll) {
+          running += (Number(tx.amount) || 0);
+        } else if (isBodegaDebt) {
+          running -= (Number(tx.amount) || 0);
+        } else if (tx.isIncome) {
+          running += (Number(tx.amount) || 0);
+        } else {
+          running -= (Number(tx.amount) || 0);
+        }
+      });
+    } else {
+      // PRODUCTORES Y PROVEEDORES
+      asc.forEach(tx => {
+        if (tx.isIncome) {
+          running += (Number(tx.amount) || 0); // (+) Entrega de queso
+        } else {
+          running -= (Number(tx.amount) || 0); // (-) Pago o adelanto
+        }
+      });
+    }
+
+    if (running >= 0) {
+      return { payable: running, debt: 0 };
+    } else {
+      return { payable: 0, debt: Math.abs(running) };
+    }
+  }
+
+  // Fallback directo a los balances del perfil
+  const net = (Number(s.balanceOwed) || 0) - (Number(s.storeDebt) || 0);
+  if (net >= 0) {
+    return { payable: net, debt: 0 };
+  } else {
+    return { payable: 0, debt: Math.abs(net) };
+  }
+};
+
 interface SuppliersDebtsViewProps {
   suppliers: SupplierProfile[];
   transactions: Transaction[];
@@ -577,13 +652,12 @@ export default function SuppliersDebtsView({
                             {kg.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Kg
                           </td>
                           <td className="py-3.5 px-4 text-right font-mono font-bold">
-                            {(Number(s.balanceOwed) || 0) > 0 ? (
-                              <span className="text-amber-500">+${(Number(s.balanceOwed) || 0).toFixed(2)}</span>
-                            ) : (Number(s.storeDebt) || 0) > 0 ? (
-                              <span className="text-rose-400">-${(Number(s.storeDebt) || 0).toFixed(2)}</span>
-                            ) : (
-                              <span className="text-editorial-text-muted/60">$0.00</span>
-                            )}
+                            {(() => {
+                              const { payable: rPayable, debt: rDebt } = calculateDynamicBalances(s, transactions);
+                              if (rPayable > 0) return <span className="text-amber-500">+${rPayable.toFixed(2)}</span>;
+                              if (rDebt > 0) return <span className="text-rose-400">-${rDebt.toFixed(2)}</span>;
+                              return <span className="text-editorial-text-muted/60">$0.00</span>;
+                            })()}
                           </td>
                           <td className="py-3.5 px-4 text-center">
                             <button
@@ -617,77 +691,8 @@ export default function SuppliersDebtsView({
               );
             })
             .map((s) => {
-              // Calcular saldo dinámico para trabajadores basado en sus transacciones en tiempo real
-              let displayedPayable = Number(s.balanceOwed) || 0;
-              let displayedDebt = Number(s.storeDebt) || 0;
-
-              if (s.isEmployee) {
-                const supNameClean = (s.name || '').trim().toLowerCase();
-                const workerTxs = transactions.filter((d: any) => {
-                  if (!d) return false;
-                  const entityMatch = d.entity && String(d.entity).trim().toLowerCase() === supNameClean;
-                  const supplierIdMatch = d.supplierId && String(d.supplierId) === String(s.id);
-                  const entityIdMatch = d.entityId && String(d.entityId) === String(s.id);
-                  return entityMatch || supplierIdMatch || entityIdMatch;
-                });
-
-                if (workerTxs.length > 0) {
-                  const getTxTime = (tx: any): number => {
-                    if (!tx) return 0;
-                    if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
-                    if (tx.timestamp) {
-                      if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
-                      if (typeof tx.timestamp === 'number') return tx.timestamp;
-                    }
-                    if (tx.id && typeof tx.id === 'string') {
-                      const parts = tx.id.split('-');
-                      for (const part of parts) {
-                        if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
-                      }
-                    }
-                    return parseCustomDate(tx.date || '') || 0;
-                  };
-
-                  const asc = [...workerTxs].sort((a, b) => getTxTime(a) - getTxTime(b));
-                  let running = 0;
-                  asc.forEach(tx => {
-                    const isLiquidation = (tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'));
-                    const isBodegaDebt = !isLiquidation && (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda')));
-                    const isPayroll = !isLiquidation && (tx.category === 'gastos' || tx.category === 'compras' || (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))));
-                    
-                    if (isLiquidation) {
-                      running = 0;
-                    } else if (isPayroll) {
-                      running += (Number(tx.amount) || 0);
-                    } else if (isBodegaDebt) {
-                      running -= (Number(tx.amount) || 0);
-                    } else if (tx.isIncome) {
-                      running += (Number(tx.amount) || 0);
-                    } else {
-                      running -= (Number(tx.amount) || 0);
-                    }
-                  });
-
-                  // Cruce bidireccional neto:
-                  if (running >= 0) {
-                    displayedPayable = running;
-                    displayedDebt = 0;
-                  } else {
-                    displayedPayable = 0;
-                    displayedDebt = Math.abs(running);
-                  }
-                } else {
-                  // Si no hay transacciones pero tiene balanceOwed y storeDebt fijos
-                  const net = (Number(s.balanceOwed) || 0) - (Number(s.storeDebt) || 0);
-                  if (net >= 0) {
-                    displayedPayable = net;
-                    displayedDebt = 0;
-                  } else {
-                    displayedPayable = 0;
-                    displayedDebt = Math.abs(net);
-                  }
-                }
-              }
+              // Calcular saldo dinámico y reactivo en tiempo real desde el historial y perfil
+              const { payable: displayedPayable, debt: displayedDebt } = calculateDynamicBalances(s, transactions);
 
               return (
                 <div key={s.id} className="bg-editorial-card border border-editorial-border rounded p-4 flex flex-col justify-between hover:border-editorial-text-primary/40 transition-all duration-300">

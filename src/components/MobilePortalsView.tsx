@@ -23,6 +23,7 @@ export interface MobilePortalsViewProps {
   onUpdateTrip?: (id: string, updates: Partial<CheeseTrip>) => Promise<void>;
   onSettleTrip?: (id: string, settlementData: Partial<CheeseTrip>) => Promise<void>;
   onAddTransaction?: (tx: Partial<Transaction>) => void;
+  onUpdateSupplier?: (id: string, updates: Partial<SupplierProfile>) => void;
   onUpdateVault?: (updates: Partial<CentralVaultBalance>) => Promise<void>;
 }
 

@@ -23,6 +23,7 @@ interface ContadorIAViewProps {
   onCreateTrip?: (trip: Omit<CheeseTrip, 'id'>) => Promise<void>;
   onUpdateTrip?: (id: string, updates: Partial<CheeseTrip>) => Promise<void>;
   onSettleTrip?: (id: string, settlementData: Partial<CheeseTrip>) => Promise<void>;
+  onUpdateSupplier?: (id: string, updates: Partial<SupplierProfile>) => void;
   onAddNotification?: (msg: string, type: 'success'|'info'|'warning') => void;
   onUpdateVault?: (updates: Partial<CentralVaultBalance>) => Promise<void>;
 }
@@ -30,7 +31,7 @@ interface ContadorIAViewProps {
 export default function ContadorIAView({ 
   isAdmin, vaultBalance, onAddTransaction, exchangeRate,
   cheeseTrips, cheeseProducts, clients, suppliers, transactions,
-  onCreateTrip, onUpdateTrip, onSettleTrip, onAddNotification, onUpdateVault
+  onCreateTrip, onUpdateTrip, onSettleTrip, onUpdateSupplier, onAddNotification, onUpdateVault
 }: ContadorIAViewProps) {
   const [activeModule, setActiveModule] = useState<string | null>(null);
   const [modulePayload, setModulePayload] = useState<any>(null);
@@ -178,6 +179,7 @@ export default function ContadorIAView({
           vaultBalance={vaultBalance}
           cheeseTrips={cheeseTrips}
           suppliers={suppliers}
+          onUpdateSupplier={onUpdateSupplier}
           onAddNotification={onAddNotification}
         />
         <AIAssistantWidget />

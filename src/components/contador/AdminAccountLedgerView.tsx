@@ -16,6 +16,7 @@ interface AdminAccountLedgerViewProps {
   vaultBalance?: CentralVaultBalance;
   cheeseTrips?: CheeseTrip[];
   suppliers?: SupplierProfile[];
+  onUpdateSupplier?: (id: string, updates: Partial<SupplierProfile>) => void;
   onAddNotification?: (msg: string, type?: 'success' | 'info' | 'warning') => void;
 }
 
@@ -35,6 +36,7 @@ export default function AdminAccountLedgerView({
   vaultBalance,
   cheeseTrips = [],
   suppliers: initialSuppliers,
+  onUpdateSupplier,
   onAddNotification
 }: AdminAccountLedgerViewProps) {
   // Pestañas Principales en Móvil
@@ -439,15 +441,46 @@ export default function AdminAccountLedgerView({
       // 2. Si es pago a Productor o Proveedor, impactar su libreta y registrar transacción oficial
       if (!newIsDebit && targetSupplier) {
         const currentBalanceOwed = Number(targetSupplier.balanceOwed) || 0;
-        const newBalanceOwed = Math.max(0, currentBalanceOwed - totalEquivUsd);
+        const currentStoreDebt = Number(targetSupplier.storeDebt) || 0;
 
-        // Actualizar balance de cuentas por pagar en la colección 'suppliers'
-        await updateLocalDoc('suppliers', targetSupplier.id, {
-          balanceOwed: newBalanceOwed
-        });
+        let newBalanceOwed = 0;
+        let newStoreDebt = currentStoreDebt;
 
-        // Actualizar el estado local reactivo
-        setLocalSuppliers(prev => prev.map(s => s.id === targetSupplier!.id ? { ...s, balanceOwed: newBalanceOwed } : s));
+        if (totalEquivUsd <= currentBalanceOwed) {
+          newBalanceOwed = currentBalanceOwed - totalEquivUsd;
+        } else {
+          newBalanceOwed = 0;
+          const excess = totalEquivUsd - currentBalanceOwed;
+          newStoreDebt = currentStoreDebt + excess;
+        }
+
+        const supplierUpdates: Partial<SupplierProfile> = {
+          balanceOwed: newBalanceOwed,
+          storeDebt: newStoreDebt
+        };
+
+        // Actualizar balance de cuentas por pagar y deuda en la base de datos local
+        await updateLocalDoc('suppliers', targetSupplier.id, supplierUpdates);
+
+        // Actualizar el estado local reactivo de la vista
+        setLocalSuppliers(prev => prev.map(s => s.id === targetSupplier!.id ? { ...s, ...supplierUpdates } : s));
+
+        // Actualizar el estado exterior del directorio de proveedores (CRMApp / Tarjeta Principal)
+        if (onUpdateSupplier) {
+          onUpdateSupplier(targetSupplier.id, supplierUpdates);
+        }
+
+        // Sincronizar respaldo de localStorage si existe
+        try {
+          const stored = localStorage.getItem('kalu_suppliers');
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            const updatedList = parsed.map((s: any) => s.id === targetSupplier!.id ? { ...s, ...supplierUpdates } : s);
+            localStorage.setItem('kalu_suppliers', JSON.stringify(updatedList));
+          }
+        } catch (e) {
+          console.error("Error sincronizando localStorage para proveedores:", e);
+        }
 
         // Registrar transacción de salida en 'transactions'
         const nowMs = Date.now();
@@ -462,12 +495,12 @@ export default function AdminAccountLedgerView({
           isIncome: false, // Resta en la libreta del productor/proveedor
           status: 'Completado',
           paymentMethod: `Ficha Administradora (${paymentMethodType})`,
-          notes: `${finalConcept} [Ref: ${paymentReference || 'S/N'}] - Saldo restante en libreta: $${newBalanceOwed.toFixed(2)} USD`,
+          notes: `${finalConcept} [Ref: ${paymentReference || 'S/N'}] - Saldo en libreta: $${newBalanceOwed.toFixed(2)} USD${newStoreDebt > 0 ? ` (Adelanto: $${newStoreDebt.toFixed(2)} USD)` : ''}`,
           createdAt: nowMs
         };
         await addLocalDoc('transactions', supTx);
 
-        onAddNotification?.(`✅ Pago de $${totalEquivUsd.toFixed(2)} registrado. Libreta de ${targetSupplier.name} actualizada (Resta $${totalEquivUsd.toFixed(2)}).`, 'success');
+        onAddNotification?.(`✅ Pago de $${totalEquivUsd.toFixed(2)} registrado. Libreta y Ficha de ${targetSupplier.name} actualizadas en vivo.`, 'success');
       } else {
         onAddNotification?.('Asiento registrado exitosamente en la Ficha Administradora.', 'success');
       }
