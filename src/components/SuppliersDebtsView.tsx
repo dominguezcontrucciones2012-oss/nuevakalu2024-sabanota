@@ -913,10 +913,13 @@ export default function SuppliersDebtsView({
                 // Presentar de forma estrictamente descendente (el más reciente siempre primero arriba)
                 const filteredTx = [...txWithBalance].reverse();
 
-                // Para el trabajador, el saldo a su favor consolidado es el saldo progresivo final calculado de su libreta
-                const workerFinalBalance = s.isEmployee 
-                  ? (txWithBalance.length > 0 ? (txWithBalance[txWithBalance.length - 1].runningBalance ?? 0) : ((Number(s.balanceOwed) || 0) - (Number(s.storeDebt) || 0)))
-                  : (Number(s.balanceOwed || 0) - (Number(s.storeDebt) || 0));
+                // El saldo consolidado en el encabezado toma el saldo progresivo final calculado de su libreta en cascada
+                const workerFinalBalance = txWithBalance.length > 0 
+                  ? (txWithBalance[txWithBalance.length - 1].runningBalance ?? 0)
+                  : (() => {
+                      const { payable, debt } = calculateDynamicBalances(s, transactions);
+                      return payable > 0 ? payable : (debt > 0 ? -debt : ((Number(s.balanceOwed) || 0) - (Number(s.storeDebt) || 0)));
+                    })();
 
                 return (
                   <div className="flex flex-col h-full overflow-hidden w-full max-w-full">
