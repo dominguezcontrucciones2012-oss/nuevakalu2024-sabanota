@@ -19,5 +19,7 @@ coverage/
 .DS_Store
 
 uploads/
+uploads*/
+uploads_*
+*.eml
 scratch/
-

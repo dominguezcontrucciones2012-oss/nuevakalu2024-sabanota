@@ -17,6 +17,11 @@ export interface InvoiceData {
   items: ExtractedInvoiceItem[];
 }
 
+export function getGeminiApiKey(): string {
+  const env = (import.meta as any).env || {};
+  return env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || (typeof window !== 'undefined' && (window as any).__GEMINI_API_KEY__) || '';
+}
+
 export function normalizeTextForMatching(str: string): string {
   if (!str) return '';
   return str
@@ -29,7 +34,7 @@ export function normalizeTextForMatching(str: string): string {
 }
 
 export async function extractInvoiceData(file: File, bcvRate: number, inventoryNames: string[] = []): Promise<InvoiceData> {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  const apiKey = getGeminiApiKey();
   
   if (!apiKey || apiKey.includes('REPLACE_WITH_GEMINI_KEY')) {
     throw new Error('API Key de Gemini no configurada en el archivo .env (VITE_GEMINI_API_KEY).');
@@ -91,7 +96,7 @@ export async function extractInvoiceData(file: File, bcvRate: number, inventoryN
     }
   };
 
-  const modelsToTry = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+  const modelsToTry = ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest'];
   let lastError: any = null;
 
   for (const model of modelsToTry) {
@@ -100,8 +105,7 @@ export async function extractInvoiceData(file: File, bcvRate: number, inventoryN
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-          'Authorization': `Bearer ${apiKey}`
+          'x-goog-api-key': apiKey
         },
         body: JSON.stringify(payload)
       });
@@ -139,7 +143,7 @@ export async function extractInvoiceData(file: File, bcvRate: number, inventoryN
 }
 
 export async function extractDictationData(text: string, bcvRate: number = 45, inventoryNames: string[] = []): Promise<ExtractedInvoiceItem[]> {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  const apiKey = getGeminiApiKey();
   
   if (!apiKey || apiKey.includes('REPLACE_WITH_GEMINI_KEY')) {
     throw new Error('API Key de Gemini no configurada en el archivo .env (VITE_GEMINI_API_KEY).');
@@ -178,15 +182,14 @@ export async function extractDictationData(text: string, bcvRate: number = 45, i
     }
   };
 
-  const modelsToTry = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+  const modelsToTry = ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest'];
   for (const model of modelsToTry) {
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-          'Authorization': `Bearer ${apiKey}`
+          'x-goog-api-key': apiKey
         },
         body: JSON.stringify(payload)
       });
@@ -226,7 +229,7 @@ export interface StructuredVoiceNote {
 }
 
 export async function structureVoiceNoteWithAI(text: string, bcvRate: number = 45): Promise<StructuredVoiceNote> {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  const apiKey = getGeminiApiKey();
   
   if (!apiKey || apiKey.includes('REPLACE_WITH_GEMINI_KEY')) {
     return {
@@ -271,14 +274,13 @@ export async function structureVoiceNoteWithAI(text: string, bcvRate: number = 4
     }
   };
 
-  for (const model of ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest']) {
+  for (const model of ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest']) {
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-          'Authorization': `Bearer ${apiKey}`
+          'x-goog-api-key': apiKey
         },
         body: JSON.stringify(payload)
       });
@@ -306,12 +308,12 @@ export async function structureVoiceNoteWithAI(text: string, bcvRate: number = 4
 }
 
 export async function pingGeminiAPI(): Promise<{ ok: boolean; message: string }> {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  const apiKey = getGeminiApiKey();
   if (!apiKey || apiKey.includes('REPLACE_WITH_GEMINI_KEY')) {
     return { ok: false, message: 'Falta configurar VITE_GEMINI_API_KEY en el archivo .env' };
   }
 
-  const models = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+  const models = ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest'];
   let lastErr = '';
 
   for (const m of models) {
@@ -324,8 +326,7 @@ export async function pingGeminiAPI(): Promise<{ ok: boolean; message: string }>
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-          'Authorization': `Bearer ${apiKey}`
+          'x-goog-api-key': apiKey
         },
         body: JSON.stringify(payload)
       });
@@ -364,7 +365,7 @@ export interface ParsedTripDeparture {
 }
 
 export async function parseTripDepartureWithAI(text: string, bcvRate: number = 813, productNames: string[] = []): Promise<ParsedTripDeparture> {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  const apiKey = getGeminiApiKey();
   if (!apiKey || apiKey.includes('REPLACE_WITH_GEMINI_KEY')) {
     throw new Error('API Key de Gemini no configurada.');
   }
@@ -411,15 +412,14 @@ export async function parseTripDepartureWithAI(text: string, bcvRate: number = 8
     }
   };
 
-  const models = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+  const models = ['gemini-2.5-flash', 'gemini-3.7-flash', 'gemini-flash-latest'];
   for (const m of models) {
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-          'Authorization': `Bearer ${apiKey}`
+          'x-goog-api-key': apiKey
         },
         body: JSON.stringify(payload)
       });

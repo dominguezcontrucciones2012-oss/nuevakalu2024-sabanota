@@ -177,6 +177,7 @@ export default function ContadorIAView({
           exchangeRate={exchangeRate}
           vaultBalance={vaultBalance}
           cheeseTrips={cheeseTrips}
+          suppliers={suppliers}
           onAddNotification={onAddNotification}
         />
         <AIAssistantWidget />

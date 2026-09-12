@@ -62,32 +62,59 @@ export default function PortalApp() {
       console.error(e);
     }
 
-    const pm = (tx.paymentMethod || '').toLowerCase();
-    const rate = settings.exchangeRate || 42.5;
+    const pm = (tx.paymentMethod || '').toLowerCase().trim();
+    const rate = (tx as any).exchangeRate || (tx as any).bcvRate || settings.exchangeRate || 42.5;
+    const isBs = (tx as any).currency === 'BS' || (tx as any).currency === 'VES';
     
     setSettings(prevSettings => {
       const currentVault = prevSettings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
       const updatedVault = { ...currentVault };
       
       if (tx.isIncome) {
-        if (pm === 'efectivo' || pm === 'efectivo usd') {
+        // 1. Efectivo USD
+        if (pm === 'efectivo' || pm === 'efectivo usd' || pm === 'usd efectivo' || (pm.includes('efectivo') && (pm.includes('$') || pm.includes('usd') || (!pm.includes('bs') && !pm.includes('ves'))))) {
           updatedVault.usd += (tx.amount || 0);
-        } else if (pm === 'efectivo bs') {
-          updatedVault.bs += ((tx.amount || 0) * rate);
-        } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco / pago móvil') || pm.includes('banco bs') || pm.includes('bio')) {
-          updatedVault.bankBs += ((tx.amount || 0) * rate);
-        } else {
+        } 
+        // 2. Efectivo Bs
+        else if (pm === 'efectivo bs' || pm === 'bs efectivo' || (pm.includes('efectivo') && (pm.includes('bs') || pm.includes('ves')))) {
+          const bsAmt = isBs ? (tx.amount || 0) : ((tx.amount || 0) * rate);
+          updatedVault.bs += bsAmt;
+        } 
+        // 3. Banco USD / Zelle
+        else if (pm === 'banco usd' || pm === 'banco digital usd' || pm.includes('banco usd') || pm.includes('zelle') || (pm.includes('transfer') && (pm.includes('usd') || pm.includes('$')))) {
+          updatedVault.bankUsd += (tx.amount || 0);
+        } 
+        // 4. Banco Bs / Pago Móvil / Transferencia Bs / Punto / Biopago
+        else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco / pago móvil') || pm.includes('banco bs') || pm.includes('bio') || pm.includes('bs') || pm.includes('ves')) {
+          const bankBsAmt = isBs ? (tx.amount || 0) : ((tx.amount || 0) * rate);
+          updatedVault.bankBs += bankBsAmt;
+        } 
+        // 5. Fallback a Banco USD
+        else {
           updatedVault.bankUsd += (tx.amount || 0);
         }
       } else {
-        if (pm === 'efectivo' || pm === 'efectivo usd') {
-          updatedVault.usd -= (tx.amount || 0);
-        } else if (pm === 'efectivo bs') {
-          updatedVault.bs -= ((tx.amount || 0) * rate);
-        } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco / pago móvil') || pm.includes('banco bs') || pm.includes('bio')) {
-          updatedVault.bankBs -= ((tx.amount || 0) * rate);
-        } else {
-          updatedVault.bankUsd -= (tx.amount || 0);
+        // 1. Efectivo USD
+        if (pm === 'efectivo' || pm === 'efectivo usd' || pm === 'usd efectivo' || (pm.includes('efectivo') && (pm.includes('$') || pm.includes('usd') || (!pm.includes('bs') && !pm.includes('ves'))))) {
+          updatedVault.usd = Math.max(0, updatedVault.usd - (tx.amount || 0));
+        } 
+        // 2. Efectivo Bs
+        else if (pm === 'efectivo bs' || pm === 'bs efectivo' || (pm.includes('efectivo') && (pm.includes('bs') || pm.includes('ves')))) {
+          const bsAmt = isBs ? (tx.amount || 0) : ((tx.amount || 0) * rate);
+          updatedVault.bs = Math.max(0, updatedVault.bs - bsAmt);
+        } 
+        // 3. Banco USD / Zelle
+        else if (pm === 'banco usd' || pm === 'banco digital usd' || pm.includes('banco usd') || pm.includes('zelle') || (pm.includes('transfer') && (pm.includes('usd') || pm.includes('$')))) {
+          updatedVault.bankUsd = Math.max(0, updatedVault.bankUsd - (tx.amount || 0));
+        } 
+        // 4. Banco Bs / Pago Móvil / Transferencia Bs / Punto / Biopago
+        else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco / pago móvil') || pm.includes('banco bs') || pm.includes('bio') || pm.includes('bs') || pm.includes('ves')) {
+          const bankBsAmt = isBs ? (tx.amount || 0) : ((tx.amount || 0) * rate);
+          updatedVault.bankBs = Math.max(0, updatedVault.bankBs - bankBsAmt);
+        } 
+        // 5. Fallback a Banco USD
+        else {
+          updatedVault.bankUsd = Math.max(0, updatedVault.bankUsd - (tx.amount || 0));
         }
       }
       

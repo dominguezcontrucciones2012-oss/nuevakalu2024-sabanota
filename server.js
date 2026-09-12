@@ -469,13 +469,45 @@ async function downloadMetaMediaAsBase64(mediaId) {
   }
 }
 
-// 2. Recepción de Eventos / Mensajes Entrantes de Meta y Cerebro Robot Kalu (POST)
-app.post('/api/webhook', async (req, res) => {
+// --- CONTROL ANTI-SPAM Y ENFRIAMIENTO (BOT KALU) ---
+const userMessageHistory = new Map(); // phone -> Array de timestamps en ms
+const userCooldownMap = new Map();    // phone -> timestamp límite de enfriamiento
+
+function checkUserRateLimit(phone) {
+  const now = Date.now();
+  const TEN_MINUTES = 10 * 60 * 1000;
+  
+  // 1. Si el usuario está en periodo de enfriamiento activo
+  if (userCooldownMap.has(phone)) {
+    const cooldownExpires = userCooldownMap.get(phone);
+    if (now < cooldownExpires) {
+      return { isRateLimited: true, inCooldown: true };
+    } else {
+      userCooldownMap.delete(phone);
+    }
+  }
+
+  // 2. Filtrar mensajes de los últimos 10 minutos
+  const timestamps = (userMessageHistory.get(phone) || []).filter(t => now - t < TEN_MINUTES);
+  timestamps.push(now);
+  userMessageHistory.set(phone, timestamps);
+
+  // 3. Activar enfriamiento si supera los 5 mensajes en menos de 10 minutos
+  if (timestamps.length > 5) {
+    const cooldownDuration = 15 * 60 * 1000; // 15 minutos de pausa
+    userCooldownMap.set(phone, now + cooldownDuration);
+    return { isRateLimited: true, justTriggered: true };
+  }
+
+  return { isRateLimited: false };
+}
+
+// 2. Recepción y Procesamiento de Mensajes Entrantes de WhatsApp (POST)
+app.post(['/api/webhook', '/webhook'], async (req, res) => {
   console.log('\n====================================================');
   console.log('⚡ [WEBHOOK ENTRANTE] Meta acaba de tocar POST /api/webhook a las', new Date().toISOString());
   console.log('📦 PAYLOAD COMPLETO RECIBIDO:\n', JSON.stringify(req.body, null, 2));
   console.log('====================================================\n');
-
   try {
     const body = req.body;
 
@@ -493,14 +525,25 @@ app.post('/api/webhook', async (req, res) => {
 
             console.log(`[Robot Kalu] 📩 Mensaje recibido de ${fromPhone} (Tipo: ${messageType})`);
 
-            // 1. FILTRO DE MULTIMEDIA (IMÁGENES / DOCUMENTOS)
+            // 1. FILTRO DE MULTIMEDIA (IMÁGENES / CAPTURES / COMPROBANTES)
             if (messageType === 'image' || messageType === 'document') {
-              const replyText = "Hola 👋. Por este medio de WhatsApp no podemos recibir capturas ni comprobantes de pago por seguridad. Por favor, sube tu comprobante directamente a través de tu portal web personal.\n\nSi no recuerdas cómo ingresar, avísame y te guío paso a paso.";
+              const replyText = `¡Hola! 👋 Hemos recibido tu comprobante de pago con éxito.\n\nPara validar tu abono de forma inmediata en el sistema, por favor regístralo a través de tu portal oficial:\n👉 https://sistemakalu.com/?portal=cliente\n\nAllí podrás verificar tu saldo actualizado y el historial de tus facturas al instante.`;
               await sendWhatsAppDirectMessage(fromPhone, replyText);
               continue;
             }
 
-            // 2. PROCESAMIENTO DE MENSAJES DE TEXTO Y NOTAS DE VOZ (AUDIO/OGG)
+            // 2. CONTROL ANTI-SPAM / ENFRIAMIENTO (MÁXIMO 5 MENSAJES EN 10 MINUTOS)
+            const rateLimit = checkUserRateLimit(fromPhone);
+            if (rateLimit.isRateLimited) {
+              if (rateLimit.justTriggered) {
+                const cooldownNotice = `Hemos detectado múltiples mensajes continuos. Por tu comodidad y para brindarte una atención personalizada, hemos transferido tu conversación a la bandeja de un asesor humano de nuestro equipo. En breve un operador se comunicará contigo. ¡Muchas gracias por tu paciencia!`;
+                await sendWhatsAppDirectMessage(fromPhone, cooldownNotice);
+              }
+              console.log(`[Robot Kalu Anti-Spam] Mensaje de ${fromPhone} silenciado por periodo de enfriamiento.`);
+              continue;
+            }
+
+            // 3. PROCESAMIENTO DE MENSAJES DE TEXTO Y NOTAS DE VOZ (AUDIO/OGG)
             if (messageType === 'text' || messageType === 'audio' || messageType === 'voice') {
               let userText = '';
               let audioData = null;
@@ -532,25 +575,42 @@ app.post('/api/webhook', async (req, res) => {
               const pendingInstallments = installments.filter(inst => (String(inst.clientId) === String(clientId) || String(inst.client_id) === String(clientId)) && inst.status === 'pending');
               const exchangeRate = Number(generalSettings.exchangeRate || generalSettings.bcvRate || 807.38);
 
-              // Contexto enriquecido para el motor de Inteligencia Artificial
+              // Contexto enriquecido para el motor de Inteligencia Artificial (Ventas Directas)
               const systemPrompt = `
-              Eres Kalu, el asistente virtual inteligente oficial de Mundo Kalu Sabanota.
+              Eres Kalu, el asesor de ventas y asistente virtual inteligente oficial de Mundo Kalu Sabanota.
               Estás atendiendo al cliente: ${client.name || client.nombre || 'Cliente'}.
               Tasa oficial BCV actual: ${exchangeRate} VES/USD.
               
-              Deudas / Cuotas pendientes del cliente:
+              ESTADO DE CUENTA Y CUOTAS PENDIENTES DEL CLIENTE:
               ${JSON.stringify(pendingInstallments, null, 2)}
               
-              Inventario de productos (quesos y precios):
-              ${JSON.stringify(products.map(p => ({ id: p.id, name: p.name, price: p.price, stock: p.stock })), null, 2)}
+              INVENTARIO DISPONIBLE (PRECIOS Y EXISTENCIAS):
+              ${JSON.stringify(products.map(p => ({
+                id: p.id,
+                nombre: p.name,
+                categoria: p.category,
+                precio_usd: p.sellingPrice || p.price || 0,
+                stock: p.stockKg ?? p.stock ?? 0,
+                unidad: p.unit || 'Und'
+              })), null, 2)}
               
-              Reglas estrictas de comportamiento:
-              1. Saluda cordialmente por su nombre.
-              2. Si el cliente envió una nota de voz, escucha con atención su consulta y responde con claridad al contenido de su audio.
-              3. Si pregunta por sus deudas o saldo, dale montos exactos en USD y su equivalente en Bolívares usando la tasa BCV (${exchangeRate} Bs/$).
-              4. Si pregunta por productos, presentaciones de queso o precios, respóndele basándote estrictamente en el inventario provisto.
-              5. Si pregunta cómo entrar al portal o enviar pagos, explícale de forma clara que debe ingresar a su Portal del Cliente en la sección 'Pagos' con su número de cédula o teléfono.
-              6. Mantén respuestas concisas, amables y profesionales, adaptadas para WhatsApp.
+              REGLAS ESTRICTAS DE VENTAS DIRECTAS Y ATENCIÓN (CERO RODEOS):
+              1. RESPUESTAS INMEDIATAS DE EXISTENCIA Y PRECIOS:
+                 - Si el cliente pregunta por la disponibilidad o precio de cualquier producto (ej: "embobinado cuatro cables", repuestos, víveres, quesos), responde DE INMEDIATO en tu primer mensaje confirmando la existencia y desglosando de una vez las opciones disponibles con sus precios respectivos.
+                 - Si existen variaciones o calidades (ej: calidad 100% cobre a $X vs opción económica a $Y, o diferentes marcas/presentaciones), preséntalas de forma clara, directa y con sus precios en USD y en Bolívares a la tasa BCV (${exchangeRate} Bs/$).
+                 - ESTÁ ESTRICTAMENTE PROHIBIDO dar rodeos, vueltas o hacer esperar al cliente antes de brindar los precios y la disponibilidad.
+              
+              2. ENLACES A PORTALES OFICIALES:
+                 - Si el cliente pregunta cómo pagar, reportar un abono o ver sus recibos, envíale de inmediato el enlace oficial del Portal de Clientes:
+                   👉 https://sistemakalu.com/?portal=cliente
+                 - Si el usuario solicita acceso como productor, entrega de queso o área de arrime, envíale de inmediato el enlace oficial del Portal de Productores:
+                   👉 https://sistemakalu.com/?portal=productor
+              
+              3. DEUDAS Y CONSULTAS DE SALDO:
+                 - Si consulta su saldo o cuotas pendientes, indica el monto exacto en USD y en Bolívares calculados a la tasa BCV (${exchangeRate} Bs/$).
+              
+              4. TONO COMERCIAL Y CONCISO:
+                 - Responde de forma amable, directa, ejecutiva y enfocada en cerrar la venta o resolver la inquietud rápidamente. Usa formato WhatsApp legible con negritas (*) y viñetas limpias.
               `;
 
               let botReply = "Disculpa, en este momento estoy experimentando dificultades técnicas. Intenta nuevamente en unos minutos.";
@@ -567,7 +627,7 @@ app.post('/api/webhook', async (req, res) => {
                         data: audioData.base64Audio
                       }
                     });
-                    parts.push({ text: "Escucha la nota de voz del cliente arriba y responde a su consulta siguiendo las reglas del sistema." });
+                    parts.push({ text: "Escucha la nota de voz del cliente arriba y responde a su consulta siguiendo las reglas estrictas de ventas directas." });
                   } else {
                     parts.push({ text: "Mensaje del cliente: " + userText });
                   }

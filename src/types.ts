@@ -331,7 +331,8 @@ export type LedgerEntryType =
   | 'LIQUIDACION_GIRA'      // Retorno de facturas/dinero al cerrar el viaje (Abono / Haber)
   | 'GASTO_MULTICANAL'      // Gasto registrado por voz/foto/nota menor (Abono / Haber)
   | 'EXTRACCION_BOVEDA'     // Retiro de efectivo de la Bóveda para compras (Cargo / Debe)
-  | 'PAGO_PROVEEDOR'        // Pago liquidado directamente a un productor (Abono / Haber)
+  | 'PAGO_PROVEEDOR'        // Pago liquidado a un proveedor de insumos/servicios (Abono / Haber)
+  | 'PAGO_PRODUCTOR'        // Pago liquidado a un productor de queso (Abono / Haber)
   | 'AJUSTE_MANUAL';        // Ajuste administrativo justificado
 
 export interface AdminAccountEntry {
@@ -349,6 +350,10 @@ export interface AdminAccountEntry {
   creditUsd: number;        // Abono / Haber (Gastos/Facturas/Reintegros justificados)
   balanceAfterUsd: number;  // Saldo acumulado
   referenceId?: string;
+  supplierId?: string;
+  supplierName?: string;
+  targetType?: 'PRODUCTOR' | 'PROVEEDOR' | 'GASTO_GENERAL';
+  paymentMethod?: string;
   mediaAttachmentUrl?: string;
   status: 'conciliado' | 'pendiente_revision';
   createdAt: string;

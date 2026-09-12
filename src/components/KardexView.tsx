@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { KardexMovement } from '../types';
 import { fetchCollection, onCollectionSnapshot } from '../services/localApi';
+import { getUnitLabel } from '../utils';
 import KaluLoader from './KaluLoader';
 import { Search, Filter, BookOpen, ArrowUpRight, ArrowDownRight, AlertTriangle, Edit3, RefreshCw, DownloadCloud } from 'lucide-react';
 
@@ -171,13 +172,13 @@ export default function KardexView() {
                       {m.notes && <div className="text-xs text-editorial-text-muted mt-1 truncate max-w-xs">{m.notes}</div>}
                     </td>
                     <td className="px-4 py-3 align-top text-editorial-text-muted whitespace-nowrap">
-                      {m.previousStock} <span className="text-[10px]">{m.unit}</span>
+                      {m.previousStock} <span className="text-[10px] font-medium text-editorial-text-primary">{getUnitLabel(m)}</span>
                     </td>
                     <td className="px-4 py-3 align-top font-bold text-editorial-text-primary whitespace-nowrap">
-                      {m.type === 'SALIDA_VENTA' || m.type === 'MERMA_DANO' ? '-' : '+'}{m.quantity} <span className="text-[10px] font-normal text-editorial-text-muted">{m.unit}</span>
+                      {m.type === 'SALIDA_VENTA' || m.type === 'MERMA_DANO' ? '-' : '+'}{m.quantity} <span className="text-[10px] font-normal text-editorial-text-muted">{getUnitLabel(m)}</span>
                     </td>
                     <td className="px-4 py-3 align-top font-bold text-amber-500 whitespace-nowrap">
-                      {m.newStock} <span className="text-[10px] font-normal">{m.unit}</span>
+                      {m.newStock} <span className="text-[10px] font-medium">{getUnitLabel(m)}</span>
                     </td>
                     <td className="px-4 py-3 align-top text-right text-editorial-text-muted whitespace-nowrap">
                       ${(m.unitCost || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}

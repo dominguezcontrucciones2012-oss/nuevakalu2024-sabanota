@@ -59,6 +59,7 @@ import CollectionsView from './components/contador/CollectionsView';
 import { CheckCircle2, Info, AlertTriangle, X } from 'lucide-react';
 import { onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc, fetchCollection } from './services/localApi';
 import { fetchLocalProducts, updateLocalProduct, addLocalProduct, deleteLocalProduct } from './services/productApi';
+import { getUnitLabel } from './utils';
 
 interface ToastNotification {
   id: string;
@@ -389,7 +390,7 @@ export default function App() {
             timestamp: Date.now(),
             productId: p.id,
             productName: p.name,
-            unit: 'Kg',
+            unit: (getUnitLabel(p) as any) || 'Und',
             type: 'SALIDA_VENTA',
             quantity: item.quantityKg,
             previousStock: p.stockKg,
@@ -683,22 +684,60 @@ export default function App() {
       console.error('Failed to void transaction', e);
     }
 
-    // 3. Return stock to inventory
-    items.forEach(async (item) => {
-      const p = cheeseProducts.find(p => p.id === item.id);
+    const tx = transactions.find(t => t.id === transactionId);
+    const saleItems = (items && items.length > 0) ? items : (tx?.items || []);
+
+    // 3. Return stock to inventory & register in Kardex (item por ítem de forma síncrona y segura)
+    for (const item of saleItems) {
+      const prodId = item.productId || item.id;
+      const returnQty = Number(item.quantityKg ?? item.quantity ?? item.qty ?? 0);
+      if (!prodId || returnQty <= 0) continue;
+
+      const p = cheeseProducts.find(prod => String(prod.id) === String(prodId));
       if (p) {
-        setCheeseProducts(prev => prev.map(prod => prod.id === item.id ? { ...prod, stockKg: prod.stockKg + item.quantity } : prod));
+        const previousStock = Number(p.stockKg || 0);
+        const newStock = previousStock + returnQty;
+
+        // Actualizar en el estado React
+        setCheeseProducts(prev => prev.map(prod => String(prod.id) === String(prodId) ? { ...prod, stockKg: newStock } : prod));
+
+        // Actualizar en la base de datos local
         try {
-          // Import increment if not present, but it's already used below
-          await updateLocalDoc('products', item.id, { stockKg: (cheeseProducts.find(p => p.id === item.id)?.stockKg || 0) + item.quantity });
+          await updateLocalDoc('products', String(prodId), { stockKg: newStock });
         } catch (e) {
-          console.error('Failed to return stock', e);
+          console.error(`Failed to return stock for product ${prodId}:`, e);
+        }
+
+        // Generar y persistir registro oficial en Kardex
+        const unitCost = p.wholesalePrice || p.purchasePrice || p.pricePerKg || 0;
+        const kardexMovement: KardexMovement = {
+          id: crypto.randomUUID(),
+          date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+          timestamp: Date.now(),
+          productId: p.id,
+          productName: p.name || item.productName || item.name || 'Producto',
+          unit: (getUnitLabel(p) as any) || 'Und',
+          type: 'ENTRADA_COMPRA',
+          quantity: returnQty,
+          previousStock: previousStock,
+          newStock: newStock,
+          unitCost: unitCost,
+          totalCost: returnQty * unitCost,
+          totalValue: Number(item.subtotal || item.total || (returnQty * (p.pricePerKg || p.price || 0))),
+          referenceId: tx?.invoiceNumber || transactionId,
+          notes: `Entrada por anulación de venta ${tx?.invoiceNumber ? '#' + tx.invoiceNumber : transactionId}`,
+          userOrCashier: 'Caja'
+        };
+
+        try {
+          await addLocalDoc('kardex', kardexMovement);
+        } catch (e) {
+          console.error("Error saving kardex movement for voided sale:", e);
         }
       }
-    });
+    }
 
     // 4. Update financials & vault
-    const tx = transactions.find(t => t.id === transactionId);
     if (tx) {
       setBalance(prev => prev - (tx.amount || 0));
       setTotalSalesRevenue(prev => prev - (tx.amount || 0));
@@ -719,7 +758,7 @@ export default function App() {
       const newAct: ActivityStream = {
         id: `act-void-${Date.now()}`,
         title: 'Venta Anulada',
-        detail: `Se anuló la transacción ${transactionId} por $${(tx.amount || 0).toFixed(2)}`,
+        detail: `Se anuló la transacción ${tx.invoiceNumber || transactionId} por $${(tx.amount || 0).toFixed(2)}`,
         time: 'Ahora mismo',
         location: 'Matriz Principal',
         type: 'sale',
@@ -751,7 +790,7 @@ export default function App() {
         date: new Date().toISOString(),
         productId: prod.id,
         productName: prod.name,
-        unit: prod.unit || 'Kg',
+        unit: (getUnitLabel(prod) as any) || 'Und',
         type: type,
         quantity: quantityDiff,
         previousStock: previousStock,
@@ -790,7 +829,7 @@ export default function App() {
           date: new Date().toISOString(),
           productId: prod.id,
           productName: prod.name,
-          unit: prod.unit || 'Kg',
+          unit: (getUnitLabel(prod) as any) || 'Kg',
           type: 'SALIDA_VIAJE',
           quantity: trip.dispatchedKg,
           previousStock: prod.stockKg,
@@ -1116,7 +1155,7 @@ export default function App() {
             date: new Date().toISOString(),
             productId: prod.id,
             productName: prod.name,
-            unit: prod.unit || 'Kg',
+            unit: (getUnitLabel(prod) as any) || 'Und',
             type: 'ENTRADA_COMPRA',
             quantity: itemQty,
             previousStock: currentStock,
@@ -2036,32 +2075,59 @@ export default function App() {
                     console.error(e);
                   }
 
-                  const pm = (tx.paymentMethod || '').toLowerCase();
-                  const rate = settings.exchangeRate || 42.5;
+                  const pm = (tx.paymentMethod || '').toLowerCase().trim();
+                  const rate = (tx as any).exchangeRate || (tx as any).bcvRate || settings.exchangeRate || 42.5;
+                  const isBs = (tx as any).currency === 'BS' || (tx as any).currency === 'VES';
                   
                   setSettings(prevSettings => {
                     const currentVault = prevSettings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
                     const updatedVault = { ...currentVault };
                     
                     if (tx.isIncome) {
-                       if (pm === 'efectivo' || pm === 'efectivo usd') {
+                       // 1. Efectivo USD
+                       if (pm === 'efectivo' || pm === 'efectivo usd' || pm === 'usd efectivo' || (pm.includes('efectivo') && (pm.includes('$') || pm.includes('usd') || (!pm.includes('bs') && !pm.includes('ves'))))) {
                          updatedVault.usd += (tx.amount || 0);
-                       } else if (pm === 'efectivo bs') {
-                         updatedVault.bs += ((tx.amount || 0) * rate);
-                       } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco / pago móvil') || pm.includes('banco bs') || pm.includes('bio')) {
-                         updatedVault.bankBs += ((tx.amount || 0) * rate);
-                       } else {
+                       } 
+                       // 2. Efectivo Bs
+                       else if (pm === 'efectivo bs' || pm === 'bs efectivo' || (pm.includes('efectivo') && (pm.includes('bs') || pm.includes('ves')))) {
+                         const bsAmt = isBs ? (tx.amount || 0) : ((tx.amount || 0) * rate);
+                         updatedVault.bs += bsAmt;
+                       } 
+                       // 3. Banco USD / Zelle
+                       else if (pm === 'banco usd' || pm === 'banco digital usd' || pm.includes('banco usd') || pm.includes('zelle') || (pm.includes('transfer') && (pm.includes('usd') || pm.includes('$')))) {
+                         updatedVault.bankUsd += (tx.amount || 0);
+                       } 
+                       // 4. Banco Bs / Pago Móvil / Transferencia Bs / Punto / Biopago
+                       else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco / pago móvil') || pm.includes('banco bs') || pm.includes('bio') || pm.includes('bs') || pm.includes('ves')) {
+                         const bankBsAmt = isBs ? (tx.amount || 0) : ((tx.amount || 0) * rate);
+                         updatedVault.bankBs += bankBsAmt;
+                       } 
+                       // 5. Fallback a Banco USD
+                       else {
                          updatedVault.bankUsd += (tx.amount || 0);
                        }
                     } else {
-                       if (pm === 'efectivo' || pm === 'efectivo usd') {
-                         updatedVault.usd -= (tx.amount || 0);
-                       } else if (pm === 'efectivo bs') {
-                         updatedVault.bs -= ((tx.amount || 0) * rate);
-                       } else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco / pago móvil') || pm.includes('banco bs') || pm.includes('bio')) {
-                         updatedVault.bankBs -= ((tx.amount || 0) * rate);
-                       } else {
-                         updatedVault.bankUsd -= (tx.amount || 0);
+                       // 1. Efectivo USD
+                       if (pm === 'efectivo' || pm === 'efectivo usd' || pm === 'usd efectivo' || (pm.includes('efectivo') && (pm.includes('$') || pm.includes('usd') || (!pm.includes('bs') && !pm.includes('ves'))))) {
+                         updatedVault.usd = Math.max(0, updatedVault.usd - (tx.amount || 0));
+                       } 
+                       // 2. Efectivo Bs
+                       else if (pm === 'efectivo bs' || pm === 'bs efectivo' || (pm.includes('efectivo') && (pm.includes('bs') || pm.includes('ves')))) {
+                         const bsAmt = isBs ? (tx.amount || 0) : ((tx.amount || 0) * rate);
+                         updatedVault.bs = Math.max(0, updatedVault.bs - bsAmt);
+                       } 
+                       // 3. Banco USD / Zelle
+                       else if (pm === 'banco usd' || pm === 'banco digital usd' || pm.includes('banco usd') || pm.includes('zelle') || (pm.includes('transfer') && (pm.includes('usd') || pm.includes('$')))) {
+                         updatedVault.bankUsd = Math.max(0, updatedVault.bankUsd - (tx.amount || 0));
+                       } 
+                       // 4. Banco Bs / Pago Móvil / Transferencia Bs / Punto / Biopago
+                       else if (pm.includes('movil') || pm.includes('móvil') || pm.includes('transfer') || pm.includes('punto') || pm.includes('banco / pago móvil') || pm.includes('banco bs') || pm.includes('bio') || pm.includes('bs') || pm.includes('ves')) {
+                         const bankBsAmt = isBs ? (tx.amount || 0) : ((tx.amount || 0) * rate);
+                         updatedVault.bankBs = Math.max(0, updatedVault.bankBs - bankBsAmt);
+                       } 
+                       // 5. Fallback a Banco USD
+                       else {
+                         updatedVault.bankUsd = Math.max(0, updatedVault.bankUsd - (tx.amount || 0));
                        }
                     }
                     

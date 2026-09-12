@@ -1,5 +1,5 @@
 import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { extractInvoiceData, extractDictationData, pingGeminiAPI, normalizeTextForMatching } from '../../services/ocrService';
 import { INITIAL_CHEESE_PRODUCTS } from '../../data';
 import { Save, ArrowLeft, Search, Package, Trash2, Camera, Image as ImageIcon, Mic, Loader2, Snowflake, Flame, CheckSquare, Square, FileText, Receipt, AlertCircle, Sparkles, CheckCircle2, Wifi, WifiOff, X, RefreshCw, FolderOpen } from 'lucide-react';
@@ -399,9 +399,18 @@ export default function InvoiceUploadView({
     }
   };
 
-  const createInvoiceItem = (productId: string, name: string, qty: number, cost: number): InvoiceItem => {
-    const validQty = Math.max(1, Number(qty) || 1);
-    const validCost = Math.max(0, Number(cost) || 0);
+  // Helper seguro para parsing numérico con soporte coma/punto
+  const parseSafeNumber = (val: any, fallback: number = 0): number => {
+    if (val === null || val === undefined) return fallback;
+    if (typeof val === 'number') return isNaN(val) ? fallback : val;
+    const str = String(val).trim().replace(',', '.');
+    const parsed = parseFloat(str);
+    return isNaN(parsed) ? fallback : parsed;
+  };
+
+  const createInvoiceItem = (productId: string, name: string, qty: any, cost: any): InvoiceItem => {
+    const validQty = Math.max(1, parseSafeNumber(qty, 1));
+    const validCost = Math.max(0, parseSafeNumber(cost, 0));
     const finalQty = unitType === 'bulto' ? validQty * (Number(unitsPerBulto) || 1) : validQty;
     const defaultMargin = 30; // 30% por defecto
     const sale = validCost * (1 + (defaultMargin / 100));
@@ -433,33 +442,40 @@ export default function InvoiceUploadView({
     setItems(prev => prev.map(item => {
       if (item.id !== id) return item;
       
-      let updated = { ...item, [field]: value };
+      let updated = { ...item };
       
-      const currentCost = Number(field === 'costPrice' ? value : updated.costPrice) || 0;
-      const currentQty = Number(field === 'quantity' ? value : updated.quantity) || 0;
-      const currentMargin = Number(field === 'marginPercent' ? value : updated.marginPercent) || 0;
-      const currentSale = Number(field === 'salePrice' ? value : updated.salePrice) || 0;
+      if (field === 'name') {
+        updated.name = String(value);
+        return updated;
+      }
 
-      // Lógica de cálculo en cadena y sincronización de subtotal
+      const safeVal = parseSafeNumber(value, 0);
+
+      const currentCost = field === 'costPrice' ? safeVal : (parseSafeNumber(item.costPrice, 0));
+      const currentQty = field === 'quantity' ? safeVal : (parseSafeNumber(item.quantity, 0));
+      const currentMargin = field === 'marginPercent' ? safeVal : (parseSafeNumber(item.marginPercent, 0));
+      const currentSale = field === 'salePrice' ? safeVal : (parseSafeNumber(item.salePrice, 0));
+
+      // Lógica de cálculo en cadena y sincronización inmediata de subtotal
       if (field === 'costPrice') {
-        updated.costPrice = currentCost;
+        updated.costPrice = safeVal;
         updated.salePrice = parseFloat((currentCost * (1 + (currentMargin / 100))).toFixed(2));
         updated.subtotal = parseFloat((currentCost * currentQty).toFixed(2));
       } else if (field === 'marginPercent') {
-        updated.marginPercent = currentMargin;
+        updated.marginPercent = safeVal;
         updated.salePrice = parseFloat((currentCost * (1 + (currentMargin / 100))).toFixed(2));
         updated.subtotal = parseFloat((currentCost * currentQty).toFixed(2));
       } else if (field === 'salePrice') {
-        updated.salePrice = currentSale;
+        updated.salePrice = safeVal;
         updated.marginPercent = currentCost > 0 
           ? parseFloat((((currentSale - currentCost) / currentCost) * 100).toFixed(1))
           : 100;
         updated.subtotal = parseFloat((currentCost * currentQty).toFixed(2));
       } else if (field === 'quantity') {
-        updated.quantity = currentQty;
+        updated.quantity = safeVal;
         updated.subtotal = parseFloat((currentCost * currentQty).toFixed(2));
-      } else if (field === 'name') {
-        updated.name = value;
+      } else {
+        (updated as any)[field] = value;
       }
       
       return updated;
@@ -761,10 +777,42 @@ export default function InvoiceUploadView({
     try {
       // 1. Fondear la Bóveda Central (Si hay onAddTransaction prop)
       if (onAddTransaction) {
-        if (vaultUsd > 0) onAddTransaction({ category: 'ventas', amount: vaultUsd, isIncome: true, notes: `Retorno Viaje #${settlingTrip.tripNumber} (Efectivo USD)`, paymentMethod: 'Efectivo' });
-        if (vaultBs > 0) onAddTransaction({ category: 'ventas', amount: vaultBs / bcvRate, isIncome: true, notes: `Retorno Viaje #${settlingTrip.tripNumber} (Efectivo Bs: ${vaultBs})`, paymentMethod: 'Efectivo' });
-        if (vaultBankBs > 0) onAddTransaction({ category: 'ventas', amount: vaultBankBs / bcvRate, isIncome: true, notes: `Retorno Viaje #${settlingTrip.tripNumber} (Banco Bs: ${vaultBankBs})`, paymentMethod: 'Transferencia' });
-        if (vaultBankUsd > 0) onAddTransaction({ category: 'ventas', amount: vaultBankUsd, isIncome: true, notes: `Retorno Viaje #${settlingTrip.tripNumber} (Banco USD)`, paymentMethod: 'Transferencia' });
+        if (vaultUsd > 0) {
+          onAddTransaction({
+            category: 'ventas',
+            amount: vaultUsd,
+            isIncome: true,
+            notes: `Retorno Viaje #${settlingTrip.tripNumber} (Efectivo USD $${vaultUsd.toFixed(2)})`,
+            paymentMethod: 'Efectivo USD'
+          });
+        }
+        if (vaultBs > 0) {
+          onAddTransaction({
+            category: 'ventas',
+            amount: vaultBs / bcvRate,
+            isIncome: true,
+            notes: `Retorno Viaje #${settlingTrip.tripNumber} (Efectivo Bs. ${vaultBs.toLocaleString('es-VE')})`,
+            paymentMethod: 'Efectivo BS'
+          });
+        }
+        if (vaultBankBs > 0) {
+          onAddTransaction({
+            category: 'ventas',
+            amount: vaultBankBs / bcvRate,
+            isIncome: true,
+            notes: `Retorno Viaje #${settlingTrip.tripNumber} (Banco / Pago Móvil Bs. ${vaultBankBs.toLocaleString('es-VE')})`,
+            paymentMethod: 'Banco / Pago Móvil'
+          });
+        }
+        if (vaultBankUsd > 0) {
+          onAddTransaction({
+            category: 'ventas',
+            amount: vaultBankUsd,
+            isIncome: true,
+            notes: `Retorno Viaje #${settlingTrip.tripNumber} (Banco USD $${vaultBankUsd.toFixed(2)})`,
+            paymentMethod: 'Banco USD'
+          });
+        }
       }
 
       // 2. Amortizar en el viaje
@@ -831,7 +879,15 @@ export default function InvoiceUploadView({
     }
   };
 
-  const grandTotal = items.reduce((sum, i) => sum + (Number(i.subtotal) || (Number(i.costPrice || 0) * Number(i.quantity || 0))), 0);
+  const grandTotal = useMemo(() => {
+    return items.reduce((sum, i: any) => {
+      const cost = Number(i.costPrice ?? i.purchasePrice ?? i.unitCost ?? i.cost ?? 0) || 0;
+      const qty = Number(i.quantity ?? i.quantityKg ?? i.qty ?? 1) || 1;
+      const sub = Number(i.subtotal);
+      const validSub = !isNaN(sub) && sub > 0 ? sub : (cost * qty);
+      return sum + (!isNaN(validSub) ? validSub : 0);
+    }, 0);
+  }, [items]);
 
   return (
     <div className="flex flex-col h-full bg-zinc-950 animate-fade-in font-sans">
@@ -1127,33 +1183,37 @@ export default function InvoiceUploadView({
                       </div>
                       <div className="col-span-2 flex justify-center">
                         <input 
-                          type="number" 
+                          type="text" 
+                          inputMode="decimal"
                           value={item.quantity} 
-                          onChange={(e) => updateItem(item.id, 'quantity', Number(e.target.value))}
+                          onChange={(e) => updateItem(item.id, 'quantity', e.target.value)}
                           className="w-20 bg-zinc-950 border border-zinc-700 text-center text-sm font-mono text-zinc-100 rounded px-2 py-1 focus:outline-none focus:border-brand-accent"
                         />
                       </div>
                       <div className="col-span-2 flex justify-end">
                         <input 
-                          type="number" 
+                          type="text" 
+                          inputMode="decimal"
                           value={item.costPrice} 
-                          onChange={(e) => updateItem(item.id, 'costPrice', Number(e.target.value))}
+                          onChange={(e) => updateItem(item.id, 'costPrice', e.target.value)}
                           className="w-24 bg-zinc-950 border border-zinc-700 text-right text-sm font-mono text-rose-400 rounded px-2 py-1 focus:outline-none focus:border-rose-500"
                         />
                       </div>
                       <div className="col-span-1 flex justify-center">
                         <input 
-                          type="number" 
+                          type="text" 
+                          inputMode="decimal"
                           value={item.marginPercent} 
-                          onChange={(e) => updateItem(item.id, 'marginPercent', Number(e.target.value))}
+                          onChange={(e) => updateItem(item.id, 'marginPercent', e.target.value)}
                           className="w-14 bg-zinc-950 border border-zinc-700 text-center text-sm font-mono text-emerald-400 rounded px-1 py-1 focus:outline-none focus:border-emerald-500"
                         />
                       </div>
                       <div className="col-span-2 flex justify-end">
                         <input 
-                          type="number" 
+                          type="text" 
+                          inputMode="decimal"
                           value={item.salePrice} 
-                          onChange={(e) => updateItem(item.id, 'salePrice', Number(e.target.value))}
+                          onChange={(e) => updateItem(item.id, 'salePrice', e.target.value)}
                           className="w-24 bg-zinc-950 border border-zinc-700 text-right text-sm font-mono text-emerald-400 rounded px-2 py-1 focus:outline-none focus:border-emerald-500"
                         />
                       </div>

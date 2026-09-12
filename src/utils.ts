@@ -1,17 +1,18 @@
 export const getUnitLabel = (product: any): string => {
-  const rawUnit = typeof product === 'string' ? product : (product?.unit || '');
+  if (!product) return 'Und';
+  const rawUnit = typeof product === 'string' ? product : (product?.unit || product?.unidad || '');
   if (typeof rawUnit === 'string' && rawUnit.trim() !== '') {
     const u = rawUnit.trim().toLowerCase();
-    if (u === 'i' || u === 'item' || u === 'items' || u === 'und' || u === 'unidad' || u === 'unidades' || u === 'y' || u === 'u' || u === 'un') {
+    if (u === 'i' || u === 'item' || u === 'items' || u === 'und' || u === 'unidad' || u === 'unidades' || u === 'y' || u === 'u' || u === 'un' || u === 'ud' || u === 'uds' || u === 'pieza' || u === 'piezas' || u === 'pza' || u === 'pzas') {
       return 'Und';
     }
-    if (u === 'kg' || u === 'kilo' || u === 'kilos' || u === 'kilogramo' || u === 'k') {
+    if (u === 'kg' || u === 'kilo' || u === 'kilos' || u === 'kilogramo' || u === 'kilogramos' || u === 'k') {
       return 'Kg';
     }
-    if (u === 'lt' || u === 'litro' || u === 'litros' || u === 'l') {
+    if (u === 'lt' || u === 'lts' || u === 'litro' || u === 'litros' || u === 'l') {
       return 'Lt';
     }
-    if (u === 'bto' || u === 'bulto' || u === 'bultos' || u === 'b') {
+    if (u === 'bto' || u === 'btos' || u === 'bulto' || u === 'bultos' || u === 'b') {
       return 'Bto';
     }
     // Si la unidad guardada es válida estándar
@@ -20,7 +21,7 @@ export const getUnitLabel = (product: any): string => {
     }
   }
 
-  const name = (product?.name || '').toLowerCase();
+  const name = (product?.name || product?.productName || '').toLowerCase();
   const cat = (product?.category || '').toLowerCase();
 
   // Queso, lácteos y productos pesables por kilo
@@ -33,6 +34,7 @@ export const getUnitLabel = (product: any): string => {
     name.includes('por kilo') ||
     name.includes('por kg') ||
     name.includes('granel') ||
+    name.includes('pesable') ||
     name === 'papa' ||
     name === 'cebolla' ||
     name === 'tomate fresco' ||
