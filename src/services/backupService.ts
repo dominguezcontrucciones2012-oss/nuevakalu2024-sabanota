@@ -1,64 +1,138 @@
 import { fetchCollection } from './localApi';
 
-const OPERATIONAL_COLLECTIONS = ['products', 'clients', 'suppliers', 'transactions', 'kardex'];
+const isProd = import.meta.env.PROD;
+const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+const BACKUP_API_URL = isProd ? `/api` : `http://${hostname}:3001/api`;
+
+export const OPERATIONAL_COLLECTIONS = [
+  'products',
+  'clients',
+  'suppliers',
+  'transactions',
+  'kardex',
+  'adminLedger',
+  'cheeseTrips',
+  'settings',
+  'cashClosings',
+  'bills',
+  'installments',
+  'invoices',
+  'users',
+  'daily_drafts',
+  'shift_transactions',
+  'shift_sessions',
+  'sales',
+  'expenses',
+  'payments',
+  'mobileOrders',
+  'business_debts',
+  'photo_album',
+  'voice_notes',
+  'vehicle_trips',
+  'purchases',
+  'pwa_payments'
+];
 
 export interface BackupData {
+  version?: string;
   timestamp: string;
+  company?: string;
   collections: {
     [collectionName: string]: any[];
   };
 }
 
 export async function fetchOperationalData(): Promise<BackupData> {
+  // Intentar obtener respaldo completo atómico del backend
+  try {
+    const res = await fetch(`${BACKUP_API_URL}/full-backup`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.collections) {
+        return data;
+      }
+    }
+  } catch (e) {
+    console.warn('Endpoint /api/full-backup no disponible, usando fallback por colección:', e);
+  }
+
+  // Fallback: consultar colección por colección
   const data: BackupData = {
+    version: '2.0',
     timestamp: new Date().toISOString(),
+    company: 'Mundo Kalu Sabanota',
     collections: {}
   };
 
   for (const colName of OPERATIONAL_COLLECTIONS) {
-    const colData = await fetchCollection(colName);
-    data.collections[colName] = colData;
+    try {
+      const colData = await fetchCollection(colName);
+      data.collections[colName] = Array.isArray(colData) ? colData : [];
+    } catch (err) {
+      console.warn(`Error leyendo colección ${colName} para respaldo:`, err);
+      data.collections[colName] = [];
+    }
   }
 
   return data;
 }
 
-export async function restoreFromData(data: BackupData): Promise<void> {
-  throw new Error('Restore not supported in local mode directly yet. Please replace the .json files manually.');
+export async function restoreFromData(data: BackupData): Promise<any> {
+  if (!data || !data.collections || typeof data.collections !== 'object') {
+    throw new Error('Formato de respaldo inválido: No se encontraron colecciones para restaurar.');
+  }
+
+  // Enviar al endpoint seguro de restauración en caliente del backend
+  const res = await fetch(`${BACKUP_API_URL}/restore-backup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Error en el servidor al restaurar: ${errText}`);
+  }
+
+  return await res.json();
 }
 
 export async function createSnapshot(): Promise<void> {
-  throw new Error('Snapshots not supported in local mode.');
+  // Snapshot local / exportación directa
+  await exportToJson();
 }
 
 export async function restoreSnapshot(): Promise<void> {
-  throw new Error('Snapshots not supported in local mode.');
+  throw new Error('Por favor utilice el botón "Importar Datos desde JSON Local" para seleccionar el archivo de respaldo.');
 }
 
 export async function exportToJson(): Promise<void> {
   const data = await fetchOperationalData();
+  const dateStr = new Date().toISOString().replace(/:/g, '-').split('.')[0];
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   
   const a = document.createElement('a');
   a.href = url;
-  a.download = `kalu_respaldo_${new Date().toISOString().split('T')[0]}.json`;
+  a.download = `kalu_copia_seguridad_${dateStr}.json`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
 
-export async function importFromJson(file: File): Promise<void> {
+export async function importFromJson(file: File): Promise<any> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
         const content = e.target?.result as string;
         const data: BackupData = JSON.parse(content);
-        if (!data.collections) throw new Error('Archivo JSON inválido.');
-        await restoreFromData(data);
-        resolve();
+        if (!data.collections || typeof data.collections !== 'object') {
+          throw new Error('Archivo JSON inválido: no contiene el bloque de colecciones.');
+        }
+        const result = await restoreFromData(data);
+        resolve(result);
       } catch (err) {
         reject(err);
       }

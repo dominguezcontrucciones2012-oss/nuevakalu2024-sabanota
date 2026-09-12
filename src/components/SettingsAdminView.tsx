@@ -67,10 +67,17 @@ export default function SettingsAdminView({
   // Backup States
   const [backupStep, setBackupStep] = useState<'idle' | 'running' | 'completed'>('idle');
   const [backupLogs, setBackupLogs] = useState<string[]>([]);
-  const [backupsHistory, setBackupsHistory] = useState<any[]>([
-    { id: 'BKP-0921', date: '01 Jul 2026', file: 'kalu_respaldo_mensual_julio.zip', size: '2.4 MB', status: 'Verificado' },
-    { id: 'BKP-0845', date: '08 Jul 2026', file: 'kalu_respaldo_semanal_08.zip', size: '1.8 MB', status: 'Verificado' }
-  ]);
+  const [backupsHistory, setBackupsHistory] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('kalu_backups_history');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      // ignore
+    }
+    return [
+      { id: 'BKP-0921', date: '01 Jul 2026', file: 'kalu_copia_seguridad_completa.json', size: 'Total (26 Col)', status: 'Verificado' }
+    ];
+  });
 
   // Maintenance States
   const [maintLogs, setMaintLogs] = useState<string[]>([]);
@@ -97,6 +104,10 @@ export default function SettingsAdminView({
   const [uploadPercent, setUploadPercent] = useState(0);
   const [activeUploadTask, setActiveUploadTask] = useState<any>(null);
 
+  // Currency configuration states
+  const [isAddingCurrency, setIsAddingCurrency] = useState(false);
+  const [newCurrency, setNewCurrency] = useState({ code: '', name: '', symbol: '', rateToUsd: 1, isDefault: false });
+
   useEffect(() => {
     // Cargar turnos locales al abrir la pestaña
     if (activeSubTab === 'maintenance') {
@@ -114,7 +125,6 @@ export default function SettingsAdminView({
 
   const handleCreateShift = () => {
     setShowShiftModal(true);
-    setNewShiftName('');
   };
 
   const confirmCreateShift = async () => {
@@ -180,24 +190,21 @@ export default function SettingsAdminView({
     setLocalShifts(await loadShifts());
   };
 
-  const handlePublishShift = async (shift: Shift) => {
+  const handleStartPublishShift = (shift: Shift) => {
     if (shift.items.length === 0) {
-      return onAddNotification('El turno está vacío. Agregue archivos.', 'warning');
+      return onAddNotification('El turno debe tener al menos un video o imagen.', 'warning');
     }
+    setConfirmPublishShift(shift);
+  };
 
+  const executePublishShift = async () => {
+    if (!confirmPublishShift) return;
+    const shift = confirmPublishShift;
+    setConfirmPublishShift(null);
     setIsPublishingShift(true);
-    setUploadStatus('Preparando limpieza de nube...');
-    setUploadPercent(0);
     try {
-      setMaintLogs(prev => [...prev, `[Banners] Iniciando publicación del turno: ${shift.name}`]);
-      
-      const timeoutPromise = (ms: number, msg: string) => 
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(msg)), ms));
-
-      // 1. Delete existing cloud banners from Firestore and Storage
       setMaintLogs(prev => [...prev, `[Banners] Purgando banners anteriores de la nube en paralelo...`]);
-      const res = await fetchCollection('banners');
-      const currentSnap = await res.json();
+      const currentSnap = await fetchCollection('banners');
       
       const deletePromises = currentSnap.map(async (d: any) => {
         if (d.storagePath && !d.storagePath.startsWith('/uploads')) {
@@ -455,13 +462,15 @@ export default function SettingsAdminView({
     setBackupLogs([]);
     
     const logs = [
-      'Preparando exportación segura de datos operacionales...',
-      'Leyendo catálogos, mermas, clientes y proveedores...',
-      'Serializando JSON y preparando archivo de descarga...'
+      'Extrayendo catálogo de productos e inventario...',
+      'Leyendo directorio de clientes y cuentas por cobrar...',
+      'Extrayendo productores y liquidaciones contables...',
+      'Empaquetando libro mayor, balances y configuraciones...',
+      'Generando archivo de respaldo JSON descargable...'
     ];
 
     logs.forEach((log, index) => {
-      setTimeout(() => setBackupLogs(prev => [...prev, log]), (index + 1) * 350);
+      setTimeout(() => setBackupLogs(prev => [...prev, log]), (index + 1) * 250);
     });
 
     try {
@@ -469,17 +478,25 @@ export default function SettingsAdminView({
       
       setTimeout(() => {
         setBackupStep('completed');
+        const now = new Date();
+        const dateStr = now.toISOString().replace(/:/g, '-').split('.')[0];
         const newBkp = {
           id: `BKP-${Date.now()}`,
-          date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-        timestamp: new Date().toISOString(),
-          file: `kalu_respaldo_${new Date().toISOString().split('T')[0]}.json`,
-          size: '---',
+          date: now.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+          timestamp: now.toISOString(),
+          file: `kalu_copia_seguridad_${dateStr}.json`,
+          size: 'Total (26 Colecciones)',
           status: 'Descargado Localmente'
         };
-        setBackupsHistory(prev => [newBkp, ...prev]);
+        setBackupsHistory(prev => {
+          const next = [newBkp, ...prev];
+          try {
+            localStorage.setItem('kalu_backups_history', JSON.stringify(next));
+          } catch (e) {}
+          return next;
+        });
         onAddNotification('Copia de seguridad local generada y descargada.', 'success');
-      }, logs.length * 350 + 500);
+      }, logs.length * 250 + 300);
     } catch (err: any) {
       setBackupStep('idle');
       onAddNotification('Error generando el respaldo: ' + err.message, 'warning');
@@ -490,7 +507,7 @@ export default function SettingsAdminView({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const confirmRest = window.confirm('ATENCIÓN: Esto borrará los datos actuales y restaurará los del archivo. ¿Continuar?');
+    const confirmRest = window.confirm('⚠️ ATENCIÓN: Esta acción restaurará la base de datos completa con la copia de seguridad seleccionada.\n\n¿Desea continuar con la restauración?');
     if (!confirmRest) {
       e.target.value = '';
       return;
@@ -499,7 +516,7 @@ export default function SettingsAdminView({
     try {
       onAddNotification('Iniciando restauración desde JSON... No cierre la página.', 'info');
       await importFromJson(file);
-      onAddNotification('Restauración completada. Los datos se sincronizarán en breve.', 'success');
+      onAddNotification('Restauración completada con éxito. Los datos se han actualizado.', 'success');
     } catch (err: any) {
       onAddNotification('Error restaurando el archivo JSON: ' + err.message, 'warning');
     }
@@ -998,6 +1015,7 @@ export default function SettingsAdminView({
                       <td className="py-2.5 text-right">{b.size}</td>
                       <td className="py-2.5 text-center">
                         <button
+                          onClick={exportToJson}
                           title="Descargar Respaldo"
                           className="p-1 border border-editorial-border hover:border-amber-500 hover:text-amber-500 rounded bg-editorial-bg transition-all cursor-pointer inline-flex items-center"
                         >
@@ -1322,7 +1340,7 @@ export default function SettingsAdminView({
                 Cancelar
               </button>
               <button 
-                onClick={() => handlePublishShift(confirmPublishShift)}
+                onClick={executePublishShift}
                 disabled={isPublishingShift}
                 className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase rounded transition-colors shadow-lg disabled:opacity-50"
               >

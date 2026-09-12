@@ -839,6 +839,92 @@ app.delete('/api/collections/:name/:id', (req, res) => {
   }
 });
 
+// --- SISTEMA DE COPIAS DE SEGURIDAD TOTAL (BACKUP & RESTORE) ---
+const BACKUP_COLLECTIONS = [
+  'products',
+  'clients',
+  'suppliers',
+  'transactions',
+  'kardex',
+  'adminLedger',
+  'cheeseTrips',
+  'settings',
+  'cashClosings',
+  'bills',
+  'installments',
+  'invoices',
+  'users',
+  'daily_drafts',
+  'shift_transactions',
+  'shift_sessions',
+  'sales',
+  'expenses',
+  'payments',
+  'mobileOrders',
+  'business_debts',
+  'photo_album',
+  'voice_notes',
+  'vehicle_trips',
+  'purchases',
+  'pwa_payments'
+];
+
+// Obtener respaldo completo de todas las colecciones existentes en JSON
+app.get('/api/full-backup', (req, res) => {
+  try {
+    const backup = {
+      version: '2.0',
+      timestamp: new Date().toISOString(),
+      company: 'Mundo Kalu Sabanota',
+      collections: {}
+    };
+
+    for (const colName of BACKUP_COLLECTIONS) {
+      backup.collections[colName] = readCollection(colName);
+    }
+
+    res.json(backup);
+  } catch (error) {
+    console.error('Error generando copia de seguridad completa:', error);
+    res.status(500).json({ error: 'Error generando backup completo', details: error.message });
+  }
+});
+
+// Restaurar copia de seguridad completa atómicamente
+app.post('/api/restore-backup', (req, res) => {
+  try {
+    const { collections } = req.body;
+    if (!collections || typeof collections !== 'object') {
+      return res.status(400).json({ error: 'Formato de respaldo inválido: falta el objeto "collections"' });
+    }
+
+    const restoredSummary = {};
+    for (const [colName, docs] of Object.entries(collections)) {
+      if (Array.isArray(docs)) {
+        writeCollection(colName, docs);
+        restoredSummary[colName] = docs.length;
+      }
+    }
+
+    console.log('[Sistema Kalu] ✅ Restauración completa de base de datos realizada con éxito:', restoredSummary);
+    io.emit('database_restored', { timestamp: new Date().toISOString(), summary: restoredSummary });
+    
+    // Emitir eventos para que todas las vistas reactivas se actualicen
+    for (const colName of Object.keys(collections)) {
+      io.emit('collection_updated', colName);
+    }
+
+    res.json({
+      success: true,
+      message: 'Base de datos restaurada correctamente',
+      summary: restoredSummary
+    });
+  } catch (error) {
+    console.error('Error restaurando copia de seguridad:', error);
+    res.status(500).json({ error: 'Error restaurando respaldo', details: error.message });
+  }
+});
+
 // --- SERVICIOS AUXILIARES DE COMUNICACIÓN (WHATSAPP & CORREO) ---
 
 async function sendWhatsAppNotification({ phone, name, message }) {
