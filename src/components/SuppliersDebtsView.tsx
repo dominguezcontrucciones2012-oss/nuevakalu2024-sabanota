@@ -91,17 +91,33 @@ export const calculateDynamicBalances = (s: SupplierProfile, txList: Transaction
     } else {
       // PRODUCTORES Y PROVEEDORES
       asc.forEach(tx => {
-        const isStoreDebt = (tx.category === 'credito' && !tx.isIncome) || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda'));
-        const isDelivery = (tx.category === 'compras' && tx.isIncome) || (tx.notes && (tx.notes.toLowerCase().includes('recibido') || tx.notes.toLowerCase().includes('arrime') || tx.notes.toLowerCase().includes('entrega')));
+        const notesLower = (tx.notes || '').toLowerCase();
+        const pmLower = (tx.paymentMethod || '').toLowerCase();
         
+        const isDelivery = (tx.category === 'compras' && tx.isIncome) || 
+          notesLower.includes('recibido') || 
+          notesLower.includes('arrime') || 
+          notesLower.includes('entrega') ||
+          notesLower.includes('compra de queso');
+
+        const isStoreDebt = tx.category === 'ventas' ||
+          (tx.category === 'credito' && !tx.isIncome) ||
+          notesLower.includes('fiado') ||
+          notesLower.includes('consumo de tienda') ||
+          notesLower.includes('libreta') ||
+          pmLower.includes('tienda') ||
+          pmLower.includes('libreta') ||
+          pmLower.includes('pos');
+
         if (isDelivery) {
-          running += (Number(tx.amount) || 0); // (+) Entrega / Arrime de queso
+          running += (Number(tx.amount) || 0); // (+) Entrega / Arrime de queso (a favor del productor)
         } else if (isStoreDebt) {
-          running -= (Number(tx.amount) || 0); // (-) Consumo / Fiado de tienda
+          const debtAmt = Number(tx.debtAmount) > 0 ? Number(tx.debtAmount) : (Number(tx.amount) || 0);
+          running -= debtAmt; // (-) Consumo / Fiado de tienda (deuda a cobrar del productor)
         } else if (tx.isIncome) {
           running += (Number(tx.amount) || 0);
         } else {
-          running -= (Number(tx.amount) || 0); // (-) Pagos, liquidaciones, adelantos
+          running -= (Number(tx.amount) || 0); // (-) Pagos, liquidaciones, adelantos hechos al productor
         }
       });
     }
@@ -900,14 +916,29 @@ export default function SuppliersDebtsView({
                       currentBalance -= rest;
                     }
                   } else {
-                    const isStoreDebt = (tx.category === 'credito' && !tx.isIncome) || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda'));
-                    const isDelivery = (tx.category === 'compras' && tx.isIncome) || (tx.notes && (tx.notes.toLowerCase().includes('recibido') || tx.notes.toLowerCase().includes('arrime') || tx.notes.toLowerCase().includes('entrega')));
+                    const notesLower = (tx.notes || '').toLowerCase();
+                    const pmLower = (tx.paymentMethod || '').toLowerCase();
+
+                    const isDelivery = (tx.category === 'compras' && tx.isIncome) || 
+                      notesLower.includes('recibido') || 
+                      notesLower.includes('arrime') || 
+                      notesLower.includes('entrega') ||
+                      notesLower.includes('compra de queso');
+
+                    const isStoreDebt = tx.category === 'ventas' ||
+                      (tx.category === 'credito' && !tx.isIncome) ||
+                      notesLower.includes('fiado') ||
+                      notesLower.includes('consumo de tienda') ||
+                      notesLower.includes('libreta') ||
+                      pmLower.includes('tienda') ||
+                      pmLower.includes('libreta') ||
+                      pmLower.includes('pos');
 
                     if (isDelivery) {
                       sum = Number(tx.amount) || 0;
                       currentBalance += sum;
                     } else if (isStoreDebt) {
-                      rest = Number(tx.amount) || 0;
+                      rest = Number(tx.debtAmount) > 0 ? Number(tx.debtAmount) : (Number(tx.amount) || 0);
                       currentBalance -= rest;
                     } else if (tx.isIncome) {
                       sum = Number(tx.amount) || 0;
@@ -948,9 +979,9 @@ export default function SuppliersDebtsView({
                       <div className="flex items-center gap-4">
                         <div className="bg-neutral-800/80 px-4 py-2 rounded border border-neutral-700/50 text-right">
                           <span className="text-[10px] font-mono uppercase text-neutral-400 block leading-none mb-1">
-                            {s.isEmployee ? 'Saldo Acumulado a Favor' : 'Saldo Neto Disponible'}
+                            {s.isEmployee ? 'Saldo Acumulado a Favor' : (workerFinalBalance < 0 ? 'Deuda a Cobrar (En Contra)' : 'Saldo Neto Disponible')}
                           </span>
-                          <span className="font-mono font-bold text-sm text-amber-500">
+                          <span className={`font-mono font-bold text-sm ${workerFinalBalance < 0 ? 'text-rose-400' : 'text-amber-500'}`}>
                             $ {workerFinalBalance.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
                           </span>
                           <span className="block text-[9px] font-mono text-neutral-500 mt-0.5">
@@ -1011,14 +1042,17 @@ export default function SuppliersDebtsView({
                                let catLabel: string = tx.category;
                                let badgeClasses = "inline-block px-2 py-1 rounded bg-neutral-800 border border-neutral-700 text-[10px] font-mono uppercase text-neutral-300";
                                
+                               const notesLower = (tx.notes || '').toLowerCase();
+                               const pmLower = (tx.paymentMethod || '').toLowerCase();
+
                                if (s.isEmployee) {
-                                 if ((tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'))) {
+                                 if (notesLower.includes('liquidaci') || notesLower.includes('finalizado') || notesLower.includes('cierre') || pmLower.includes('cierre')) {
                                    catLabel = 'Liquidación';
                                    badgeClasses = "inline-block px-2 py-1 rounded bg-purple-500/20 border border-purple-500/30 text-[10px] font-mono uppercase text-purple-400 font-bold tracking-wider";
-                                 } else if (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))) {
+                                 } else if (notesLower.includes('nómina') || notesLower.includes('sueldo')) {
                                    catLabel = 'Nómina';
                                    badgeClasses = "inline-block px-2 py-1 rounded bg-amber-500/20 border border-amber-500/30 text-[10px] font-mono uppercase text-amber-400 font-bold tracking-wider";
-                                 } else if (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda'))) {
+                                 } else if (tx.category === 'credito' || notesLower.includes('fiado') || pmLower.includes('tienda')) {
                                    catLabel = 'Bodega/Víveres';
                                    badgeClasses = "inline-block px-2 py-1 rounded bg-rose-500/20 border border-rose-500/30 text-[10px] font-mono uppercase text-rose-400 font-bold tracking-wider";
                                  } else if (tx.category === 'gastos' || tx.category === 'compras') {
@@ -1026,12 +1060,27 @@ export default function SuppliersDebtsView({
                                    badgeClasses = "inline-block px-2 py-1 rounded bg-blue-500/20 border border-blue-500/30 text-[10px] font-mono uppercase text-blue-400 font-bold tracking-wider";
                                  }
                                } else {
-                                 if (tx.category === 'compras' && tx.isIncome) {
+                                 const isDelivery = (tx.category === 'compras' && tx.isIncome) || 
+                                   notesLower.includes('recibido') || 
+                                   notesLower.includes('arrime') || 
+                                   notesLower.includes('entrega') ||
+                                   notesLower.includes('compra de queso');
+
+                                 const isStoreDebt = tx.category === 'ventas' ||
+                                   (tx.category === 'credito' && !tx.isIncome) ||
+                                   notesLower.includes('fiado') ||
+                                   notesLower.includes('consumo de tienda') ||
+                                   notesLower.includes('libreta') ||
+                                   pmLower.includes('tienda') ||
+                                   pmLower.includes('libreta') ||
+                                   pmLower.includes('pos');
+
+                                 if (isDelivery) {
                                    catLabel = 'Entrega';
                                    badgeClasses = "inline-block px-2 py-1 rounded bg-yellow-500/20 border border-yellow-500/30 text-[10px] font-mono uppercase text-yellow-500 font-bold tracking-wider";
-                                 } else if (tx.category === 'credito' && !tx.isIncome) {
-                                   catLabel = 'COMPRA_POS';
-                                   badgeClasses = "inline-block px-2 py-1 rounded bg-neutral-700/50 border border-neutral-600/50 text-[10px] font-mono uppercase text-neutral-400 tracking-wider";
+                                 } else if (isStoreDebt) {
+                                   catLabel = 'Consumo Tienda / POS';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-rose-500/20 border border-rose-500/30 text-[10px] font-mono uppercase text-rose-400 font-bold tracking-wider";
                                  } else if (tx.category === 'compras' && !tx.isIncome) {
                                    catLabel = 'Pago';
                                    badgeClasses = "inline-block px-2 py-1 rounded bg-blue-500/20 border border-blue-500/30 text-[10px] font-mono uppercase text-blue-500 font-bold tracking-wider";
