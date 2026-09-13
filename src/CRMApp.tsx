@@ -444,10 +444,19 @@ export default function App() {
     const salePayload = {
       saleItems,
       clientId,
+      customerName,
       supplierId,
       paidAmount: amountPaid,
       saleTotalAmount: saleTotal,
       debtAmount,
+      addedPayments: addedPayments || [],
+      paymentMethodType: finalPaymentMethod,
+      changeAmount: changeAmount || 0,
+      changeCurrency: changeCurrency || 'USD',
+      changeReference: changeReference || '',
+      mixedChange: mixedChange || null,
+      changeBs: changeBs || 0,
+      bcvRateAtSettlement: bcvRateAtSettlement || settings.exchangeRate || 42.50,
       transaction: newTx,
       updatedVaultBalance: updatedVault
     };
