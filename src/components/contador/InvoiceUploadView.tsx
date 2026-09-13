@@ -718,6 +718,30 @@ export default function InvoiceUploadView({
         }
       }
 
+      // 4.1 Asiento Automático en Ficha Administradora (adminLedger) por Compra de Mercancía / Gasto de Factura
+      try {
+        const adminPurchaseEntry = {
+          id: `LEDGER-INV-${Date.now()}`,
+          date: new Date().toISOString(),
+          timestamp: Date.now(),
+          adminName: settlingTrip?.driverOrResponsible || 'Daisy Corro',
+          type: 'GASTO_MULTICANAL',
+          concept: `Compra de Inventario / Factura: ${effectiveSupplierName} (${items.length} productos)${settlingTrip ? ` • Gira #${settlingTrip.tripNumber}` : ''}`,
+          category: settlingTrip ? 'Gira San Juan' : 'Caja Chica',
+          amountUsd: totalInvoiceCost,
+          amountBs: 0,
+          exchangeRateAtDate: bcvRate || 45.0,
+          debitUsd: 0,
+          creditUsd: totalInvoiceCost,
+          balanceAfterUsd: 0,
+          status: 'conciliado',
+          createdAt: new Date().toISOString()
+        };
+        await addLocalDoc('adminLedger', adminPurchaseEntry);
+      } catch (eAdm) {
+        console.warn('Error inyectando asiento a adminLedger desde factura:', eAdm);
+      }
+
       // 5. Integración con Viaje San Juan (Si aplica)
       if (settlingTrip && onSettleTrip) {
         try {
@@ -812,6 +836,33 @@ export default function InvoiceUploadView({
             notes: `Retorno Viaje #${settlingTrip.tripNumber} (Banco USD $${vaultBankUsd.toFixed(2)})`,
             paymentMethod: 'Banco USD'
           });
+        }
+      }
+
+      // 1.1 Asiento Automático en Ficha Administradora (adminLedger) por Retorno de Dinero a Bóveda
+      const totalReturnedUsdThisTime = (vaultUsd || 0) + (vaultBankUsd || 0) + (((vaultBs || 0) + (vaultBankBs || 0)) / (bcvRate || 45.0));
+      if (totalReturnedUsdThisTime > 0) {
+        try {
+          const adminVaultReturnEntry = {
+            id: `LEDGER-RET-${Date.now()}`,
+            date: new Date().toISOString(),
+            timestamp: Date.now(),
+            adminName: settlingTrip?.driverOrResponsible || 'Daisy Corro',
+            type: 'EXTRACCION_BOVEDA',
+            concept: `Reingreso / Amortización a Bóveda Central (Viaje #${settlingTrip.tripNumber})`,
+            category: 'Bóveda',
+            amountUsd: (vaultUsd || 0) + (vaultBankUsd || 0),
+            amountBs: (vaultBs || 0) + (vaultBankBs || 0),
+            exchangeRateAtDate: bcvRate || 45.0,
+            debitUsd: 0,
+            creditUsd: totalReturnedUsdThisTime,
+            balanceAfterUsd: 0,
+            status: 'conciliado',
+            createdAt: new Date().toISOString()
+          };
+          await addLocalDoc('adminLedger', adminVaultReturnEntry);
+        } catch (eRet) {
+          console.warn('Error inyectando retorno a adminLedger:', eRet);
         }
       }
 

@@ -528,6 +528,109 @@ export default function AdminAccountLedgerView({
     return true;
   });
 
+  // Agrupación Cronológica Estricta para Modo Acordeón (Año -> Mes -> Día)
+  const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({});
+  const [expandedMonths, setExpandedMonths] = useState<Record<string, boolean>>({});
+
+  interface DayGroup {
+    dayKey: string;
+    dayLabel: string;
+    dateObj: Date;
+    totalDebit: number;
+    totalCredit: number;
+    items: AdminAccountEntry[];
+  }
+
+  interface MonthGroup {
+    monthKey: string;
+    monthLabel: string;
+    totalDebit: number;
+    totalCredit: number;
+    days: Record<string, DayGroup>;
+  }
+
+  interface YearGroup {
+    yearLabel: string;
+    totalDebit: number;
+    totalCredit: number;
+    months: Record<string, MonthGroup>;
+  }
+
+  const groupedTree: Record<string, YearGroup> = useMemo(() => {
+    const tree: Record<string, YearGroup> = {};
+
+    filteredEntries.forEach((entry) => {
+      const d = new Date(entry.date || entry.createdAt || (entry.timestamp || Date.now()));
+      const validDate = isNaN(d.getTime()) ? new Date() : d;
+      
+      const yearStr = validDate.getFullYear().toString();
+      const monthIndex = validDate.getMonth();
+      const monthNames = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+      const monthLabel = `${monthNames[monthIndex]} ${yearStr}`;
+      const monthKey = `${yearStr}-${(monthIndex + 1).toString().padStart(2, '0')}`;
+
+      const dayStr = validDate.getDate().toString().padStart(2, '0');
+      const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+      const dayOfWeek = dayNames[validDate.getDay()];
+      const dayLabel = `${dayOfWeek} ${dayStr} de ${monthNames[monthIndex]}`;
+      const dayKey = `${yearStr}-${(monthIndex + 1).toString().padStart(2, '0')}-${dayStr}`;
+
+      const debitVal = Number(entry.debitUsd) || 0;
+      const creditVal = Number(entry.creditUsd) || 0;
+
+      if (!tree[yearStr]) {
+        tree[yearStr] = { yearLabel: yearStr, totalDebit: 0, totalCredit: 0, months: {} };
+      }
+      tree[yearStr].totalDebit += debitVal;
+      tree[yearStr].totalCredit += creditVal;
+
+      if (!tree[yearStr].months[monthKey]) {
+        tree[yearStr].months[monthKey] = { monthKey, monthLabel, totalDebit: 0, totalCredit: 0, days: {} };
+      }
+      tree[yearStr].months[monthKey].totalDebit += debitVal;
+      tree[yearStr].months[monthKey].totalCredit += creditVal;
+
+      if (!tree[yearStr].months[monthKey].days[dayKey]) {
+        tree[yearStr].months[monthKey].days[dayKey] = {
+          dayKey,
+          dayLabel,
+          dateObj: validDate,
+          totalDebit: 0,
+          totalCredit: 0,
+          items: []
+        };
+      }
+      tree[yearStr].months[monthKey].days[dayKey].totalDebit += debitVal;
+      tree[yearStr].months[monthKey].days[dayKey].totalCredit += creditVal;
+      tree[yearStr].months[monthKey].days[dayKey].items.push(entry);
+    });
+
+    return tree;
+  }, [filteredEntries]);
+
+  // Por defecto, mantener expandido el mes y día más reciente
+  useEffect(() => {
+    if (filteredEntries.length > 0) {
+      const first = filteredEntries[0];
+      const d = new Date(first.date || first.createdAt || (first.timestamp || Date.now()));
+      const validDate = isNaN(d.getTime()) ? new Date() : d;
+      const yearStr = validDate.getFullYear().toString();
+      const monthKey = `${yearStr}-${(validDate.getMonth() + 1).toString().padStart(2, '0')}`;
+      const dayKey = `${monthKey}-${validDate.getDate().toString().padStart(2, '0')}`;
+
+      setExpandedMonths(prev => ({ ...prev, [monthKey]: prev[monthKey] !== undefined ? prev[monthKey] : true }));
+      setExpandedDays(prev => ({ ...prev, [dayKey]: prev[dayKey] !== undefined ? prev[dayKey] : true }));
+    }
+  }, [filteredEntries]);
+
+  const toggleMonth = (mKey: string) => {
+    setExpandedMonths(prev => ({ ...prev, [mKey]: !prev[mKey] }));
+  };
+
+  const toggleDay = (dKey: string) => {
+    setExpandedDays(prev => ({ ...prev, [dKey]: !prev[dKey] }));
+  };
+
   return (
     <div className="flex flex-col min-h-screen bg-editorial-bg text-editorial-text-primary p-3 sm:p-6 select-none animate-fade-in pb-16">
       {/* 1. Header Compacto */}
@@ -685,78 +788,193 @@ export default function AdminAccountLedgerView({
             ))}
           </div>
 
-          <div className="bg-editorial-card border border-editorial-border rounded-xl overflow-hidden shadow-lg divide-y divide-editorial-border/40">
-            {filteredEntries.map((entry) => {
-              const isDebit = (entry.debitUsd || 0) > 0;
-              const dateStr = new Date(entry.date || entry.createdAt).toLocaleDateString('es-VE', {
-                day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
-              });
-
-              return (
-                <div 
-                  key={entry.id} 
-                  onClick={() => setSelectedEntryDetail(entry)}
-                  className="p-3 hover:bg-zinc-900/60 transition-colors flex items-center justify-between gap-2 cursor-pointer group"
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className={`p-2 rounded-lg shrink-0 ${
-                      isDebit ? 'bg-cyan-500/10 text-cyan-400' : 'bg-emerald-500/10 text-emerald-400'
-                    }`}>
-                      {isDebit ? <ArrowDownRight className="w-4 h-4" /> : <ArrowUpRight className="w-4 h-4" />}
-                    </div>
-
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 truncate">
-                        <span className="text-xs font-bold text-white group-hover:text-amber-400 transition-colors truncate">
-                          {entry.concept}
-                        </span>
-                        {entry.type === 'PAGO_PRODUCTOR' && (
-                          <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1 py-0.2 rounded font-mono shrink-0">
-                            Productor
-                          </span>
-                        )}
-                        {entry.type === 'PAGO_PROVEEDOR' && (
-                          <span className="text-[9px] bg-blue-500/20 text-blue-300 border border-blue-500/30 px-1 py-0.2 rounded font-mono shrink-0">
-                            Proveedor
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[10px] text-editorial-text-muted font-mono flex items-center gap-1.5 mt-0.5 truncate">
-                        <span>{dateStr}</span>
-                        <span>•</span>
-                        <span className="text-zinc-400">{entry.category}</span>
-                        {entry.supplierName && (
-                          <>
-                            <span>•</span>
-                            <span className="text-amber-400/90 truncate">{entry.supplierName}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="text-right shrink-0">
-                    <span className={`text-xs sm:text-sm font-mono font-bold block ${
-                      isDebit ? 'text-cyan-400' : 'text-emerald-400'
-                    }`}>
-                      {isDebit ? `+ ${formatUsd(entry.debitUsd)}` : `- ${formatUsd(entry.creditUsd)}`}
-                    </span>
-                    <span className="text-[9px] text-editorial-text-muted font-mono block">
-                      {isDebit ? 'DEBE' : 'HABER'}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-
-            {filteredEntries.length === 0 && !loading && (
-              <div className="p-8 text-center">
+          {/* Renderizado en Modo Acordeón Jerárquico (Año -> Mes -> Día) */}
+          <div className="space-y-3">
+            {Object.keys(groupedTree).length === 0 && !loading && (
+              <div className="bg-editorial-card border border-editorial-border rounded-xl p-8 text-center">
                 <Scale className="w-8 h-8 text-editorial-text-muted mx-auto mb-2 opacity-50" />
                 <p className="text-xs font-mono text-editorial-text-muted uppercase">
                   No hay movimientos registrados.
                 </p>
               </div>
             )}
+
+            {Object.entries(groupedTree).map(([yearKey, yearData]) => (
+              <div key={yearKey} className="space-y-3">
+                {/* Meses del Año */}
+                {Object.entries(yearData.months).map(([monthKey, monthData]) => {
+                  const isMonthExpanded = !!expandedMonths[monthKey];
+                  const monthNet = monthData.totalDebit - monthData.totalCredit;
+
+                  return (
+                    <div key={monthKey} className="bg-editorial-card border border-editorial-border/80 rounded-xl overflow-hidden shadow-md">
+                      {/* Cabecera del Mes (Acordeón Nivel 1) */}
+                      <div 
+                        onClick={() => toggleMonth(monthKey)}
+                        className="p-3 sm:p-4 bg-zinc-900/80 hover:bg-zinc-800/80 transition-colors flex items-center justify-between gap-2 cursor-pointer border-b border-editorial-border/40 select-none"
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                            <Calendar className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <span className="text-sm font-bold text-white capitalize block">
+                              {monthData.monthLabel}
+                            </span>
+                            <span className="text-[10px] text-editorial-text-muted font-mono">
+                              {Object.keys(monthData.days).length} días con actividad
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <div className="text-right hidden sm:block">
+                            <div className="flex items-center gap-2 text-xs font-mono">
+                              <span className="text-cyan-400">+{formatUsd(monthData.totalDebit)}</span>
+                              <span className="text-zinc-600">|</span>
+                              <span className="text-emerald-400">-{formatUsd(monthData.totalCredit)}</span>
+                            </div>
+                            <span className="text-[9px] text-editorial-text-muted font-mono">
+                              Neto: {formatUsd(monthNet)}
+                            </span>
+                          </div>
+                          <div className="p-1 rounded bg-zinc-800 text-zinc-400">
+                            {isMonthExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Días del Mes (Acordeón Nivel 2) */}
+                      {isMonthExpanded && (
+                        <div className="p-2 sm:p-3 space-y-2.5 bg-editorial-bg/40">
+                          {Object.entries(monthData.days).map(([dayKey, dayData]) => {
+                            const isDayExpanded = !!expandedDays[dayKey];
+                            const dayNet = dayData.totalDebit - dayData.totalCredit;
+
+                            return (
+                              <div key={dayKey} className="border border-editorial-border/60 rounded-lg overflow-hidden bg-editorial-card">
+                                {/* Cabecera del Día */}
+                                <div 
+                                  onClick={() => toggleDay(dayKey)}
+                                  className="p-2.5 sm:p-3 bg-zinc-950/60 hover:bg-zinc-900/60 transition-colors flex items-center justify-between gap-2 cursor-pointer select-none"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <div className="p-1 rounded bg-zinc-800 text-zinc-300 shrink-0">
+                                      <Clock className="w-3.5 h-3.5 text-amber-400" />
+                                    </div>
+                                    <div className="min-w-0">
+                                      <span className="text-xs font-bold text-slate-100 capitalize block truncate">
+                                        {dayData.dayLabel}
+                                      </span>
+                                      <span className="text-[9px] text-editorial-text-muted font-mono">
+                                        {dayData.items.length} {dayData.items.length === 1 ? 'movimiento' : 'movimientos'}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-2.5 shrink-0">
+                                    <div className="text-right font-mono text-xs">
+                                      {dayData.totalDebit > 0 && (
+                                        <span className="text-cyan-400 block text-[11px]">+{formatUsd(dayData.totalDebit)}</span>
+                                      )}
+                                      {dayData.totalCredit > 0 && (
+                                        <span className="text-emerald-400 block text-[11px]">-{formatUsd(dayData.totalCredit)}</span>
+                                      )}
+                                    </div>
+                                    <div className="p-1 rounded bg-zinc-800 text-zinc-400">
+                                      {isDayExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Asientos del Día */}
+                                {isDayExpanded && (
+                                  <div className="divide-y divide-editorial-border/30 border-t border-editorial-border/40 bg-zinc-950/20">
+                                    {dayData.items.map((entry) => {
+                                      const isDebit = (entry.debitUsd || 0) > 0;
+                                      const timeStr = new Date(entry.date || entry.createdAt || (entry.timestamp || Date.now())).toLocaleTimeString('es-VE', {
+                                        hour: '2-digit', minute: '2-digit'
+                                      });
+
+                                      return (
+                                        <div 
+                                          key={entry.id} 
+                                          onClick={() => setSelectedEntryDetail(entry)}
+                                          className="p-2.5 sm:p-3 hover:bg-zinc-900/60 transition-colors flex items-center justify-between gap-2 cursor-pointer group"
+                                        >
+                                          <div className="flex items-center gap-2 min-w-0">
+                                            <div className={`p-1.5 rounded-md shrink-0 ${
+                                              isDebit ? 'bg-cyan-500/10 text-cyan-400' : 'bg-emerald-500/10 text-emerald-400'
+                                            }`}>
+                                              {isDebit ? <ArrowDownRight className="w-3.5 h-3.5" /> : <ArrowUpRight className="w-3.5 h-3.5" />}
+                                            </div>
+
+                                            <div className="min-w-0">
+                                              <div className="flex items-center gap-1.5 truncate">
+                                                <span className="text-xs font-bold text-white group-hover:text-amber-400 transition-colors truncate">
+                                                  {entry.concept}
+                                                </span>
+                                                {entry.type === 'PAGO_PRODUCTOR' && (
+                                                  <span className="text-[8px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1 py-0.2 rounded font-mono shrink-0">
+                                                    Productor
+                                                  </span>
+                                                )}
+                                                {entry.type === 'PAGO_PROVEEDOR' && (
+                                                  <span className="text-[8px] bg-blue-500/20 text-blue-300 border border-blue-500/30 px-1 py-0.2 rounded font-mono shrink-0">
+                                                    Proveedor
+                                                  </span>
+                                                )}
+                                                {entry.type === 'FONDEO_GIRA' && (
+                                                  <span className="text-[8px] bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-1 py-0.2 rounded font-mono shrink-0">
+                                                    Gira
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <div className="text-[9px] text-editorial-text-muted font-mono flex items-center gap-1.5 mt-0.5 truncate">
+                                                <span>{timeStr}</span>
+                                                <span>•</span>
+                                                <span className="text-zinc-400">{entry.category}</span>
+                                                {entry.supplierName && (
+                                                  <>
+                                                    <span>•</span>
+                                                    <span className="text-amber-400/90 truncate">{entry.supplierName}</span>
+                                                  </>
+                                                )}
+                                                {entry.paymentMethod && (
+                                                  <>
+                                                    <span>•</span>
+                                                    <span className="text-zinc-500 truncate">{entry.paymentMethod}</span>
+                                                  </>
+                                                )}
+                                              </div>
+                                            </div>
+                                          </div>
+
+                                          <div className="text-right shrink-0 font-mono">
+                                            <span className={`text-xs font-bold block ${
+                                              isDebit ? 'text-cyan-400' : 'text-emerald-400'
+                                            }`}>
+                                              {isDebit ? `+ ${formatUsd(entry.debitUsd)}` : `- ${formatUsd(entry.creditUsd)}`}
+                                            </span>
+                                            <span className="text-[8px] text-editorial-text-muted block">
+                                              {isDebit ? 'DEBE (+)' : 'HABER (-)'}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
           </div>
         </div>
       )}

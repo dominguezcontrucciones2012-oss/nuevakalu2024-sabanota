@@ -322,11 +322,36 @@ function PayDebtModal({ debt, onClose, vaultBalance, exchangeRate, onAddTransact
         currency,
         method: method.includes('bank') ? 'transferencia' : 'efectivo',
         category: 'egresos_operativos',
-        description: `Pago de Pasivo: ${debt.concept}`,
+        description: `Pago de Pasivo / Presupuesto: ${debt.concept} (${debt.category || 'General'})`,
         date: new Date().toISOString(),
         timestamp: Date.now(),
         destination: 'Bóveda Central'
       });
+
+      // 3. Asiento Inquebrantable en Ficha Administradora (adminLedger)
+      try {
+        const adminEntry = {
+          id: `LEDGER-BUDGET-${Date.now()}`,
+          date: new Date().toISOString(),
+          timestamp: Date.now(),
+          adminName: 'Daisy Corro',
+          type: 'GASTO_MULTICANAL',
+          concept: `Pago de Pasivo / Presupuesto: ${debt.concept} (${debt.category || 'Cashea'})`,
+          category: 'Caja Chica',
+          amountUsd: currency === 'USD' ? numAmount : 0,
+          amountBs: currency === 'VES' ? numAmount : 0,
+          exchangeRateAtDate: exchangeRate || 45.0,
+          debitUsd: 0,
+          creditUsd: usdAmount,
+          balanceAfterUsd: 0,
+          paymentMethod: method.includes('bank') ? 'Pago Móvil / Banco' : 'Efectivo',
+          status: 'conciliado',
+          createdAt: new Date().toISOString()
+        };
+        await addLocalDoc('adminLedger', adminEntry);
+      } catch (eLedger) {
+        console.warn('Error registrando asiento en adminLedger desde control presupuestario:', eLedger);
+      }
 
       onClose();
     } catch (e) {
