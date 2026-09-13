@@ -497,19 +497,15 @@ export default function CheesePOSView({
 
     if (paymentMethod !== 'Efectivo $' && paymentMethod !== 'Mundo Kalu') {
        const curRemainingUsd = Math.max(0, Math.round((total - totalAbonado) * 100) / 100);
-       
-       // Regla de Oro: Si es pago en Bolívares (Pago Móvil, Efectivo Bs, Tarjeta, BioPago):
-       // Si es el único pago o el abono cubre razonablemente la deuda restante (ej. rawAmount > 0),
-       // asignamos directamente el curRemainingUsd exacto para liquidar la factura al 100% sin depender de discrepancias de tasa.
-       if (addedPayments.length === 0 || rawAmount >= (curRemainingUsd * 500)) {
+       const rate = activeExchangeRate || 1;
+       const convertedUsd = rawAmount / rate;
+
+       // Tolerancia estricta de céntimos: Si el monto en Bs ingresado cubre prácticamente la totalidad del saldo restante
+       // (diferencia menor a 0.05 USD o 2 Bs), asignamos el remanente exacto para evitar residuos por redondeo.
+       if (convertedUsd >= (curRemainingUsd - 0.05)) {
           amountInUsd = curRemainingUsd;
        } else {
-          const convertedUsd = rawAmount / (activeExchangeRate || 1);
-          if (convertedUsd >= curRemainingUsd - 0.50) {
-             amountInUsd = curRemainingUsd;
-          } else {
-             amountInUsd = Math.round(convertedUsd * 100) / 100;
-          }
+          amountInUsd = Math.round(convertedUsd * 100) / 100;
        }
        currency = 'Bs';
     }
@@ -580,7 +576,7 @@ export default function CheesePOSView({
             if (updatedDoc.status === 'approved') {
                    setIsWaitingForApproval(false);
                    setPendingApprovalId(null);
-  
+   
                    // FASE 1: GENERACIÓN DE CUOTAS
                    if (updatedDoc.kaluCreditData && client) {
                      let nextDate = new Date();
@@ -598,42 +594,56 @@ export default function CheesePOSView({
                          totalInstallments: updatedDoc.installmentsCount,
                          pointsEarned: Math.round(cuotaVal),
                          pointsAwarded: false,
-                         timestamp: new Date().toISOString()
+                         createdAt: new Date().toISOString(),
+                         type: kaluCreditType
                        };
                        await addLocalDoc('installments', installmentDoc);
                        nextDate.setDate(nextDate.getDate() + 15);
                      }
                    }
                    
-                   // FASE 2: AUTO CHECKOUT
-                   setKaluAutoCheckoutTrigger(true);
+                   // FASE 2: PROCESAR VENTA ATÓMICA FINAL
+                   const kaluPayment = {
+                     id: Date.now().toString(),
+                     method: 'Mundo Kalu',
+                     amount: kaluDebt,
+                     originalAmount: kaluDebt,
+                     currency: '$',
+                     reference: updatedDoc.invoiceNumber || ''
+                   };
+                   
+                   setAddedPayments(prev => [...prev.filter(p => p.id !== newPayment.id), kaluPayment]);
+                   onAddNotification('Crédito Mundo Kalu aprobado exitosamente.', 'success');
+                   
+                   // Si el abono inicial fue cubierto (o es $0), proceder a liquidar
+                   setTimeout(() => {
+                     handleProcessSaleSubmit();
+                   }, 300);
             }
-          };
+        };
 
-          // Polling in case WebSocket fails
-          const intervalId = setInterval(async () => {
-            try {
-              const res = await fetch(`https://sistemakalu.com/api/collections/transactions`);
-              if (res.ok) {
-                const allTxs = await res.json();
-                const polledDoc = allTxs.find((t: any) => String(t.id) === String(docRef.id));
-                if (polledDoc && polledDoc.status === 'approved') {
-                  clearInterval(intervalId);
-                  unsubscribe();
-                  handleApprovedDoc(polledDoc);
-                }
+        const intervalId = setInterval(async () => {
+          try {
+            const allTxs = await fetchCollection('transactions');
+            if (allTxs && Array.isArray(allTxs)) {
+              const polledDoc = allTxs.find((d: any) => String(d.id) === String(docRef.id));
+              if (polledDoc && polledDoc.status === 'approved') {
+                clearInterval(intervalId);
+                unsubscribe();
+                handleApprovedDoc(polledDoc);
               }
-            } catch (e) { /* ignore */ }
-          }, 2000);
-
-          const unsubscribe = onCollectionSnapshot('transactions', (data) => {
-            const updatedDoc = data.find(d => String(d.id) === String(docRef.id));
-            if (updatedDoc && updatedDoc.status === 'approved') {
-               clearInterval(intervalId);
-               unsubscribe();
-               handleApprovedDoc(updatedDoc);
             }
-          });
+          } catch (e) { /* ignore */ }
+        }, 2000);
+
+        const unsubscribe = onCollectionSnapshot('transactions', (data) => {
+          const updatedDoc = data.find(d => String(d.id) === String(docRef.id));
+          if (updatedDoc && updatedDoc.status === 'approved') {
+             clearInterval(intervalId);
+             unsubscribe();
+             handleApprovedDoc(updatedDoc);
+          }
+        });
       } catch (err) {
         console.error("Error creating pending approval", err);
         setIsWaitingForApproval(false);
@@ -688,16 +698,12 @@ export default function CheesePOSView({
         let currency = '$';
 
         if (paymentMethod !== 'Efectivo $') {
-          // Si es en Bolívares (Pago Móvil, Efectivo Bs, Tarjeta, BioPago)
-          if (rawInput >= (total * 500)) {
+          const rate = activeExchangeRate || 1;
+          const convertedUsd = rawInput / rate;
+          if (convertedUsd >= (total - 0.05)) {
             amountInUsd = total;
           } else {
-            const convertedUsd = rawInput / (activeExchangeRate || 1);
-            if (convertedUsd >= total - 0.50) {
-              amountInUsd = total;
-            } else {
-              amountInUsd = Math.round(convertedUsd * 100) / 100;
-            }
+            amountInUsd = Math.round(convertedUsd * 100) / 100;
           }
           currency = 'Bs';
         }
