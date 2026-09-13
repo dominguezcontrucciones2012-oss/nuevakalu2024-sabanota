@@ -1,0 +1,1820 @@
+import React, { useState, useEffect } from 'react';
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc } from '../services/localApi';
+import { SupplierProfile, AccountBill, Transaction, CheeseProduct } from '../types';
+import { Truck, Store, Phone, Plus, BadgeAlert, FileCheck, CheckCircle, ExternalLink, Calendar, Eye, Wallet, CreditCard, Inbox, X, Search, Trash2, Award, Trophy, Medal, Crown, Flame } from 'lucide-react';
+import { parseSafeDecimal } from '../utils';
+import KaluLoader from './KaluLoader';
+
+const parseCustomDate = (dateStr: string): number => {
+  if (!dateStr) return 0;
+  try {
+    // Si ya es un timestamp numérico o ISO válido
+    const direct = new Date(dateStr).getTime();
+    if (!isNaN(direct) && direct > 0) return direct;
+
+    // Traducir meses en español a inglés para que Date.parse funcione
+    const monthMap: Record<string, string> = {
+      'ene': 'Jan', 'feb': 'Feb', 'mar': 'Mar', 'abr': 'Apr', 'may': 'May', 'jun': 'Jun',
+      'jul': 'Jul', 'ago': 'Aug', 'sep': 'Sep', 'oct': 'Oct', 'nov': 'Nov', 'dic': 'Dec'
+    };
+    
+    let normalizedStr = dateStr.toLowerCase();
+    Object.keys(monthMap).forEach(es => {
+      normalizedStr = normalizedStr.replace(es, monthMap[es].toLowerCase());
+    });
+    
+    const translatedTime = new Date(normalizedStr).getTime();
+    if (!isNaN(translatedTime) && translatedTime > 0) return translatedTime;
+
+    // Formato: "21/8/2026, 14:29:25"
+    const [datePart, timePart = "00:00:00"] = dateStr.split(',').map(s => s.trim());
+    const [day, month, year] = datePart.split('/').map(Number);
+    const [hours, minutes, seconds] = timePart.split(':').map(Number);
+
+    if (year && month && day) {
+      return new Date(year, month - 1, day, hours || 0, minutes || 0, seconds || 0).getTime();
+    }
+  } catch (e) {
+    console.error("Error parsing date:", dateStr, e);
+  }
+  return 0;
+};
+
+export const calculateDynamicBalances = (s: SupplierProfile, txList: Transaction[]) => {
+  const supNameClean = (s.name || '').trim().toLowerCase();
+  const supTxs = (txList || []).filter((d: any) => {
+    if (!d) return false;
+    const entityMatch = d.entity && String(d.entity).trim().toLowerCase() === supNameClean;
+    const supplierIdMatch = d.supplierId && String(d.supplierId) === String(s.id);
+    const entityIdMatch = d.entityId && String(d.entityId) === String(s.id);
+    return entityMatch || supplierIdMatch || entityIdMatch;
+  });
+
+  if (supTxs.length > 0) {
+    const getTxTime = (tx: any): number => {
+      if (!tx) return 0;
+      if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+      if (tx.timestamp) {
+        if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+        if (typeof tx.timestamp === 'number') return tx.timestamp;
+      }
+      if (tx.id && typeof tx.id === 'string') {
+        const parts = tx.id.split('-');
+        for (const part of parts) {
+          if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+        }
+      }
+      return parseCustomDate(tx.date || '') || 0;
+    };
+
+    const asc = [...supTxs].sort((a, b) => getTxTime(a) - getTxTime(b));
+    let running = 0;
+
+    if (s.isEmployee) {
+      asc.forEach(tx => {
+        const isLiquidation = (tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'));
+        const isBodegaDebt = !isLiquidation && (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda')));
+        const isPayroll = !isLiquidation && (tx.category === 'gastos' || tx.category === 'compras' || (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))));
+        
+        if (isLiquidation) {
+          running = 0;
+        } else if (isPayroll) {
+          running += (Number(tx.amount) || 0);
+        } else if (isBodegaDebt) {
+          running -= (Number(tx.amount) || 0);
+        } else if (tx.isIncome) {
+          running += (Number(tx.amount) || 0);
+        } else {
+          running -= (Number(tx.amount) || 0);
+        }
+      });
+    } else {
+      // PRODUCTORES Y PROVEEDORES
+      asc.forEach(tx => {
+        const isStoreDebt = (tx.category === 'credito' && !tx.isIncome) || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda'));
+        const isDelivery = (tx.category === 'compras' && tx.isIncome) || (tx.notes && (tx.notes.toLowerCase().includes('recibido') || tx.notes.toLowerCase().includes('arrime') || tx.notes.toLowerCase().includes('entrega')));
+        
+        if (isDelivery) {
+          running += (Number(tx.amount) || 0); // (+) Entrega / Arrime de queso
+        } else if (isStoreDebt) {
+          running -= (Number(tx.amount) || 0); // (-) Consumo / Fiado de tienda
+        } else if (tx.isIncome) {
+          running += (Number(tx.amount) || 0);
+        } else {
+          running -= (Number(tx.amount) || 0); // (-) Pagos, liquidaciones, adelantos
+        }
+      });
+    }
+
+    if (running >= 0) {
+      return { payable: running, debt: 0 };
+    } else {
+      return { payable: 0, debt: Math.abs(running) };
+    }
+  }
+
+  // Fallback directo a los balances del perfil
+  const net = (Number(s.balanceOwed) || 0) - (Number(s.storeDebt) || 0);
+  if (net >= 0) {
+    return { payable: net, debt: 0 };
+  } else {
+    return { payable: 0, debt: Math.abs(net) };
+  }
+};
+
+interface SuppliersDebtsViewProps {
+  suppliers: SupplierProfile[];
+  transactions: Transaction[];
+  cheeseProducts: CheeseProduct[];
+  businessBalance: number;
+  exchangeRate: number;
+  onAddSupplier: (sup: Omit<SupplierProfile, 'id' | 'balanceOwed'>) => void;
+  onUpdateSupplier?: (id: string, updates: Partial<SupplierProfile>) => void;
+  onPaySupplierBill: (billId: string, supplierId: string, amount: number) => void;
+  onRecordSupplierStorePayment?: (supplierId: string, amount: number, method: string, note: string, currency: 'USD' | 'VES') => void;
+  onNetSupplierBalances?: (supplierId: string) => void;
+  onPaySupplierRemainingBalance?: (supplierId: string, amount: number, paymentSource: string, note?: string, currency?: 'USD' | 'VES') => void;
+  onLoadPurchase?: (purchase: {
+    supplierId: string;
+    items: { productId: string; quantityKg: number; purchasePrice: number; sellingPrice: number; marginPercent: number; name: string; createNewItem?: boolean; }[];
+    isCredit: boolean;
+    paymentMethod?: string;
+  }) => Promise<void>;
+  onAddNotification: (msg: string, type: 'success' | 'info' | 'warning') => void;
+  isSidebarOpen?: boolean;
+}
+
+export default function SuppliersDebtsView({
+  suppliers,
+  transactions,
+  cheeseProducts,
+  businessBalance,
+  exchangeRate,
+  onAddSupplier,
+  onUpdateSupplier,
+  onPaySupplierBill,
+  onRecordSupplierStorePayment,
+  onNetSupplierBalances,
+  onPaySupplierRemainingBalance,
+  onLoadPurchase,
+  onAddNotification,
+  isSidebarOpen = true
+}: SuppliersDebtsViewProps) {
+  
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Add Supplier States
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [name, setName] = useState('');
+  const [contactName, setContactName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
+  const [rfc, setRfc] = useState('');
+  const [isCheeseProducer, setIsCheeseProducer] = useState(true);
+  const [isEmployee, setIsEmployee] = useState(false);
+  const [birthday, setBirthday] = useState('');
+  const [pin, setPin] = useState('');
+
+  // Edit states
+  const [editingSupplier, setEditingSupplier] = useState<SupplierProfile | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editCedula, setEditCedula] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editContactName, setEditContactName] = useState('');
+  const [editAddress, setEditAddress] = useState('');
+  const [editBirthday, setEditBirthday] = useState('');
+  const [editPin, setEditPin] = useState('');
+  const [editIsCheeseProducer, setEditIsCheeseProducer] = useState(false);
+  const [editIsEmployee, setEditIsEmployee] = useState(false);
+
+  // New Modal System States
+  const [activeTab, setActiveTab] = useState<'proveedores' | 'libreta' | 'ranking'>('proveedores');
+  const [activeModal, setActiveModal] = useState<'historial' | 'recibir' | 'pagar' | 'abonar' | null>(null);
+  const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Date filters for historial
+  const [localTransactions, setLocalTransactions] = useState<Transaction[]>([]);
+  const [isLoadingHistorial, setIsLoadingHistorial] = useState(false);
+  const [historialStartDate, setHistorialStartDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 15);
+    const offset = d.getTimezoneOffset() * 60000;
+    return new Date(d.getTime() - offset).toISOString().split('T')[0];
+  });
+  const [historialEndDate, setHistorialEndDate] = useState(() => {
+    const d = new Date();
+    const offset = d.getTimezoneOffset() * 60000;
+    return new Date(d.getTime() - offset).toISOString().split('T')[0];
+  });
+  const [showAllTime, setShowAllTime] = useState(false);
+
+  // Forms State for Modals
+  // Recibir Queso
+  const [receiveProductId, setReceiveProductId] = useState('');
+  const [customProductName, setCustomProductName] = useState('');
+  const [receiveKg, setReceiveKg] = useState('');
+  const [receivePrice, setReceivePrice] = useState('');
+  const [receivePayment, setReceivePayment] = useState('A la Libreta');
+  const [createNewProduct, setCreateNewProduct] = useState(false);
+
+  // Pago a Él / Adelanto (Pay Supplier / Cash Advance)
+  const [payToThemAmount, setPayToThemAmount] = useState('');
+  const [payToThemCurrency, setPayToThemCurrency] = useState<'USD' | 'VES'>('USD');
+  const [payToThemSource, setPayToThemSource] = useState('Efectivo / Caja Chica');
+  const [payToThemConcept, setPayToThemConcept] = useState('Pago de Saldo / Liquidación de Queso');
+  const [payToThemNotes, setPayToThemNotes] = useState('');
+
+  // Abono de Él (Supplier Pays Us / Takes Credit)
+  const [payToUsAmount, setPayToUsAmount] = useState('');
+  const [payToUsCurrency, setPayToUsCurrency] = useState<'USD' | 'VES'>('USD');
+  const [payToUsMethod, setPayToUsMethod] = useState('Efectivo / Caja Chica');
+  const [payToUsNote, setPayToUsNote] = useState('');
+  const [payToUsMovementType, setPayToUsMovementType] = useState<'cargo' | 'abono'>('abono');
+
+  const openModal = (modal: 'historial' | 'recibir' | 'pagar' | 'abonar', supplierId: string) => {
+    setSelectedSupplierId(supplierId);
+    setActiveModal(modal);
+    // Reset forms
+    if (modal === 'recibir') {
+      const defaultCheese = cheeseProducts.find(p => 
+        p.category?.toLowerCase().includes('queso') || 
+        p.category?.toLowerCase().includes('lacteo') ||
+        p.name?.toLowerCase().includes('queso')
+      );
+      const initPrice = defaultCheese ? (defaultCheese.purchasePrice || defaultCheese.sellingPrice || 0) : 0;
+      setReceiveProductId(defaultCheese ? defaultCheese.id : '');
+      setCustomProductName('');
+      setReceiveKg('');
+      setReceivePrice(initPrice > 0 ? String(initPrice) : '');
+      setReceivePayment('A la Libreta');
+      setCreateNewProduct(false);
+    } else if (modal === 'pagar') {
+      const s = suppliers.find(sup => sup.id === supplierId);
+      setPayToThemAmount(s && (s.balanceOwed || 0) > 0 ? (s.balanceOwed || 0).toString() : '');
+      setPayToThemCurrency('USD');
+      setPayToThemSource('Efectivo / Caja Chica');
+      setPayToThemConcept((s && (s.balanceOwed || 0) > 0) ? 'Pago de Saldo / Liquidación de Queso' : 'Adelanto de Dinero');
+      setPayToThemNotes('');
+
+    } else if (modal === 'abonar') {
+      const s = suppliers.find(sup => sup.id === supplierId);
+      setPayToUsAmount('');
+      setPayToThemAmount('');
+      setPayToThemCurrency('USD');
+      setPayToThemSource('Efectivo / Caja Chica');
+      setPayToUsNote('');
+      setPayToUsMovementType('abono');
+    }
+  };
+
+  useEffect(() => {
+    if (activeModal === 'historial' && selectedSupplierId) {
+      const s = suppliers.find(sup => sup.id === selectedSupplierId);
+      if (!s) {
+        setIsLoadingHistorial(false);
+        return;
+      }
+
+      setIsLoadingHistorial(true);
+
+      const processAndSetTransactions = (sourceTxs: Transaction[]) => {
+        try {
+          if (!Array.isArray(sourceTxs)) {
+            setLocalTransactions([]);
+            return;
+          }
+
+          const supNameClean = (s.name || '').trim().toLowerCase();
+          const supplierTxs = sourceTxs.filter((d: any) => {
+            if (!d) return false;
+            const entityMatch = d.entity && String(d.entity).trim().toLowerCase() === supNameClean;
+            const supplierIdMatch = d.supplierId && String(d.supplierId) === String(s.id);
+            const entityIdMatch = d.entityId && String(d.entityId) === String(s.id);
+            return entityMatch || supplierIdMatch || entityIdMatch;
+          });
+
+          let filtered = supplierTxs;
+          if (!showAllTime && historialStartDate && historialEndDate) {
+            const startMs = new Date(historialStartDate + 'T00:00:00').getTime();
+            const endMs = new Date(historialEndDate + 'T23:59:59.999').getTime();
+
+            filtered = supplierTxs.filter(tx => {
+              if (!tx) return false;
+              let txMs = 0;
+              if (tx.timestamp) {
+                if (typeof (tx.timestamp as any).toMillis === 'function') txMs = (tx.timestamp as any).toMillis();
+                else if (typeof tx.timestamp === 'number') txMs = tx.timestamp;
+              }
+              if (txMs === 0 && tx.id && typeof tx.id === 'string') {
+                const parts = tx.id.split('-');
+                for (const part of parts) {
+                  if (part.length >= 12 && !isNaN(Number(part))) {
+                    txMs = parseInt(part, 10);
+                    break;
+                  }
+                }
+              }
+              if (txMs > 0) {
+                return txMs >= startMs && txMs <= endMs;
+              }
+
+              const txTime = parseCustomDate(tx.date || '');
+              if (txTime === 0) return true; // Si no se puede parsear, no ocultar
+              return txTime >= startMs && txTime <= endMs;
+            });
+          }
+
+          const getTxTimeMs = (tx: any): number => {
+            if (!tx) return 0;
+            if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+            if (tx.timestamp) {
+              if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+              if (typeof tx.timestamp === 'number') return tx.timestamp;
+            }
+            if (tx.id && typeof tx.id === 'string') {
+              const parts = tx.id.split('-');
+              for (const part of parts) {
+                if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+              }
+            }
+            return parseCustomDate(tx.date || '') || 0;
+          };
+
+          filtered.sort((a, b) => getTxTimeMs(b) - getTxTimeMs(a));
+
+          setLocalTransactions(filtered.slice(0, 100));
+        } catch (err) {
+          console.error('Error procesando transacciones de proveedor:', err);
+        } finally {
+          setIsLoadingHistorial(false);
+        }
+      };
+
+      // 1. Usar transacciones pasadas por props inmediatamente para eliminar cualquier tiempo de congelado
+      if (transactions && transactions.length > 0) {
+        processAndSetTransactions(transactions);
+      }
+
+      // 2. Suscripción a eventos locales en tiempo real
+      const unsub = onCollectionSnapshot('transactions', (data) => {
+        if (data && data.length > 0) {
+          processAndSetTransactions(data as Transaction[]);
+        } else if (transactions && transactions.length > 0) {
+          processAndSetTransactions(transactions);
+        } else {
+          setIsLoadingHistorial(false);
+        }
+      });
+
+      return () => {
+        if (typeof unsub === 'function') unsub();
+      };
+    }
+  }, [activeModal, selectedSupplierId, suppliers, showAllTime, historialStartDate, historialEndDate, transactions]);
+
+
+  const openEditModal = (s: SupplierProfile) => {
+    setEditingSupplier(s);
+    setEditName(s.name || '');
+    setEditCedula(s.cedula || s.rfc || '');
+    setEditPhone(s.phone || '');
+    setEditContactName(s.contactName || '');
+    setEditAddress(s.address || '');
+    setEditBirthday(s.birthday || '');
+    setEditPin(s.pin || '');
+    setEditIsCheeseProducer(s.isCheeseProducer || false);
+    setEditIsEmployee(s.isEmployee || false);
+  };
+
+  const handleUpdateSupplierSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSupplier || !onUpdateSupplier) return;
+    
+    const ced4 = editCedula.length >= 4 ? editCedula.slice(-4) : '';
+    const ph = editingSupplier.phone ? editingSupplier.phone.replace(/\D/g, '') : '';
+    const ph4 = ph.length >= 4 ? ph.slice(-4) : '0000';
+    
+    onUpdateSupplier(editingSupplier.id, {
+      name: editName,
+      cedula: editCedula,
+      rfc: editCedula,
+      phone: editPhone,
+      contactName: editContactName,
+      address: editAddress,
+      birthday: editBirthday,
+      pin: editPin || (editCedula ? ced4 : ph4),
+      isCheeseProducer: editIsCheeseProducer,
+      isEmployee: editIsEmployee
+    });
+    setEditingSupplier(null);
+  };
+
+  const handleCreateSupplier = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name) return;
+    
+    const ced4 = rfc.length >= 4 ? rfc.slice(-4) : '';
+    const ph = phone ? phone.replace(/\D/g, '') : '';
+    const ph4 = ph.length >= 4 ? ph.slice(-4) : '0000';
+    
+    onAddSupplier({
+      name,
+      contact: contactName || 'Sin contacto',
+      contactName,
+      phone,
+      email: '',
+      address,
+      rfc,
+      cedula: rfc,
+      isCheeseProducer,
+      isEmployee,
+      birthday,
+      pin: pin || (rfc ? ced4 : ph4)
+    });
+    onAddNotification(`Proveedor ${name} registrado con éxito.`, 'success');
+    setName('');
+    setContactName('');
+    setPhone('');
+    setAddress('');
+    setRfc('');
+    setIsCheeseProducer(true);
+    setIsEmployee(false);
+    setBirthday('');
+    setPin('');
+    setShowAddForm(false);
+  };
+
+  return (
+    <div className="space-y-6 animate-fade-in">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-editorial-border/60 pb-4">
+        <div className="flex items-center gap-6">
+          <button
+            onClick={() => setActiveTab('proveedores')}
+            className={`text-lg font-serif font-bold flex items-center gap-2 cursor-pointer transition-colors ${activeTab === 'proveedores' ? 'text-editorial-text-primary border-b-2 border-editorial-text-primary pb-1' : 'text-editorial-text-muted hover:text-editorial-text-primary'}`}
+          >
+            <Store className="w-5 h-5" /> Directorio de Proveedores
+          </button>
+          <button
+            onClick={() => setActiveTab('libreta')}
+            className={`text-lg font-serif font-bold flex items-center gap-2 cursor-pointer transition-colors ${activeTab === 'libreta' ? 'text-amber-500 border-b-2 border-amber-500 pb-1' : 'text-editorial-text-muted hover:text-amber-500'}`}
+          >
+            <Truck className="w-5 h-5" /> LIBRETA QUESO
+          </button>
+          <button
+            onClick={() => setActiveTab('ranking')}
+            className={`text-lg font-serif font-bold flex items-center gap-2 cursor-pointer transition-colors ${activeTab === 'ranking' ? 'text-emerald-400 border-b-2 border-emerald-400 pb-1' : 'text-editorial-text-muted hover:text-emerald-400'}`}
+          >
+            <Trophy className="w-5 h-5 text-amber-400" /> RANKING ANUAL
+          </button>
+        </div>
+        <div className="flex-1 max-w-md mx-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-editorial-text-muted" />
+            <input
+              type="text"
+              placeholder="Buscar por nombre, contacto, RIF o ID..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full h-10 pl-9 pr-4 bg-editorial-bg border border-editorial-border rounded text-sm text-editorial-text-primary focus:outline-none focus:border-amber-500 font-sans"
+            />
+          </div>
+        </div>
+        
+        <button
+          onClick={() => setShowAddForm(!showAddForm)}
+          className="flex items-center gap-2 px-4 py-2 bg-editorial-text-primary text-editorial-bg font-mono text-xs uppercase font-bold hover:bg-editorial-text-primary/90 transition-colors cursor-pointer whitespace-nowrap"
+        >
+          {showAddForm ? <span>Cancelar</span> : <><Plus className="w-4 h-4" /> <span>Nuevo Proveedor</span></>}
+        </button>
+      </div>
+
+      {showAddForm && (
+        <form onSubmit={handleCreateSupplier} className="bg-editorial-card border border-editorial-border rounded p-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="md:col-span-3 pb-2 border-b border-editorial-border/40 flex justify-between items-center">
+            <span className="font-serif text-md font-bold text-editorial-text-primary">Registrar Cuenta Proveedor</span>
+          </div>
+
+          <div className="space-y-1.5 md:col-span-2">
+            <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Nombre Empresa / Razón Social</label>
+            <input
+              type="text" required value={name} onChange={e => setName(e.target.value)} placeholder="Ej: Distribuidora San Juan"
+              className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">RIF / Cédula</label>
+            <input
+              type="text" value={rfc} onChange={e => setRfc(e.target.value)} placeholder="Ej: J-12345678-9"
+              className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Vendedor / Contacto</label>
+            <input
+              type="text" required value={contactName} onChange={e => setContactName(e.target.value)} placeholder="Ej: Juan Pérez"
+              className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Teléfono de Enlace</label>
+            <input
+              type="text" required value={phone} onChange={e => setPhone(e.target.value)} placeholder="Ej: 331-290-4100"
+              className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary font-mono focus:outline-none"
+            />
+          </div>
+
+          <div className="space-y-1.5 md:col-span-3">
+            <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Dirección</label>
+            <input
+              type="text" required value={address} onChange={e => setAddress(e.target.value)} placeholder="Ej: Av. Principal, Local 4"
+              className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none"
+            />
+          </div>
+
+          <div className="space-y-2 pt-1 flex flex-col justify-center">
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-editorial-text-primary">
+              <input type="checkbox" checked={isCheeseProducer} onChange={e => setIsCheeseProducer(e.target.checked)} className="accent-amber-500 w-4 h-4 cursor-pointer" />
+              <span>Es Productor de Queso</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-editorial-text-primary">
+              <input type="checkbox" checked={isEmployee} onChange={e => setIsEmployee(e.target.checked)} className="accent-amber-500 w-4 h-4 cursor-pointer" />
+              <span>Es Personal / Obrero</span>
+            </label>
+          </div>
+
+                    <div className="space-y-1.5">
+            <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Cumpleaños</label>
+            <input type="date" value={birthday} onChange={e => setBirthday(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+          </div>
+          <div className="space-y-1.5 md:col-span-2">
+            <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN Acceso (4 dígitos)</label>
+            <input type="text" maxLength={4} value={pin} onChange={e => setPin(e.target.value)} placeholder="Autogenerado" className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary font-mono tracking-widest focus:outline-none" />
+          </div>
+          <div className="md:col-span-3 pt-4 border-t border-editorial-border/40 flex justify-end">
+            <button
+              type="submit"
+              className="px-6 h-10 bg-editorial-text-primary text-editorial-bg font-serif font-bold text-xs tracking-wider uppercase hover:bg-editorial-text-primary/90 transition-all cursor-pointer"
+            >
+              Guardar Registro
+            </button>
+          </div>
+        </form>
+      )}
+
+      {activeTab === 'ranking' ? (
+        <div className="space-y-6 animate-fade-in">
+          {/* Top Banner Ranking */}
+          <div className="bg-editorial-card border border-editorial-border rounded p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-amber-400 font-mono text-xs uppercase tracking-wider font-bold">
+                <Trophy className="w-4 h-4" />
+                <span>Competencia Oficial de Proveedores &amp; Productores</span>
+              </div>
+              <h3 className="font-serif text-2xl font-bold text-editorial-text-primary">Ranking Histórico de Kilos &amp; Premios Anuales</h3>
+              <p className="text-xs text-editorial-text-muted">Totalización acumulada de arrime de queso registrada para la premiación y fidelidad anual.</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="px-4 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded font-mono text-center">
+                <span className="text-[10px] uppercase text-emerald-400 block">Total Kilos Arrimados</span>
+                <span className="text-lg font-bold text-emerald-400">
+                  {suppliers.reduce((acc, s) => acc + (Number(s.totalKgHistorical) || 0), 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Kg
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Ranking Table / Leaderboard */}
+          <div className="bg-editorial-card border border-editorial-border rounded overflow-hidden shadow-xl">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs font-mono">
+                <thead>
+                  <tr className="border-b border-editorial-border bg-editorial-bg/80 text-[10px] text-editorial-text-muted uppercase tracking-wider">
+                    <th className="py-3.5 px-4 text-center w-16">Puesto</th>
+                    <th className="py-3.5 px-4">Productor / Ficha</th>
+                    <th className="py-3.5 px-4">Ubicación</th>
+                    <th className="py-3.5 px-4 text-right">Movimientos</th>
+                    <th className="py-3.5 px-4 text-right">Kilos Acumulados</th>
+                    <th className="py-3.5 px-4 text-right">Saldo Actual</th>
+                    <th className="py-3.5 px-4 text-center">Acción</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-editorial-border/40">
+                  {suppliers
+                    .filter(s => s.isCheeseProducer)
+                    .sort((a, b) => (Number(b.totalKgHistorical) || 0) - (Number(a.totalKgHistorical) || 0))
+                    .map((s, idx) => {
+                      const kg = Number(s.totalKgHistorical) || 0;
+                      let positionBadge = (
+                        <span className="font-bold text-slate-400">#{idx + 1}</span>
+                      );
+
+                      if (idx === 0) {
+                        positionBadge = (
+                          <div className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-amber-500 text-slate-950 font-black shadow-lg shadow-amber-500/30">
+                            🥇
+                          </div>
+                        );
+                      } else if (idx === 1) {
+                        positionBadge = (
+                          <div className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-slate-300 text-slate-950 font-black shadow-lg shadow-slate-300/30">
+                            🥈
+                          </div>
+                        );
+                      } else if (idx === 2) {
+                        positionBadge = (
+                          <div className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-amber-700 text-amber-100 font-black shadow-lg shadow-amber-700/30">
+                            🥉
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <tr key={s.id} className="hover:bg-editorial-bg/60 transition-colors">
+                          <td className="py-3.5 px-4 text-center">
+                            {positionBadge}
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-8 h-8 rounded bg-editorial-text-primary/10 text-editorial-text-primary flex items-center justify-center font-serif text-sm font-bold border border-editorial-text-primary/20">
+                                {String(s.name || '').slice(0, 2).toUpperCase()}
+                              </div>
+                              <div>
+                                <span className="font-sans font-bold text-sm text-editorial-text-primary block leading-tight">{s.name}</span>
+                                <span className="text-[10px] text-editorial-text-muted font-mono">{s.rfc ? `RIF: ${s.rfc}` : `ID: ${s.id}`}</span>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-3.5 px-4 text-editorial-text-muted font-sans text-xs">
+                            {s.address || 'Sabanota'}
+                          </td>
+                          <td className="py-3.5 px-4 text-right text-editorial-text-muted font-mono">
+                            {s.totalMovementsCount || 0}
+                          </td>
+                          <td className="py-3.5 px-4 text-right font-mono font-bold text-sm text-emerald-400">
+                            {kg.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Kg
+                          </td>
+                          <td className="py-3.5 px-4 text-right font-mono font-bold">
+                            {(() => {
+                              const { payable: rPayable, debt: rDebt } = calculateDynamicBalances(s, transactions);
+                              if (rPayable > 0) return <span className="text-amber-500">+${rPayable.toFixed(2)}</span>;
+                              if (rDebt > 0) return <span className="text-rose-400">-${rDebt.toFixed(2)}</span>;
+                              return <span className="text-editorial-text-muted/60">$0.00</span>;
+                            })()}
+                          </td>
+                          <td className="py-3.5 px-4 text-center">
+                            <button
+                              onClick={() => openModal('historial', s.id)}
+                              className="px-2.5 py-1 bg-editorial-bg hover:bg-editorial-card border border-editorial-border rounded text-[10px] font-mono text-editorial-text-primary hover:text-amber-500 transition-colors"
+                            >
+                              Ver Libreta
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className={`grid grid-cols-1 md:grid-cols-2 ${isSidebarOpen ? 'lg:grid-cols-3' : 'lg:grid-cols-4'} gap-6`}>
+          {suppliers
+            .filter(s => activeTab === 'libreta' ? (s.isCheeseProducer || s.isEmployee) : (!s.isCheeseProducer && !s.isEmployee))
+            .filter(s => {
+              if (!searchQuery.trim()) return true;
+              const term = searchQuery.toLowerCase();
+              return (
+                String(s.name || '').toLowerCase().includes(term) ||
+                String(s.contactName || '').toLowerCase().includes(term) ||
+                String(s.rfc || '').toLowerCase().includes(term) ||
+                String(s.address || '').toLowerCase().includes(term) ||
+                String(s.id || '').toLowerCase().includes(term)
+              );
+            })
+            .map((s) => {
+              // Calcular saldo dinámico y reactivo en tiempo real desde el historial y perfil
+              const { payable: displayedPayable, debt: displayedDebt } = calculateDynamicBalances(s, transactions);
+
+              return (
+                <div key={s.id} className="bg-editorial-card border border-editorial-border rounded p-4 flex flex-col justify-between hover:border-editorial-text-primary/40 transition-all duration-300">
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-start">
+                      <div className="w-10 h-10 rounded bg-editorial-text-primary/10 text-editorial-text-primary flex items-center justify-center font-serif text-lg font-bold border border-editorial-text-primary/30">
+                        {String(s.name || 'Sin Nombre').slice(0, 2).toUpperCase()}
+                      </div>
+                      <span className="font-mono text-[9px] text-editorial-text-muted/60">ID PROV: {String(s.id || '')}</span>
+                      <button onClick={() => openEditModal(s)} className="text-[10px] text-amber-500 hover:text-amber-400">✏️ Editar</button>
+                    </div>
+
+                    <div className="space-y-1">
+                      <h4 className="font-serif text-xl font-bold text-editorial-text-primary tracking-tight leading-tight">{String(s.name || 'Sin Nombre')}</h4>
+                      <p className="text-xs text-editorial-text-muted font-sans mt-1">
+                        <span className="text-[10px] font-mono uppercase text-editorial-text-muted/60 block mt-1.5">Vendedor:</span>
+                        {s.contactName}
+                      </p>
+                      <p className="text-xs text-editorial-text-muted leading-tight font-sans">
+                        <span className="text-[10px] font-mono uppercase text-editorial-text-muted/60 block mt-1.5">Ubicación:</span>
+                        {s.address}
+                      </p>
+                    </div>
+
+                    {s.rfc && (
+                      <div className="pt-2">
+                        <span className="text-[9px] font-mono uppercase text-editorial-text-muted/60">RIF / Cédula:</span>
+                        <p className="text-xs font-mono text-editorial-text-primary mt-0.5">{s.rfc}</p>
+                      </div>
+                    )}
+                    {(s.phone || s.birthday) && (
+                      <div className="pt-2 border-t border-editorial-border/30 mt-2 grid grid-cols-2 gap-2">
+                        {s.phone && (
+                          <div>
+                            <span className="text-[9px] font-mono uppercase text-editorial-text-muted/60">Teléfono:</span>
+                            <p className="text-[11px] font-mono mt-0.5"><a href={`tel:${s.phone}`} className="text-amber-500 hover:text-amber-400">{s.phone}</a></p>
+                          </div>
+                        )}
+                        {s.birthday && (
+                          <div>
+                            <span className="text-[9px] font-mono uppercase text-editorial-text-muted/60">Cumpleaños:</span>
+                            <p className="text-[11px] font-mono mt-0.5 text-editorial-text-primary">{s.birthday}</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-3 pt-3 border-t border-editorial-border/60 space-y-2">
+                    <div className="flex justify-between items-center bg-editorial-bg border border-editorial-border/60 rounded p-2">
+                      <div>
+                        <span className="text-[9px] font-mono uppercase text-editorial-text-muted block leading-none mb-1">
+                          {s.isEmployee ? 'Sueldo Acumulado' : 'Cuentas por Pagar'}
+                        </span>
+                        <span className={`font-mono font-bold text-xs ${displayedPayable > 0 ? 'text-amber-500 font-extrabold' : 'text-editorial-text-muted/60'}`}>
+                          $ {displayedPayable.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                        </span>
+                        <span className="block text-[9px] font-mono text-editorial-text-muted/80 mt-0.5">
+                          Bs {(displayedPayable * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-[9px] font-mono uppercase text-editorial-text-muted block leading-none mb-1">A cobrar</span>
+                        <span className={`font-mono font-bold text-xs ${displayedDebt > 0 ? 'text-rose-400 font-extrabold' : 'text-editorial-text-muted/60'}`}>
+                          $ {displayedDebt.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                        </span>
+                        <span className="block text-[9px] font-mono text-editorial-text-muted/80 mt-0.5">
+                          Bs {(displayedDebt * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-1.5 mt-2 pt-2 border-t border-editorial-border/30">
+                      <button
+                        type="button"
+                        onClick={() => openModal('historial', s.id)}
+                        className="py-1.5 px-2 bg-editorial-bg hover:bg-editorial-card border border-editorial-border text-[9px] font-mono font-bold uppercase rounded flex items-center justify-center gap-1.5 cursor-pointer transition-all text-editorial-text-primary"
+                      >
+                        <Eye className="w-3.5 h-3.5" /> Historial
+                      </button>
+                      {s.isCheeseProducer && (
+                        <button
+                          type="button"
+                          onClick={() => openModal('recibir', s.id)}
+                          className="py-1.5 px-2 bg-editorial-text-primary/10 hover:bg-editorial-text-primary/20 border border-editorial-text-primary/30 text-[9px] font-mono font-bold uppercase rounded flex items-center justify-center gap-1.5 cursor-pointer transition-all text-editorial-text-primary"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> Recibir Queso
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => openModal('pagar', s.id)}
+                        className="py-1.5 px-2 bg-editorial-bg hover:bg-editorial-card border border-editorial-border text-[9px] font-mono font-bold uppercase rounded flex items-center justify-center gap-1.5 cursor-pointer transition-all text-editorial-text-primary"
+                      >
+                        <Wallet className="w-3.5 h-3.5" /> Pagar a Él
+                      </button>
+                      {!s.isEmployee && (
+                        <button
+                          type="button"
+                          onClick={() => openModal('abonar', s.id)}
+                          className="py-1.5 px-2 bg-editorial-bg hover:bg-editorial-card border border-editorial-border text-[9px] font-mono font-bold uppercase rounded flex items-center justify-center gap-1.5 cursor-pointer transition-all text-editorial-text-primary"
+                        >
+                          <CreditCard className="w-3.5 h-3.5" /> Movimiento
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t border-editorial-border/40 flex items-center justify-between text-[10px] text-editorial-text-muted font-mono">
+                    <span className="uppercase text-[9px]">Enlace:</span>
+                    <div className="flex gap-1.5 items-center leading-none">
+                      <Phone className="w-3.5 h-3.5 text-amber-500/80" />
+                      <span>{s.phone}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+        </div>
+      )}
+
+      {/* Panel Lateral (Drawer) de Libreta */}
+      {activeModal && selectedSupplierId && (
+        <>
+          {/* Backdrop overlay */}
+          <div 
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 transition-opacity cursor-pointer"
+            onClick={() => setActiveModal(null)}
+          />
+          
+          {/* Dynamic Modal/Drawer Container */}
+          <div className={
+            activeModal === 'historial'
+              ? `fixed inset-3 md:inset-5 z-50 bg-neutral-900 border border-neutral-700 shadow-2xl rounded-xl flex flex-col transition-all duration-300 ${isSidebarOpen ? 'lg:left-[335px]' : 'lg:left-5'}`
+              : "fixed right-0 top-0 h-screen overflow-hidden w-full sm:w-[450px] max-w-full bg-neutral-900 border-l border-neutral-700 shadow-2xl z-50 animate-slide-left flex flex-col"
+          }>
+            {(() => {
+              const s = suppliers.find(sup => sup.id === selectedSupplierId);
+              if (!s) return null;
+
+              if (activeModal === 'historial') {
+                const supTxRaw = localTransactions;
+                
+                const getTxTimeMs = (tx: any): number => {
+                  if (!tx) return 0;
+                  if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+                  if (tx.timestamp) {
+                    if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+                    if (typeof tx.timestamp === 'number') return tx.timestamp;
+                  }
+                  if (tx.id && typeof tx.id === 'string') {
+                    const parts = tx.id.split('-');
+                    for (const part of parts) {
+                      if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+                    }
+                  }
+                  return parseCustomDate(tx.date || '') || 0;
+                };
+
+                // Sort strictly ascending (oldest first) to compute running progressive balance
+                const ascendingTx = [...supTxRaw].sort((a, b) => getTxTimeMs(a) - getTxTimeMs(b));
+
+                // Calculate progressive running balance
+                // Para trabajadores (isEmployee: true):
+                // - Pago de Nómina / Sueldo (gastos/compras/nómina) SUMA (+) como saldo a favor del trabajador
+                // - Consumos de Bodega / Víveres fiados (COMPRA_POS / credito) RESTA (-) del saldo acumulado
+                //   * Si runningBalance > 0: La empresa le debe sueldo neto al trabajador.
+                //   * Si runningBalance < 0: El trabajador le debe a la bodega de la empresa.
+                //   * Si runningBalance == 0: Cuentas totalmente saldadas.
+                // Para productores (isCheeseProducer: true):
+                // - Entrega de queso (isIncome: true) suma a favor del productor (+)
+                // - Pago recibido (isIncome: false) descuenta (-)
+                let currentBalance = 0;
+                const txWithBalance = ascendingTx.map(tx => {
+                  let sum = 0;
+                  let rest = 0;
+                  const isEmp = !!s.isEmployee;
+                  
+                  if (isEmp) {
+                    const isLiquidation = (tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'));
+                    const isBodegaDebt = !isLiquidation && (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda')));
+                    const isPayroll = !isLiquidation && (tx.category === 'gastos' || tx.category === 'compras' || (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))));
+                    
+                    if (isLiquidation) {
+                      rest = Number(tx.amount) > 0 ? Number(tx.amount) : Math.max(0, currentBalance);
+                      currentBalance = 0;
+                    } else if (isPayroll) {
+                      sum = Number(tx.amount) || 0;
+                      currentBalance += sum;
+                    } else if (isBodegaDebt) {
+                      rest = Number(tx.amount) || 0;
+                      currentBalance -= rest;
+                    } else if (tx.isIncome) {
+                      sum = Number(tx.amount) || 0;
+                      currentBalance += sum;
+                    } else {
+                      rest = Number(tx.amount) || 0;
+                      currentBalance -= rest;
+                    }
+                  } else {
+                    const isStoreDebt = (tx.category === 'credito' && !tx.isIncome) || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda'));
+                    const isDelivery = (tx.category === 'compras' && tx.isIncome) || (tx.notes && (tx.notes.toLowerCase().includes('recibido') || tx.notes.toLowerCase().includes('arrime') || tx.notes.toLowerCase().includes('entrega')));
+
+                    if (isDelivery) {
+                      sum = Number(tx.amount) || 0;
+                      currentBalance += sum;
+                    } else if (isStoreDebt) {
+                      rest = Number(tx.amount) || 0;
+                      currentBalance -= rest;
+                    } else if (tx.isIncome) {
+                      sum = Number(tx.amount) || 0;
+                      currentBalance += sum;
+                    } else {
+                      rest = Number(tx.amount) || 0;
+                      currentBalance -= rest;
+                    }
+                  }
+                  
+                  return {
+                    ...tx,
+                    sum,
+                    rest,
+                    runningBalance: currentBalance
+                  };
+                });
+
+                // Presentar de forma estrictamente descendente (el más reciente siempre primero arriba)
+                const filteredTx = [...txWithBalance].reverse();
+
+                // El saldo consolidado en el encabezado toma el saldo progresivo final calculado de su libreta en cascada
+                const workerFinalBalance = txWithBalance.length > 0 
+                  ? (txWithBalance[txWithBalance.length - 1].runningBalance ?? 0)
+                  : (() => {
+                      const { payable, debt } = calculateDynamicBalances(s, transactions);
+                      return payable > 0 ? payable : (debt > 0 ? -debt : ((Number(s.balanceOwed) || 0) - (Number(s.storeDebt) || 0)));
+                    })();
+
+                return (
+                  <div className="flex flex-col h-full overflow-hidden w-full max-w-full">
+                    {/* Header */}
+                    <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
+                      <div>
+                        <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><Eye className="w-5 h-5 text-amber-500"/> Estado de Cuenta: {s.name}</h3>
+                        <p className="text-[10px] font-mono text-neutral-400 mt-1 uppercase">Historial de Movimientos y Saldo Progresivo</p>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <div className="bg-neutral-800/80 px-4 py-2 rounded border border-neutral-700/50 text-right">
+                          <span className="text-[10px] font-mono uppercase text-neutral-400 block leading-none mb-1">
+                            {s.isEmployee ? 'Saldo Acumulado a Favor' : 'Saldo Neto Disponible'}
+                          </span>
+                          <span className="font-mono font-bold text-sm text-amber-500">
+                            $ {workerFinalBalance.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                          </span>
+                          <span className="block text-[9px] font-mono text-neutral-500 mt-0.5">
+                            Bs {(workerFinalBalance * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Date Filters */}
+                    <div className="bg-neutral-900 p-4 border-b border-neutral-800 flex flex-wrap gap-4 items-end shrink-0">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-500 uppercase">Desde</label>
+                        <input type="date" value={historialStartDate} disabled={showAllTime} onChange={e => {setHistorialStartDate(e.target.value); setShowAllTime(false);}} className="h-9 px-3 bg-neutral-800 border border-neutral-700 rounded text-xs text-neutral-100 focus:border-amber-500 outline-none disabled:opacity-50" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-500 uppercase">Hasta</label>
+                        <input type="date" value={historialEndDate} disabled={showAllTime} onChange={e => {setHistorialEndDate(e.target.value); setShowAllTime(false);}} className="h-9 px-3 bg-neutral-800 border border-neutral-700 rounded text-xs text-neutral-100 focus:border-amber-500 outline-none disabled:opacity-50" />
+                      </div>
+                      <button
+                        onClick={() => setShowAllTime(!showAllTime)}
+                        className={`h-9 px-4 text-xs font-mono font-bold uppercase rounded border transition-colors ${showAllTime ? 'bg-amber-500 text-neutral-900 border-amber-500' : 'bg-neutral-800 text-neutral-400 border-neutral-700 hover:text-amber-500 hover:border-amber-500'}`}
+                      >
+                        {showAllTime ? 'Viendo Historial Completo' : 'Ver Todo el Historial'}
+                      </button>
+                    </div>
+
+                    {/* Content Table */}
+                    <div className="p-0 font-sans flex-1 bg-neutral-950 overflow-y-auto w-full">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead className="sticky top-0 bg-neutral-900 shadow-sm z-10">
+                          <tr className="border-b border-neutral-800 text-[10px] font-mono text-neutral-500 uppercase tracking-wider">
+                            <th className="py-3 px-4 font-normal whitespace-nowrap">Fecha</th>
+                            <th className="py-3 px-4 font-normal whitespace-nowrap">Tipo</th>
+                            <th className="py-3 px-4 font-normal whitespace-nowrap">Descripción</th>
+                            <th className="py-3 px-4 text-right font-normal whitespace-nowrap">Suma (+)</th>
+                            <th className="py-3 px-4 text-right font-normal whitespace-nowrap">Resta (-)</th>
+                            <th className="py-3 px-4 text-right font-normal whitespace-nowrap">Saldo</th>
+                            <th className="py-3 px-4 text-center font-normal whitespace-nowrap">Acciones</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-800/50">
+                          {isLoadingHistorial ? (
+                            <tr>
+                              <td colSpan={7} className="py-8 text-center bg-neutral-950/40">
+                                <KaluLoader message="MUNDO KALU" subMessage="CARGANDO MOVIMIENTOS..." size="sm" />
+                              </td>
+                            </tr>
+                          ) : filteredTx.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="py-12 text-center text-neutral-500">No hay movimientos en este periodo.</td>
+                            </tr>
+                          ) : (
+                            filteredTx.map((tx) => {
+                               let catLabel: string = tx.category;
+                               let badgeClasses = "inline-block px-2 py-1 rounded bg-neutral-800 border border-neutral-700 text-[10px] font-mono uppercase text-neutral-300";
+                               
+                               if (s.isEmployee) {
+                                 if ((tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'))) {
+                                   catLabel = 'Liquidación';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-purple-500/20 border border-purple-500/30 text-[10px] font-mono uppercase text-purple-400 font-bold tracking-wider";
+                                 } else if (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))) {
+                                   catLabel = 'Nómina';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-amber-500/20 border border-amber-500/30 text-[10px] font-mono uppercase text-amber-400 font-bold tracking-wider";
+                                 } else if (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda'))) {
+                                   catLabel = 'Bodega/Víveres';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-rose-500/20 border border-rose-500/30 text-[10px] font-mono uppercase text-rose-400 font-bold tracking-wider";
+                                 } else if (tx.category === 'gastos' || tx.category === 'compras') {
+                                   catLabel = 'Pago';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-blue-500/20 border border-blue-500/30 text-[10px] font-mono uppercase text-blue-400 font-bold tracking-wider";
+                                 }
+                               } else {
+                                 if (tx.category === 'compras' && tx.isIncome) {
+                                   catLabel = 'Entrega';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-yellow-500/20 border border-yellow-500/30 text-[10px] font-mono uppercase text-yellow-500 font-bold tracking-wider";
+                                 } else if (tx.category === 'credito' && !tx.isIncome) {
+                                   catLabel = 'COMPRA_POS';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-neutral-700/50 border border-neutral-600/50 text-[10px] font-mono uppercase text-neutral-400 tracking-wider";
+                                 } else if (tx.category === 'compras' && !tx.isIncome) {
+                                   catLabel = 'Pago';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-blue-500/20 border border-blue-500/30 text-[10px] font-mono uppercase text-blue-500 font-bold tracking-wider";
+                                 } else if (tx.category === 'credito' && tx.isIncome) {
+                                   catLabel = 'Abono';
+                                   badgeClasses = "inline-block px-2 py-1 rounded bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-mono uppercase text-emerald-500 font-bold tracking-wider";
+                                 }
+                               }
+
+                               return (
+                                 <tr key={tx.id} className="hover:bg-neutral-800/30 transition-colors">
+                                   <td className="py-3 px-4 whitespace-nowrap text-neutral-300 font-mono text-[10px]">{tx.date.split(',')[0]}</td>
+                                   <td className="py-3 px-4 whitespace-nowrap">
+                                     <span className={badgeClasses}>
+                                       {catLabel}
+                                     </span>
+                                   </td>
+                                   <td className="py-3 px-4 text-neutral-400 whitespace-nowrap">
+                                     <div className="max-w-[250px] truncate" title={tx.notes || tx.paymentMethod || `Ref: ${tx.invoiceNumber}`}>
+                                       {tx.notes || tx.paymentMethod || `Ref: ${tx.invoiceNumber}`}
+                                     </div>
+                                   </td>
+                                   <td className="py-3 px-4 text-right font-mono font-bold text-amber-500 whitespace-nowrap">
+                                     {tx.sum > 0 ? `+${tx.sum.toLocaleString('es-MX', {minimumFractionDigits: 2})}` : '-'}
+                                   </td>
+                                   <td className="py-3 px-4 text-right font-mono font-bold text-rose-500 whitespace-nowrap">
+                                     {tx.rest > 0 ? `-${tx.rest.toLocaleString('es-MX', {minimumFractionDigits: 2})}` : '-'}
+                                   </td>
+                                   <td className="py-3 px-4 text-right font-mono font-bold text-neutral-200 whitespace-nowrap">
+                                     ${tx.runningBalance.toLocaleString('es-MX', {minimumFractionDigits: 2})}
+                                   </td>
+                                   <td className="py-3 px-4 text-center whitespace-nowrap">
+                                      <button title="Eliminar registro (Temporalmente Deshabilitado)" className="p-1.5 text-neutral-600 hover:text-rose-500 transition-colors rounded">
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                   </td>
+                                 </tr>
+                               );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              }
+
+              if (activeModal === 'recibir') {
+                const cleanKgStr = String(receiveKg || '').trim().replace(',', '.');
+                const cleanPriceStr = String(receivePrice || '').trim().replace(',', '.');
+                const currentKg = parseFloat(cleanKgStr) || parseSafeDecimal(receiveKg) || 0;
+                const currentPrice = parseFloat(cleanPriceStr) || parseSafeDecimal(receivePrice) || 0;
+                const calculatedSubtotal = Number((currentKg * currentPrice).toFixed(2));
+                const calculatedSubtotalBs = Number((calculatedSubtotal * (exchangeRate || 1)).toFixed(2));
+
+                return (
+                  <div className="flex flex-col h-full overflow-hidden">
+                    {/* Header */}
+                    <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
+                      <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><Plus className="w-5 h-5"/> Compra a {s.name}</h3>
+                      <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+                    {/* Content */}
+                    <div className="p-5 space-y-5 flex-1 overflow-y-auto">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Concepto / Rubro</label>
+                        <select 
+                          value={receiveProductId} 
+                          onChange={e => {
+                            const selId = e.target.value;
+                            setReceiveProductId(selId);
+                            if (selId !== 'Otro') {
+                              setCustomProductName('');
+                              setCreateNewProduct(false);
+                              const prod = cheeseProducts.find(p => p.id === selId);
+                              if (prod) {
+                                const prodPrice = prod.purchasePrice || prod.sellingPrice || 0;
+                                if (prodPrice > 0) {
+                                  setReceivePrice(String(prodPrice));
+                                }
+                              }
+                            } else {
+                              setReceivePrice('');
+                            }
+                          }} 
+                          className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer"
+                        >
+                          <option value="">Seleccione Producto a Arrimar</option>
+                          {cheeseProducts
+                            .filter(p => 
+                              p.category?.toLowerCase().includes('queso') || 
+                              p.category?.toLowerCase().includes('lacteo') ||
+                              p.name?.toLowerCase().includes('queso')
+                            )
+                            .map(p => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                          <option value="Otro">Otro rubro / Animal</option>
+                        </select>
+                        {receiveProductId === 'Otro' && (
+                          <div className="space-y-2 mt-2">
+                            <input type="text" value={customProductName} onChange={e => setCustomProductName(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" placeholder="Ej. Cochino, Ganado, Suero..." />
+                            <label className="flex items-center gap-2 cursor-pointer text-xs text-neutral-300 hover:text-amber-500 transition-colors">
+                              <input 
+                                type="checkbox" 
+                                checked={createNewProduct} 
+                                onChange={(e) => setCreateNewProduct(e.target.checked)} 
+                                className="w-4 h-4 rounded border-neutral-700 text-amber-500 focus:ring-amber-500 focus:ring-offset-neutral-900 bg-neutral-800"
+                              />
+                              Registrar como nuevo ítem en el inventario
+                            </label>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex gap-4">
+                        <div className="space-y-1.5 flex-1">
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Cantidad (Kg/Unid)</label>
+                          <input 
+                            type="text" 
+                            inputMode="decimal" 
+                            value={receiveKg} 
+                            onChange={(e) => setReceiveKg(e.target.value)} 
+                            onFocus={(e) => e.target.select()}
+                            className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all font-mono" 
+                            placeholder="Ej. 50" 
+                          />
+                        </div>
+                        <div className="space-y-1.5 flex-1">
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Precio Unitario ($)</label>
+                          <input 
+                            type="text" 
+                            inputMode="decimal" 
+                            value={receivePrice} 
+                            onChange={(e) => setReceivePrice(e.target.value)} 
+                            onFocus={(e) => e.target.select()}
+                            className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all font-mono" 
+                            placeholder="Ej. 3.50" 
+                          />
+                        </div>
+                      </div>
+
+                      {/* Real-time Subtotal */}
+                      <div className="bg-neutral-800/50 border border-neutral-700 rounded p-4 text-center">
+                        <span className="text-[10px] font-mono text-neutral-400 uppercase block">Subtotal Calculado</span>
+                        <span className="font-mono text-2xl font-bold text-amber-500 block mt-1">
+                          $ {calculatedSubtotal.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                        <span className="text-[10px] font-mono text-neutral-500 mt-1 block">
+                          Bs {calculatedSubtotalBs.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Forma de Pago</label>
+                        <select value={receivePayment} onChange={e => setReceivePayment(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
+                          <option value="A la Libreta">A la Libreta (Sumar a Deuda / Cobrar Fiado)</option>
+                          <option value="Efectivo / Caja Chica">Pagado en Efectivo / Caja Chica</option>
+                          <option value="Pago Móvil / Banco">Pagado por Banco</option>
+                        </select>
+                      </div>
+
+                      {s.storeDebt > 0 && receivePayment === 'A la Libreta' && (
+                        <div className="bg-rose-950/20 border border-rose-900/50 rounded p-4 text-xs text-rose-300 font-mono leading-relaxed">
+                          ⚠️ El productor debe <strong>${(s.storeDebt || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</strong> por fiados en el POS.<br/>
+                          Esta deuda será cobrada automáticamente del subtotal.
+                        </div>
+                      )}
+
+                      <div className="pt-4">
+                        <button
+                          disabled={isSubmitting}
+                          onClick={async () => {
+                            if (!receiveProductId || calculatedSubtotal <= 0 || (receiveProductId === 'Otro' && !customProductName.trim())) return onAddNotification('Campos incompletos o inválidos', 'warning');
+                            
+                            const selectedCheese = cheeseProducts.find(p => p.id === receiveProductId);
+                            const finalProductName = receiveProductId === 'Otro' ? customProductName.trim() : (selectedCheese?.name || 'Queso');
+                            const payloadProductId = receiveProductId === 'Otro' ? `custom-${Date.now()}` : receiveProductId;
+
+                            try {
+                              setIsSubmitting(true);
+                              if (onLoadPurchase) {
+                                await onLoadPurchase({
+                                  supplierId: s.id,
+                                  items: [{ 
+                                    productId: payloadProductId, 
+                                    quantityKg: currentKg, 
+                                    purchasePrice: currentPrice, 
+                                    sellingPrice: 0, 
+                                    marginPercent: 0, 
+                                    name: finalProductName,
+                                    createNewItem: createNewProduct 
+                                  }],
+                                  isCredit: receivePayment === 'A la Libreta',
+                                  paymentMethod: receivePayment
+                                });
+                              }
+                              onAddNotification(`Recepción de ${finalProductName} registrada correctamente.`, 'success');
+                              setActiveModal(null);
+                            } catch (error) {
+                              onAddNotification('Error al registrar recepción', 'warning');
+                            } finally {
+                              setIsSubmitting(false);
+                            }
+                          }}
+                          className="w-full py-3.5 bg-amber-600 hover:bg-amber-500 text-neutral-900 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                        >
+                          {isSubmitting ? 'Procesando...' : 'Confirmar Recepción'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              if (activeModal === 'pagar') {
+                if (s.isEmployee) {
+                  // Calcular el saldo real acumulado a favor del trabajador a liquidar
+                  const supNameClean = (s.name || '').trim().toLowerCase();
+                  const workerTxs = transactions.filter((d: any) => {
+                    if (!d) return false;
+                    const entityMatch = d.entity && String(d.entity).trim().toLowerCase() === supNameClean;
+                    const supplierIdMatch = d.supplierId && String(d.supplierId) === String(s.id);
+                    const entityIdMatch = d.entityId && String(d.entityId) === String(s.id);
+                    return entityMatch || supplierIdMatch || entityIdMatch;
+                  });
+
+                  let workerCalculatedSalary = Number(s.balanceOwed) || 0;
+                  if (workerTxs.length > 0) {
+                    const getTxTime = (tx: any): number => {
+                      if (!tx) return 0;
+                      if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+                      if (tx.timestamp) {
+                        if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+                        if (typeof tx.timestamp === 'number') return tx.timestamp;
+                      }
+                      if (tx.id && typeof tx.id === 'string') {
+                        const parts = tx.id.split('-');
+                        for (const part of parts) {
+                          if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+                        }
+                      }
+                      return parseCustomDate(tx.date || '') || 0;
+                    };
+
+                    const asc = [...workerTxs].sort((a, b) => getTxTime(a) - getTxTime(b));
+                    let running = 0;
+                    asc.forEach(tx => {
+                      const isLiquidation = (tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'));
+                      const isBodegaDebt = !isLiquidation && (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda')));
+                      const isPayroll = !isLiquidation && (tx.category === 'gastos' || tx.category === 'compras' || (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))));
+                      
+                      if (isLiquidation) {
+                        running = 0;
+                      } else if (isPayroll) {
+                        running += (Number(tx.amount) || 0);
+                      } else if (isBodegaDebt) {
+                        running -= (Number(tx.amount) || 0);
+                      } else if (tx.isIncome) {
+                        running += (Number(tx.amount) || 0);
+                      } else {
+                        running -= (Number(tx.amount) || 0);
+                      }
+                    });
+                    workerCalculatedSalary = running;
+                  }
+
+                  return (
+                    <div className="flex flex-col h-full">
+                      {/* Header */}
+                      <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
+                        <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2">
+                          <Wallet className="w-5 h-5"/> Liquidación / Sueldo de {s.name}
+                        </h3>
+                        <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+                      {/* Content */}
+                      <div className="p-5 space-y-4 flex-1 overflow-y-auto">
+                        <div className="bg-amber-500/10 border border-amber-500/30 rounded p-4 text-center">
+                          <span className="text-[10px] font-mono uppercase text-neutral-400 block tracking-wider font-bold">Saldo Acumulado a Favor / Pendiente a Liquidar</span>
+                          <span className="font-mono text-3xl font-extrabold text-amber-400 block mt-1">
+                            $ {workerCalculatedSalary.toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD
+                          </span>
+                          <span className="text-xs font-mono text-amber-400/80 block mt-1">
+                            ≈ Bs {(workerCalculatedSalary * (exchangeRate || 42.5)).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+
+                        {(Number(s.storeDebt) > 0) && (
+                          <div className="bg-rose-500/10 border border-rose-500/30 rounded p-3 text-center">
+                            <span className="text-[10px] font-mono uppercase text-rose-400 block tracking-wider">Deuda de Bodega a Cruzar: ${(Number(s.storeDebt) || 0).toFixed(2)} USD</span>
+                          </div>
+                        )}
+
+                        <div className="bg-neutral-800/40 border border-neutral-700/60 rounded p-3.5 text-xs text-neutral-300 font-mono leading-relaxed space-y-1">
+                          <div className="font-bold text-amber-400">ℹ️ Cierre Administrativo de Nómina:</div>
+                          <p>Al confirmar aquí se registra el cierre formal de la nómina devengada y se saldan las cuentas del colaborador, dejando su cuenta limpia en <strong>$0.00</strong> sin debitar fondos de bancos o tesorería.</p>
+                        </div>
+
+                        <div className="pt-2">
+                          <button
+                            disabled={isSubmitting}
+                            onClick={async () => {
+                              try {
+                                setIsSubmitting(true);
+                                if (onUpdateSupplier) {
+                                  await onUpdateSupplier(s.id, { storeDebt: 0, balanceOwed: 0 });
+                                }
+                                const nowMs = Date.now();
+                                const liqAmount = Number(workerCalculatedSalary) || 0;
+                                // Registro informativo de auditoría interna sin impacto monetario de egreso en tesorería
+                                await addLocalDoc('transactions', {
+                                  id: `TX-LIQ-${nowMs}`,
+                                  category: 'ajuste_interno',
+                                  amount: 0,
+                                  isIncome: false,
+                                  entity: s.name,
+                                  supplierId: s.id,
+                                  date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+                                  notes: `Cierre de Nómina / Liquidación interna para ${s.name} (Acumulado cerrado: $${liqAmount.toFixed(2)} USD). Cuenta reseteada a $0.00.`,
+                                  paymentMethod: 'Cierre Administrativo',
+                                  status: 'Completado',
+                                  createdAt: nowMs
+                                });
+                                onAddNotification(`Liquidación finalizada para ${s.name}. Saldo en $0.00.`, 'success');
+                                setActiveModal(null);
+                              } catch (e) {
+                                onAddNotification('Error al liquidar cuenta', 'warning');
+                              } finally {
+                                setIsSubmitting(false);
+                              }
+                            }}
+                            className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-neutral-950 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer shadow-lg font-black disabled:opacity-50"
+                          >
+                            {isSubmitting ? 'Procesando...' : 'CONFIRMAR LIQUIDACIÓN Y DEJAR SALDO EN $0,00'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                const inputAmt = parseSafeDecimal(payToThemAmount) || 0;
+                const usdAmount = payToThemCurrency === 'VES' ? (inputAmt / (exchangeRate || 1)) : inputAmt;
+                
+                // Cálculo de saldo y tope de crédito dinámico (última entrega / arrime de queso)
+                const currentBalanceOwed = Number(s.balanceOwed) || 0;
+                const currentStoreDebt = Number(s.storeDebt) || 0;
+
+                const dynamicProducerCreditLimit = (() => {
+                  const supNameClean = (s.name || '').trim().toLowerCase();
+                  const producerTxs = (transactions || []).filter((tx: any) => {
+                    if (!tx) return false;
+                    const entityMatch = tx.entity && String(tx.entity).trim().toLowerCase() === supNameClean;
+                    const supplierIdMatch = tx.supplierId && String(tx.supplierId) === String(s.id);
+                    const entityIdMatch = tx.entityId && String(tx.entityId) === String(s.id);
+                    return entityMatch || supplierIdMatch || entityIdMatch;
+                  });
+
+                  const getTxTime = (tx: any): number => {
+                    if (!tx) return 0;
+                    if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+                    if (tx.timestamp) {
+                      if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+                      if (typeof tx.timestamp === 'number') return tx.timestamp;
+                    }
+                    if (tx.id && typeof tx.id === 'string') {
+                      const parts = tx.id.split('-');
+                      for (const part of parts) {
+                        if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+                      }
+                    }
+                    return parseCustomDate(tx.date || '') || 0;
+                  };
+
+                  const sortedTxs = [...producerTxs].sort((a, b) => getTxTime(b) - getTxTime(a));
+                  const lastDelivery = sortedTxs.find(tx => {
+                    const isPurchase = tx.category === 'compras';
+                    const isReceipt = tx.isIncome || (tx.paymentMethod && tx.paymentMethod.includes('Libreta')) || (tx.notes && (tx.notes.toLowerCase().includes('recibid') || tx.notes.toLowerCase().includes('compra') || tx.notes.toLowerCase().includes('arrime')));
+                    const notPayment = !tx.notes?.toLowerCase().includes('pago') && !tx.notes?.toLowerCase().includes('adelanto') && !tx.notes?.toLowerCase().includes('liquidaci');
+                    return (isPurchase && notPayment) || (tx.isIncome && Number(tx.amount) > 0);
+                  });
+
+                  if (lastDelivery && Number(lastDelivery.amount) > 0) {
+                    return Number(lastDelivery.amount);
+                  }
+
+                  if (currentBalanceOwed > 0) {
+                    return currentBalanceOwed;
+                  }
+
+                  return 0;
+                })();
+                
+                // Si el pago excede lo que le debemos de queso, el excedente se convierte en saldo a cobrar / deuda / adelanto
+                const excessAdvance = Math.max(0, usdAmount - currentBalanceOwed);
+                const projectedDebt = currentStoreDebt + excessAdvance;
+                const isOverCreditLimit = projectedDebt > dynamicProducerCreditLimit;
+                
+                const isValidAmount = inputAmt > 0 && !isOverCreditLimit;
+
+                return (
+                  <div className="flex flex-col h-full">
+                    {/* Header */}
+                    <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
+                      <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><Wallet className="w-5 h-5"/> Pagar / Adelanto a {s.name}</h3>
+                      <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+                    {/* Content */}
+                    <div className="p-5 space-y-4 flex-1 overflow-y-auto">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="bg-amber-500/10 border border-amber-500/30 rounded p-3 text-center">
+                          <span className="text-[9px] font-mono uppercase text-neutral-400 block tracking-wider font-bold">Saldo a Favor del Productor</span>
+                          <span 
+                            onClick={() => {
+                              if (currentBalanceOwed > 0) {
+                                setPayToThemAmount(currentBalanceOwed.toFixed(2));
+                                setPayToThemCurrency('USD');
+                                setPayToThemConcept('Pago de Saldo / Liquidación de Queso');
+                              }
+                            }}
+                            className={`font-mono text-xl font-extrabold block mt-0.5 ${currentBalanceOwed > 0 ? 'text-amber-500 cursor-pointer hover:underline hover:text-amber-400' : 'text-neutral-500'}`}
+                          >
+                            $ {currentBalanceOwed.toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD
+                          </span>
+                          <span className="text-[10px] font-mono text-amber-500/70 block">
+                            Bs {(currentBalanceOwed * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+
+                        <div className="bg-neutral-800/60 border border-neutral-700 rounded p-3 text-center">
+                          <span className="text-[9px] font-mono uppercase text-neutral-400 block tracking-wider font-bold">Tope de Crédito (Última Entrega)</span>
+                          <span className="font-mono text-xl font-extrabold text-neutral-200 block mt-0.5">
+                            $ {dynamicProducerCreditLimit.toFixed(2)} USD
+                          </span>
+                          <span className="text-[10px] font-mono text-neutral-400 block">
+                            Deuda actual: <strong className={currentStoreDebt > 0 ? 'text-rose-400' : 'text-neutral-300'}>${currentStoreDebt.toFixed(2)}</strong>
+                          </span>
+                        </div>
+                      </div>
+                      
+                      {s.balanceOwed > 0 && (s.storeDebt || 0) > 0 && (
+                        <div className="bg-rose-500/10 border border-rose-500/30 rounded p-3.5 flex justify-between items-center">
+                           <div className="text-xs font-sans text-rose-200">
+                             Él nos debe: <strong className="font-mono">${s.storeDebt?.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</strong>
+                           </div>
+                           <button onClick={() => {
+                              onNetSupplierBalances?.(s.id);
+                              onAddNotification('Saldos cruzados internamente.', 'info');
+                              setActiveModal(null);
+                           }} className="px-3 py-1.5 bg-rose-500 hover:bg-rose-600 text-white font-mono text-[9px] uppercase font-bold rounded cursor-pointer transition-all">
+                              Compensar Saldos
+                           </button>
+                        </div>
+                      )}
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Concepto del Pago / Salida</label>
+                        <select 
+                          value={payToThemConcept} 
+                          onChange={e => setPayToThemConcept(e.target.value)} 
+                          className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer"
+                        >
+                          <option value="Pago de Saldo / Liquidación de Queso">Pago de Saldo / Liquidación de Queso</option>
+                          <option value="Adelanto de Dinero">Adelanto de Dinero / Préstamo</option>
+                          <option value="Pago de Servicios (Internet, Luz, etc.)">Pago de Servicios (Internet, Luz, etc.)</option>
+                          <option value="Pago de Favor / Encargo">Pago de Favor / Encargo</option>
+                          <option value="Otro Adelanto / Salida">Otro Adelanto / Salida</option>
+                        </select>
+                      </div>
+
+                      {currentBalanceOwed > 0 && (
+                        <div className="flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (payToThemCurrency === 'VES') {
+                                setPayToThemAmount(((s.balanceOwed || 0) * exchangeRate).toFixed(2));
+                              } else {
+                                setPayToThemAmount((s.balanceOwed || 0).toFixed(2));
+                              }
+                              setPayToThemConcept('Pago de Saldo / Liquidación de Queso');
+                            }}
+                            className="px-3 py-1 bg-neutral-800 border border-amber-500/50 hover:bg-amber-500/20 text-amber-500 text-[9px] font-mono font-bold uppercase rounded transition-colors cursor-pointer"
+                          >
+                            Liquidar Saldo a Favor Total
+                          </button>
+                        </div>
+                      )}
+
+                      <div className="flex gap-4">
+                        <div className="space-y-1.5 flex-[2]">
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto a Entregar</label>
+                          <input type="text" inputMode="decimal" value={payToThemAmount} onChange={e => setPayToThemAmount(e.target.value)} onFocus={(e) => e.target.select()} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all font-mono" placeholder="0.00" />
+                        </div>
+                        <div className="space-y-1.5 flex-[1]">
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Moneda</label>
+                          <select value={payToThemCurrency} onChange={e => {
+                            const newCurrency = e.target.value as 'USD' | 'VES';
+                            if (newCurrency !== payToThemCurrency) {
+                              const amt = parseSafeDecimal(payToThemAmount);
+                              if (amt > 0) {
+                                if (newCurrency === 'VES') {
+                                  setPayToThemAmount((amt * exchangeRate).toFixed(2));
+                                } else {
+                                  setPayToThemAmount((amt / (exchangeRate || 1)).toFixed(2));
+                                }
+                              }
+                              setPayToThemCurrency(newCurrency);
+                            }
+                          }} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
+                            <option value="USD">Dólares ($)</option>
+                            <option value="VES">Bolívares (Bs)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {payToThemCurrency === 'VES' && inputAmt > 0 && (
+                        <div className="text-right text-[10px] font-mono text-neutral-400">
+                          Equivalente: <strong className="text-amber-500">${usdAmount.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</strong> (Tasa: {exchangeRate})
+                        </div>
+                      )}
+
+                      {/* Alerta de Tope de Crédito Excedido (Bloqueo Estricto) */}
+                      {isOverCreditLimit && (
+                        <div className="bg-rose-950/50 border border-rose-600 rounded p-3.5 text-xs text-rose-300 font-mono space-y-1.5 animate-in fade-in">
+                          <div className="flex items-center gap-2 font-bold text-rose-400 text-[11px] uppercase">
+                            <BadgeAlert className="w-4 h-4 shrink-0 text-rose-500" />
+                            🔒 OPERACIÓN BLOQUEADA: TOPE DE CRÉDITO EXCEDIDO
+                          </div>
+                          <p className="text-[10px] leading-relaxed">
+                            Este pago o adelanto dejaría la deuda del productor en <strong className="text-white">${projectedDebt.toFixed(2)} USD</strong>, superando su tope dinámico de última entrega de <strong className="text-amber-400">${dynamicProducerCreditLimit.toFixed(2)} USD</strong>.
+                          </p>
+                          <p className="text-[10px] text-rose-400/90 font-bold">
+                            ⚠️ Reduzca el monto a un máximo de ${(Math.max(0, currentBalanceOwed + Math.max(0, dynamicProducerCreditLimit - currentStoreDebt))).toFixed(2)} USD para poder procesarlo.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Advertencia informativa de que genera adelanto/saldo en contra si supera el saldo a favor */}
+                      {!isOverCreditLimit && excessAdvance > 0 && (
+                        <div className="bg-amber-950/30 border border-amber-500/40 rounded p-3 text-[11px] text-amber-300 font-mono flex items-start gap-2">
+                          <BadgeAlert className="w-4 h-4 shrink-0 mt-0.5 text-amber-500" />
+                          <span>
+                            El monto excede el saldo pendiente. Se registrará un adelanto de <strong>${excessAdvance.toFixed(2)} USD</strong> a la cuenta del productor (Deuda total proyectada: <strong>${projectedDebt.toFixed(2)} USD</strong> / Tope de Entrega: ${dynamicProducerCreditLimit.toFixed(2)}).
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Fuente de Pago / Salida de Dinero</label>
+                        <select value={payToThemSource} onChange={e => setPayToThemSource(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all cursor-pointer">
+                          <option value="Efectivo / Caja Chica">Efectivo / Caja Chica</option>
+                          <option value="Pago Móvil / Banco">Pago Móvil / Banco</option>
+                        </select>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Detalles / Nota Opcional</label>
+                        <input 
+                          type="text" 
+                          value={payToThemNotes} 
+                          onChange={e => setPayToThemNotes(e.target.value)} 
+                          className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none transition-all" 
+                          placeholder="Ej. Pago de internet / Pago personal / Adelanto" 
+                        />
+                      </div>
+
+                      <div className="pt-2">
+                        <button
+                          disabled={!isValidAmount}
+                          onClick={() => {
+                            if (!isValidAmount) return;
+                            const customNote = payToThemNotes.trim() ? ` - ${payToThemNotes.trim()}` : '';
+                            const note = `${payToThemConcept}. Pago/Salida de ${payToThemCurrency === 'USD' ? '$' : 'Bs '}${inputAmt} ${payToThemCurrency} (Tasa: ${exchangeRate}). Fuente: ${payToThemSource}${customNote}`;
+                            
+                            onPaySupplierRemainingBalance?.(s.id, usdAmount, payToThemSource, note, payToThemCurrency);
+                            onAddNotification(`Pago/Adelanto de $${usdAmount.toFixed(2)} USD a ${s.name} registrado exitosamente.`, 'success');
+                            setActiveModal(null);
+                          }}
+                          className="w-full py-3.5 bg-amber-600 hover:bg-amber-500 text-neutral-900 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed font-bold"
+                        >
+                          {isOverCreditLimit ? 'Operación Bloqueada (Tope Excedido)' : 'Efectuar Pago / Adelanto'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              if (activeModal === 'abonar') {
+                const inputAmt = parseSafeDecimal(payToUsAmount) || 0;
+                const usdAmount = payToUsCurrency === 'VES' ? (inputAmt / exchangeRate) : inputAmt;
+                const isOverpaid = (Math.round(usdAmount * 100) / 100) > (Math.round((s.storeDebt || 0) * 100) / 100);
+                const isValidAmount = inputAmt > 0 && !isOverpaid;
+
+                return (
+                  <div className="flex flex-col h-full">
+                    {/* Header */}
+                    <div className="flex justify-between items-center border-b border-neutral-700 p-5 shrink-0 bg-neutral-900">
+                      <h3 className="font-serif text-lg font-bold text-amber-500 flex items-center gap-2"><CreditCard className="w-5 h-5"/> Cobrar Deuda de Tienda a Productor</h3>
+                      <button onClick={() => setActiveModal(null)} className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors cursor-pointer">
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+                    {/* Content */}
+                    <div className="p-5 space-y-4 flex-1 overflow-y-auto">
+                      <div className="bg-emerald-500/10 border border-emerald-500/30 rounded p-4 text-center">
+                        <span className="text-[10px] font-mono uppercase text-emerald-400/80 block tracking-wider">Él Nos Debe Actualmente</span>
+                        <span 
+                          onClick={() => {
+                            setPayToUsAmount((s.storeDebt || 0).toFixed(2));
+                            setPayToUsCurrency('USD');
+                          }}
+                          className="font-mono text-3xl font-extrabold text-emerald-500 block mt-1 cursor-pointer hover:underline hover:text-emerald-400 transition-colors"
+                        >
+                          $ {(s.storeDebt || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD
+                        </span>
+                        <span 
+                          onClick={() => {
+                            setPayToUsAmount(((s.storeDebt || 0) * exchangeRate).toFixed(2));
+                            setPayToUsCurrency('VES');
+                          }}
+                          className="text-xs font-mono text-emerald-500/70 block mt-1 cursor-pointer hover:underline hover:text-emerald-400 transition-colors"
+                        >
+                          Bs {((s.storeDebt || 0) * exchangeRate).toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                        </span>
+                      </div>
+
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (payToUsCurrency === 'VES') {
+                              setPayToUsAmount(((s.storeDebt || 0) * exchangeRate).toFixed(2));
+                            } else {
+                              setPayToUsAmount((s.storeDebt || 0).toFixed(2));
+                            }
+                          }}
+                          className="px-3 py-1.5 bg-neutral-800 border border-emerald-500/50 hover:bg-emerald-500/20 text-emerald-500 text-[10px] font-mono font-bold uppercase rounded transition-colors cursor-pointer"
+                        >
+                          Liquidar Total Deuda
+                        </button>
+                      </div>
+
+                      <div className="flex gap-4">
+                        <div className="space-y-1.5 flex-[2]">
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Monto a Cobrar</label>
+                          <input type="text" inputMode="decimal" value={payToUsAmount} onChange={e => setPayToUsAmount(e.target.value)} onFocus={(e) => e.target.select()} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all font-mono" placeholder="0.00" />
+                        </div>
+                        <div className="space-y-1.5 flex-[1]">
+                          <label className="text-[10px] font-mono text-neutral-400 uppercase block">Moneda</label>
+                          <select value={payToUsCurrency} onChange={e => {
+                            const newCurrency = e.target.value as 'USD' | 'VES';
+                            if (newCurrency !== payToUsCurrency) {
+                              const amt = parseSafeDecimal(payToUsAmount);
+                              if (amt > 0) {
+                                if (newCurrency === 'VES') {
+                                  setPayToUsAmount((amt * exchangeRate).toFixed(2));
+                                } else {
+                                  setPayToUsAmount((amt / exchangeRate).toFixed(2));
+                                }
+                              }
+                              setPayToUsCurrency(newCurrency);
+                            }
+                          }} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all cursor-pointer">
+                            <option value="USD">Dólares ($)</option>
+                            <option value="VES">Bolívares (Bs)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {payToUsCurrency === 'VES' && inputAmt > 0 && (
+                        <div className="text-right text-[10px] font-mono text-neutral-400">
+                          Equivalente: <strong className="text-emerald-500">${usdAmount.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</strong> (Tasa: {exchangeRate})
+                        </div>
+                      )}
+
+                      {isOverpaid && (
+                        <div className="bg-rose-950/40 border border-rose-900 rounded p-3 text-xs text-rose-400 font-mono flex items-start gap-2">
+                          <BadgeAlert className="w-4 h-4 shrink-0 mt-0.5" />
+                          <span>El monto ingresado no puede superar la deuda total de <strong>${(s.storeDebt || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })} USD</strong>.</span>
+                        </div>
+                      )}
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Método de Ingreso</label>
+                        <select value={payToUsMethod} onChange={e => setPayToUsMethod(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all cursor-pointer">
+                          <option value="Efectivo / Caja Chica">Efectivo / Caja Chica</option>
+                          <option value="Pago Móvil / Banco">Pago Móvil / Banco</option>
+                        </select>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-mono text-neutral-400 uppercase block">Concepto / Referencia / Nota</label>
+                        <input type="text" value={payToUsNote} onChange={e => setPayToUsNote(e.target.value)} className="w-full h-11 px-3 bg-neutral-800 border border-neutral-700 rounded text-sm text-neutral-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition-all" placeholder="Ej. Abono por víveres / Pago de deuda" />
+                      </div>
+                      
+                      <div className="pt-2">
+                        <button
+                          disabled={!isValidAmount}
+                          onClick={() => {
+                            if (!isValidAmount) return;
+                            const note = `Cobro a productor. Ingreso de ${payToUsCurrency === 'USD' ? '$' : 'Bs '}${inputAmt} ${payToUsCurrency} (Tasa: ${exchangeRate}). ${payToUsNote}`;
+                            
+                            onRecordSupplierStorePayment?.(s.id, usdAmount, payToUsMethod, note, payToUsCurrency);
+                            onAddNotification(`Cobro de $${usdAmount.toFixed(2)} USD a ${s.name} registrado correctamente.`, 'success');
+                            setActiveModal(null);
+                          }}
+                          className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-neutral-900 text-xs font-serif font-bold uppercase tracking-wider rounded transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Confirmar Cobro
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              return null;
+            })()}
+          </div>
+        </>
+      )}
+      {/* EDIT MODAL */}
+      {editingSupplier && (
+        <div className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4">
+          <div className="bg-editorial-card border border-editorial-border rounded-lg max-w-2xl w-full p-6 relative shadow-2xl overflow-y-auto max-h-[90vh]">
+            <button onClick={() => setEditingSupplier(null)} className="absolute top-4 right-4 text-editorial-text-muted hover:text-rose-500">
+              <X className="w-6 h-6" />
+            </button>
+            <h3 className="font-serif text-2xl font-bold text-editorial-text-primary mb-6">Editar Proveedor</h3>
+            <form onSubmit={handleUpdateSupplierSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Nombre Empresa</label>
+                <input type="text" required value={editName} onChange={e => setEditName(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Cédula / RIF</label>
+                <input type="text" value={editCedula} onChange={e => setEditCedula(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Teléfono</label>
+                <input type="text" value={editPhone} onChange={e => setEditPhone(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Vendedor / Contacto</label>
+                <input type="text" value={editContactName} onChange={e => setEditContactName(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Cumpleaños</label>
+                <input type="date" value={editBirthday} onChange={e => setEditBirthday(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Dirección</label>
+                <input type="text" value={editAddress} onChange={e => setEditAddress(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
+              </div>
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN Acceso</label>
+                <input type="text" maxLength={4} value={editPin} onChange={e => setEditPin(e.target.value)} placeholder="4 dígitos" className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none font-mono tracking-widest" />
+              </div>
+              <div className="space-y-2 pt-1 flex flex-col justify-center">
+                <label className="flex items-center gap-2 cursor-pointer text-xs text-editorial-text-primary">
+                  <input type="checkbox" checked={editIsCheeseProducer} onChange={e => setEditIsCheeseProducer(e.target.checked)} className="accent-amber-500 w-4 h-4 cursor-pointer" />
+                  <span>Es Productor de Queso</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer text-xs text-editorial-text-primary">
+                  <input type="checkbox" checked={editIsEmployee} onChange={e => setEditIsEmployee(e.target.checked)} className="accent-amber-500 w-4 h-4 cursor-pointer" />
+                  <span>Es Personal / Obrero</span>
+                </label>
+              </div>
+              <div className="md:col-span-2 pt-4 flex justify-end">
+                <button type="submit" className="px-6 h-10 bg-amber-500 hover:bg-amber-400 text-editorial-bg font-serif font-bold text-xs tracking-wider uppercase rounded transition-all">Guardar Cambios</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

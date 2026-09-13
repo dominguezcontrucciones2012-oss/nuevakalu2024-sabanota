@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  web:
+    image: nginx:alpine
+    container_name: mi-web-nginx
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ../dist:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+
+  api:
+    build: .
+    container_name: mi-web-api
+    restart: always
+    env_file:
+      - ../.env
+    environment:
+      - UPLOAD_DIR=/var/www/app/uploads
+      - PORT=3001
+      - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID:-1344089325449515}
+      - WHATSAPP_API_KEY=${WHATSAPP_API_KEY}
+      - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN:-kalu_sabanota_secure_token_2026}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - VITE_GEMINI_API_KEY=${VITE_GEMINI_API_KEY}
+    volumes:
+      - /root/kalu-crm/data:/var/www/app/uploads

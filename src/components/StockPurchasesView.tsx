@@ -1,0 +1,811 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { SupplierProfile, CheeseProduct } from '../types';
+import { Mic, Zap, ScanText, Plus, Trash2, Save, Bot, Snowflake, X, Check, RefreshCw } from 'lucide-react';
+import { extractInvoiceData, extractDictationData, normalizeTextForMatching } from '../services/ocrService';
+import { parseSafeDecimal } from '../utils';
+
+export interface PurchaseItem {
+  uiId: string;
+  productId: string;
+  name: string;
+  quantityKg: number | string;
+  purchasePrice: number | string;
+  marginPercent: number | string;
+  sellingPrice: number | string;
+  unit?: 'Kg' | 'Und' | 'Bulto';
+  contentPerBulto?: number | string;
+  previousCost?: number;
+}
+
+export interface FrozenInvoice {
+  id: string;
+  timestamp: number;
+  supplierId: string;
+  items: PurchaseItem[];
+  isCredit: boolean;
+  totalCost: number;
+}
+
+interface StockPurchasesViewProps {
+  products: CheeseProduct[];
+  suppliers: SupplierProfile[];
+  exchangeRate: number;
+  onLoadPurchase: (purchase: {
+    supplierId: string;
+    items: PurchaseItem[];
+    isCredit: boolean;
+  }) => void;
+  onAddNotification: (msg: string, type: 'success' | 'info' | 'warning') => void;
+}
+
+export default function StockPurchasesView({
+  products,
+  suppliers,
+  exchangeRate,
+  onLoadPurchase,
+  onAddNotification
+}: StockPurchasesViewProps) {
+  const [items, setItems] = useState<PurchaseItem[]>([]);
+  const [isScanning, setIsScanning] = useState(false);
+  const [supplierId, setSupplierId] = useState('');
+  const [isCredit, setIsCredit] = useState(true);
+  const [aiInput, setAiInput] = useState('');
+  const [isListening, setIsListening] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
+  const [frozenInvoices, setFrozenInvoices] = useState<FrozenInvoice[]>([]);
+  const [showFrozenModal, setShowFrozenModal] = useState(false);
+
+  useEffect(() => {
+    const draft = localStorage.getItem('kalu_draft_purchase');
+    if (draft) {
+      try {
+        const parsed = JSON.parse(draft);
+        if (parsed.items && parsed.items.length > 0) {
+          setItems(parsed.items);
+          if (parsed.supplierId) setSupplierId(parsed.supplierId);
+          if (parsed.isCredit !== undefined) setIsCredit(parsed.isCredit);
+        }
+      } catch (e) {
+        console.error('Error loading draft purchase:', e);
+      }
+    }
+
+    const frozen = localStorage.getItem('kalu_frozen_invoices');
+    if (frozen) {
+      try {
+        setFrozenInvoices(JSON.parse(frozen));
+      } catch (e) {
+        console.error('Error loading frozen invoices:', e);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (items.length > 0 || supplierId !== '') {
+      localStorage.setItem('kalu_draft_purchase', JSON.stringify({ items, supplierId, isCredit }));
+    }
+  }, [items, supplierId, isCredit]);
+
+  // Matching Engine Preventivo
+  const findMatchingProduct = (targetName: string): CheeseProduct | undefined => {
+    if (!targetName) return undefined;
+    const cleanTarget = normalizeTextForMatching(targetName);
+    if (!cleanTarget) return undefined;
+
+    // 1. Coincidencia exacta limpia
+    let match = products.find(p => normalizeTextForMatching(p.name) === cleanTarget);
+    if (match) return match;
+
+    // 2. Coincidencia por contención (subcadena)
+    match = products.find(p => {
+      const cleanP = normalizeTextForMatching(p.name);
+      return cleanP.length >= 3 && (cleanP.includes(cleanTarget) || cleanTarget.includes(cleanP));
+    });
+    return match;
+  };
+
+  const handleFreezePurchase = () => {
+    if (items.length === 0) {
+      onAddNotification('No hay productos en la factura para congelar.', 'warning');
+      return;
+    }
+    
+    const totalCostUSD = items.reduce((sum, item) => sum + ((Number(item.quantityKg) || 0) * (Number(item.purchasePrice) || 0)), 0);
+    
+    const newFrozen: FrozenInvoice = {
+      id: `fz-${Date.now()}`,
+      timestamp: Date.now(),
+      supplierId,
+      items,
+      isCredit,
+      totalCost: totalCostUSD
+    };
+    
+    const updatedFrozen = [...frozenInvoices, newFrozen];
+    setFrozenInvoices(updatedFrozen);
+    localStorage.setItem('kalu_frozen_invoices', JSON.stringify(updatedFrozen));
+    
+    setItems([]);
+    setSupplierId('');
+    setIsCredit(true);
+    localStorage.removeItem('kalu_draft_purchase');
+    
+    onAddNotification('Factura congelada y guardada en lista de espera', 'success');
+  };
+
+  const toggleVoiceDictation = () => {
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      return;
+    }
+
+    if (!('webkitSpeechRecognition' in window)) {
+      onAddNotification('Su navegador no soporta entrada de voz.', 'warning');
+      return;
+    }
+    const recognition = new (window as any).webkitSpeechRecognition();
+    recognitionRef.current = recognition;
+    recognition.lang = 'es-ES';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onresult = (event: any) => {
+      let transcript = '';
+      for (let i = 0; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      setAiInput(transcript);
+    };
+    recognition.onerror = (event: any) => {
+      console.error('Speech error', event.error);
+      setIsListening(false);
+    };
+    recognition.onend = () => setIsListening(false);
+    
+    recognition.start();
+  };
+
+  const handleSeleccionarFotoFactura = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const file = e.target.files[0];
+      setIsScanning(true);
+      onAddNotification('Procesando factura con IA...', 'info');
+      try {
+        const inventoryNames = products.map(p => p.name);
+        const extracted = await extractInvoiceData(file, exchangeRate, inventoryNames);
+        
+        // Supplier Matching
+        if (extracted.proveedor?.nombre) {
+          const supNombreNorm = normalizeTextForMatching(extracted.proveedor.nombre);
+          const matchedSup = suppliers.find(s => 
+            normalizeTextForMatching(s.name).includes(supNombreNorm) || 
+            supNombreNorm.includes(normalizeTextForMatching(s.name)) ||
+            (s.idNumber && extracted.proveedor.rif && s.idNumber.replace(/[^a-zA-Z0-9]/g, '').toLowerCase().includes(extracted.proveedor.rif.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()))
+          );
+          if (matchedSup) {
+            setSupplierId(matchedSup.id);
+            onAddNotification(`Proveedor detectado: ${matchedSup.name}`, 'success');
+          } else {
+            onAddNotification(`Proveedor nuevo detectado: ${extracted.proveedor.nombre}. Regístralo o búscalo manualmente.`, 'warning');
+          }
+        }
+        
+        // Product Matching con Engine Preventivo
+        if (extracted.items && extracted.items.length > 0) {
+          const newPurchaseItems: PurchaseItem[] = extracted.items.map(item => {
+            const matchedProd = findMatchingProduct(item.nombre);
+            
+            const currentMargin = matchedProd && matchedProd.sellingPrice > matchedProd.purchasePrice 
+              ? (matchedProd.sellingPrice - matchedProd.purchasePrice) / matchedProd.sellingPrice 
+              : 0.3;
+            const safeMargin = isNaN(currentMargin) || currentMargin >= 1 || currentMargin <= 0 ? 0.3 : currentMargin;
+            const newSellingPrice = item.costo_unitario / (1 - safeMargin);
+
+            const isBulto = item.unidad === 'Bulto';
+            const resolvedUnit = isBulto ? 'Bulto' : (matchedProd?.unit || (item.unidad === 'Und' ? 'Und' : 'Kg'));
+
+            return {
+              uiId: `itm-${Date.now()}-${Math.random()}`,
+              productId: matchedProd ? matchedProd.id : '',
+              name: matchedProd ? matchedProd.name : item.nombre.toUpperCase().trim(),
+              quantityKg: item.cantidad,
+              purchasePrice: item.costo_unitario,
+              marginPercent: Math.round(safeMargin * 100),
+              sellingPrice: parseFloat(newSellingPrice.toFixed(2)),
+              unit: resolvedUnit as any,
+              contentPerBulto: isBulto ? 10 : undefined,
+              previousCost: matchedProd ? matchedProd.purchasePrice : undefined
+            };
+          });
+          
+          setItems((prev) => [...prev, ...newPurchaseItems]);
+          onAddNotification(`Se extrajeron ${newPurchaseItems.length} renglones de la factura con éxito.`, 'success');
+        }
+      } catch (error: any) {
+        console.error(error);
+        onAddNotification(error.message || 'Error procesando OCR.', 'warning');
+      } finally {
+        setIsScanning(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleAddManualItem = () => {
+    const newItem: PurchaseItem = {
+      uiId: `itm-${Date.now()}`,
+      productId: '',
+      name: '',
+      quantityKg: 0,
+      purchasePrice: 0,
+      marginPercent: 30,
+      sellingPrice: 0,
+      unit: 'Kg'
+    };
+    setItems((prev) => [...prev, newItem]);
+  };
+
+  const handleUpdateItem = (uiId: string, field: keyof PurchaseItem, value: any) => {
+    setItems(prev => prev.map(item => {
+      if (item.uiId !== uiId) return item;
+      const updated = { ...item, [field]: value };
+      
+      if (field === 'productId') {
+        const prod = products.find(p => p.id === value);
+        if (prod) {
+          updated.name = prod.name;
+          updated.purchasePrice = prod.purchasePrice;
+          updated.sellingPrice = prod.sellingPrice;
+          updated.marginPercent = prod.sellingPrice > 0 ? Number((((prod.sellingPrice - prod.purchasePrice) / prod.sellingPrice) * 100).toFixed(1)) : 30;
+          if (prod.unit) updated.unit = prod.unit as any;
+        }
+      }
+
+      if (field === 'name') {
+        const prod = findMatchingProduct(String(value));
+        if (prod) {
+          updated.productId = prod.id;
+          updated.name = prod.name;
+          updated.purchasePrice = prod.purchasePrice;
+          updated.sellingPrice = prod.sellingPrice;
+          updated.marginPercent = prod.sellingPrice > 0 ? Number((((prod.sellingPrice - prod.purchasePrice) / prod.sellingPrice) * 100).toFixed(1)) : 30;
+          if (prod.unit) updated.unit = prod.unit as any;
+        } else {
+          updated.productId = '';
+        }
+      }
+      
+      if (field === 'purchasePrice') {
+        const costStr = String(value);
+        // Si el usuario escribe caracteres intermedios como '.' o ',', respetamos el string
+        const costNum = parseSafeDecimal(value);
+        const marginNum = parseSafeDecimal(updated.marginPercent) || 30;
+        if (!costStr.endsWith('.') && !costStr.endsWith(',')) {
+          updated.sellingPrice = parseFloat((costNum * (1 + (marginNum / 100))).toFixed(2));
+        }
+      }
+
+      if (field === 'sellingPrice') {
+        const sellStr = String(value);
+        const sellNum = parseSafeDecimal(value);
+        const costNum = parseSafeDecimal(updated.purchasePrice);
+        if (!sellStr.endsWith('.') && !sellStr.endsWith(',') && costNum > 0 && sellNum >= costNum) {
+          updated.marginPercent = parseFloat((((sellNum - costNum) / costNum) * 100).toFixed(1));
+        }
+      }
+
+      if (field === 'marginPercent') {
+        const marginStr = String(value);
+        const marginNum = parseSafeDecimal(value);
+        const costNum = parseSafeDecimal(updated.purchasePrice);
+        if (!marginStr.endsWith('.') && !marginStr.endsWith(',')) {
+          updated.sellingPrice = parseFloat((costNum * (1 + (marginNum / 100))).toFixed(2));
+        }
+      }
+
+      return updated;
+    }));
+  };
+
+  const handleBlurItem = (uiId: string, field: 'purchasePrice' | 'sellingPrice' | 'marginPercent' | 'quantityKg' | 'contentPerBulto') => {
+    setItems(prev => prev.map(item => {
+      if (item.uiId !== uiId) return item;
+      const updated = { ...item };
+      
+      const costNum = parseSafeDecimal(updated.purchasePrice);
+      const marginNum = parseSafeDecimal(updated.marginPercent);
+      const sellNum = parseSafeDecimal(updated.sellingPrice);
+      const qtyNum = parseSafeDecimal(updated.quantityKg);
+
+      if (field === 'purchasePrice') {
+        updated.purchasePrice = costNum;
+        updated.sellingPrice = parseFloat((costNum * (1 + ((marginNum || 30) / 100))).toFixed(2));
+      } else if (field === 'marginPercent') {
+        updated.marginPercent = marginNum;
+        updated.sellingPrice = parseFloat((costNum * (1 + (marginNum / 100))).toFixed(2));
+      } else if (field === 'sellingPrice') {
+        updated.sellingPrice = sellNum;
+        if (costNum > 0 && sellNum >= costNum) {
+          updated.marginPercent = parseFloat((((sellNum - costNum) / costNum) * 100).toFixed(1));
+        }
+      } else if (field === 'quantityKg') {
+        updated.quantityKg = qtyNum;
+      } else if (field === 'contentPerBulto') {
+        updated.contentPerBulto = parseSafeDecimal(updated.contentPerBulto);
+      }
+
+      return updated;
+    }));
+  };
+
+  const handleRemoveItem = (uiId: string) => {
+    setItems(items.filter(i => i.uiId !== uiId));
+  };
+
+  const handleProcessAI = async () => {
+    if (!aiInput.trim()) {
+      onAddNotification('Por favor ingrese o dicte el texto de la compra.', 'warning');
+      return;
+    }
+    
+    setIsScanning(true);
+    onAddNotification('Interpretando orden con IA...', 'info');
+    try {
+      const inventoryNames = products.map(p => p.name);
+      const extracted = await extractDictationData(aiInput, exchangeRate, inventoryNames);
+      
+      if (extracted && extracted.length > 0) {
+        const newPurchaseItems: PurchaseItem[] = extracted.map(item => {
+          const matchedProd = findMatchingProduct(item.nombre);
+          const currentMargin = matchedProd && matchedProd.sellingPrice > matchedProd.purchasePrice 
+            ? (matchedProd.sellingPrice - matchedProd.purchasePrice) / matchedProd.sellingPrice 
+            : 0.3;
+          const safeMargin = isNaN(currentMargin) || currentMargin >= 1 || currentMargin <= 0 ? 0.3 : currentMargin;
+          const newSellingPrice = item.costo_unitario / (1 - safeMargin);
+          const isBulto = item.unidad === 'Bulto';
+
+          return {
+            uiId: `itm-${Date.now()}-${Math.random()}`,
+            productId: matchedProd ? matchedProd.id : '',
+            name: matchedProd ? matchedProd.name : item.nombre.toUpperCase().trim(),
+            quantityKg: item.cantidad,
+            purchasePrice: item.costo_unitario,
+            marginPercent: Math.round(safeMargin * 100),
+            sellingPrice: parseFloat(newSellingPrice.toFixed(2)),
+            unit: isBulto ? 'Bulto' : (item.unidad === 'Und' ? 'Und' : 'Kg'),
+            contentPerBulto: isBulto ? 10 : undefined,
+            previousCost: matchedProd ? matchedProd.purchasePrice : undefined
+          };
+        });
+
+        setItems(prev => [...prev, ...newPurchaseItems]);
+        onAddNotification(`IA procesó ${newPurchaseItems.length} artículos exitosamente.`, 'success');
+        setAiInput('');
+      } else {
+        onAddNotification('No se detectaron artículos en la orden dictada.', 'warning');
+      }
+    } catch (e: any) {
+      console.error(e);
+      onAddNotification(e.message || 'Error procesando texto con IA.', 'warning');
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const handleSavePurchase = () => {
+    if (!supplierId) {
+      onAddNotification('Debe seleccionar un proveedor.', 'warning');
+      return;
+    }
+    if (items.length === 0) {
+      onAddNotification('No hay productos en la lista para cargar.', 'warning');
+      return;
+    }
+    const invalidItems = items.some(i => (Number(i.quantityKg) || 0) <= 0 || (Number(i.purchasePrice) || 0) <= 0);
+    if (invalidItems) {
+      onAddNotification('Todos los productos deben tener cantidad y costo mayor a cero.', 'warning');
+      return;
+    }
+
+    // CONVERSIÓN MATEMÁTICA Y EMPAREJAMIENTO ESTRICTO A FORMATO CANÓNICO DE INVENTARIO
+    const normalizedItems = items.map(item => {
+      // 1. Re-verificar emparejamiento por si el nombre fue editado a mano
+      const matchedProd = item.productId ? products.find(p => p.id === item.productId) : findMatchingProduct(item.name);
+      const resolvedId = matchedProd ? matchedProd.id : item.productId;
+      const resolvedName = matchedProd ? matchedProd.name : item.name.trim();
+
+      // 2. Conversión estricta de Bultos a Unidades Granulares
+      const isBulto = item.unit === 'Bulto';
+      const bultoMultiplier = isBulto && item.contentPerBulto && item.contentPerBulto > 0 ? Number(item.contentPerBulto) : 1;
+
+      const finalQty = (Number(item.quantityKg) || 0) * bultoMultiplier;
+      const finalPurchasePrice = bultoMultiplier > 1 ? (Number(item.purchasePrice) || 0) / bultoMultiplier : (Number(item.purchasePrice) || 0);
+      const finalSellingPrice = bultoMultiplier > 1 ? (Number(item.sellingPrice) || 0) / bultoMultiplier : (Number(item.sellingPrice) || 0);
+      const finalUnit = isBulto ? 'Und' : (item.unit || (matchedProd?.unit || 'Kg'));
+
+      return {
+        ...item,
+        productId: resolvedId,
+        name: resolvedName,
+        quantityKg: finalQty,
+        purchasePrice: parseFloat(finalPurchasePrice.toFixed(4)),
+        sellingPrice: parseFloat(finalSellingPrice.toFixed(2)),
+        unit: finalUnit as any
+      };
+    });
+
+    onLoadPurchase({
+      supplierId,
+      items: normalizedItems,
+      isCredit: true
+    });
+    
+    // Reset form after successful save
+    setItems([]);
+    setSupplierId('');
+    setIsCredit(true);
+    localStorage.removeItem('kalu_draft_purchase');
+  };
+
+  const totalItems = items.reduce((sum, item) => sum + (parseSafeDecimal(item.quantityKg) || 0), 0);
+  const totalCostUSD = items.reduce((sum, item) => sum + ((parseSafeDecimal(item.quantityKg) || 0) * (parseSafeDecimal(item.purchasePrice) || 0)), 0);
+  const totalCostBs = totalCostUSD * exchangeRate;
+
+  return (
+    <div className="flex flex-col lg:flex-row gap-6 animate-fade-in">
+      
+      {/* LEFT COLUMN: Editor and Table */}
+      <div className="flex-1 space-y-6">
+        
+        {/* Header & AI Bar */}
+        <div className="bg-editorial-card border border-editorial-border rounded p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="font-serif text-2xl font-bold text-editorial-text-primary uppercase tracking-wider">Carga de Mercancía</h2>
+              <p className="text-xs text-editorial-text-muted mt-1">Incremento de stock, ajuste de lotes y actualización de costos automatizada.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button disabled={isScanning} onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-3 py-1.5 bg-[#1e293b] border border-amber-500/40 text-amber-500 rounded text-xs font-mono hover:bg-amber-500/10 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait">
+                <span className="flex items-center justify-center w-3.5 h-3.5">
+                  {isScanning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ScanText className="w-3.5 h-3.5" />}
+                </span>
+                <span>{isScanning ? 'Procesando...' : 'Escanear Factura IA'}</span>
+              </button>
+              <button onClick={handleFreezePurchase} className="flex items-center gap-2 px-3 py-1.5 bg-editorial-bg border border-editorial-border text-editorial-text-primary rounded text-xs font-mono hover:text-amber-500 hover:border-amber-500/40 transition-colors cursor-pointer">
+                <Snowflake className="w-3.5 h-3.5" /> Congelar
+              </button>
+              {frozenInvoices.length > 0 && (
+                <button onClick={() => setShowFrozenModal(true)} className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border border-amber-500/40 text-amber-500 rounded text-xs font-mono font-bold hover:brightness-110 transition-colors cursor-pointer">
+                  <Snowflake className="w-3.5 h-3.5" /> Congeladas ({frozenInvoices.length})
+                </button>
+              )}
+              <input type="file" ref={fileInputRef} accept="image/*,.pdf" className="hidden" onChange={handleSeleccionarFotoFactura} />
+            </div>
+          </div>
+
+          <div className="flex gap-2 items-center bg-black/40 border border-editorial-border rounded-lg p-2 focus-within:border-amber-500/50 transition-colors">
+            <button 
+              type="button"
+              onClick={toggleVoiceDictation} 
+              className={`p-2 transition-colors cursor-pointer rounded ${isListening ? 'text-red-500 animate-pulse bg-red-500/20' : 'text-editorial-text-muted hover:text-amber-500'}`} 
+              title={isListening ? 'Escuchando... clic para parar' : 'Dictado por voz'}
+            >
+              <Mic className="w-5 h-5" />
+            </button>
+            <input
+              type="text"
+              value={aiInput}
+              onChange={(e) => setAiInput(e.target.value)}
+              placeholder="Ej. 'Me llegaron 50 kilos de queso telita a 4 dólares y 20 de llanero a 3.5...'"
+              className="flex-1 bg-transparent border-none text-sm text-editorial-text-primary focus:outline-none placeholder:text-editorial-text-muted/50 font-sans"
+            />
+            <button 
+              onClick={handleProcessAI}
+              className="px-4 py-2 bg-amber-500 text-white rounded text-xs font-mono font-bold hover:brightness-110 flex items-center gap-2 cursor-pointer"
+            >
+              <Zap className="w-4 h-4" /> Ajustar con IA
+            </button>
+          </div>
+        </div>
+
+        {/* Central Table Area */}
+        <div className="bg-editorial-card border border-editorial-border rounded flex flex-col">
+          <div className="p-4 border-b border-editorial-border flex justify-between items-center bg-black/20">
+            <h3 className="font-mono text-[10px] text-editorial-text-muted uppercase tracking-[0.2em] flex items-center gap-2">
+              <Bot className="w-4 h-4" /> Detalle de Ítems a Ingresar
+            </h3>
+          </div>
+
+          {items.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-editorial-text-muted">
+              <ScanText className="w-12 h-12 opacity-20 mb-4" />
+              <p className="font-serif text-lg text-editorial-text-primary mb-1">Sin productos</p>
+              <p className="text-xs">Utiliza la IA o añade un producto manualmente para comenzar.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto overflow-y-auto max-h-[65vh]">
+              <table className="w-full min-w-[950px] text-left border-collapse text-xs">
+                <thead className="sticky top-0 z-20 bg-editorial-card">
+                  <tr className="border-b border-editorial-border bg-black/40 font-mono text-[10px] text-editorial-text-muted uppercase tracking-wider">
+                    <th className="py-3 px-4 w-[28%]">Producto</th>
+                    <th className="py-3 px-3 w-[20%]">Cant. & Unidad</th>
+                    <th className="py-3 px-3 w-[13%]">Costo ($)</th>
+                    <th className="py-3 px-3 w-[13%]">% Ganancia</th>
+                    <th className="py-3 px-3 w-[13%] text-amber-500">P. Venta ($)</th>
+                    <th className="py-3 px-3 w-[10%] text-right">Subtotal</th>
+                    <th className="py-3 px-2 w-[3%]"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-editorial-border/40">
+                  {items.map((item) => (
+                    <tr key={item.uiId} className="hover:bg-editorial-bg/30 group">
+                      <td className="py-2 px-4">
+                        <input 
+                          type="text"
+                          list="inventory-products"
+                          value={item.name}
+                          onChange={(e) => handleUpdateItem(item.uiId, 'name', e.target.value)}
+                          onFocus={(e) => { if (e.target.value === '') e.target.value = '' }}
+                          placeholder="Buscar producto..."
+                          className="w-full min-w-[220px] bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-sans placeholder:text-editorial-text-muted/50"
+                        />
+                      </td>
+                      {/* CANTIDAD Y UNIDAD */}
+                      <td className="py-2 px-3">
+                        <div className="flex items-center gap-1">
+                          <input 
+                            type="text"
+                            inputMode="decimal"
+                            value={item.quantityKg === 0 || item.quantityKg === '0' ? '' : item.quantityKg}
+                            onChange={(e) => handleUpdateItem(item.uiId, 'quantityKg', e.target.value)}
+                            onBlur={() => handleBlurItem(item.uiId, 'quantityKg')}
+                            className="w-16 bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono"
+                            placeholder="0"
+                          />
+                          <div className="flex bg-black/40 border border-editorial-border rounded overflow-hidden">
+                            {(['Kg', 'Und', 'Bulto'] as const).map(u => (
+                              <button
+                                key={u}
+                                type="button"
+                                onClick={() => handleUpdateItem(item.uiId, 'unit', u)}
+                                className={`px-2 py-1.5 text-[9px] font-mono font-bold transition-colors cursor-pointer ${item.unit === u || (!item.unit && u === 'Kg') ? 'bg-amber-500 text-white' : 'text-editorial-text-muted hover:text-white hover:bg-white/5'}`}
+                              >
+                                {u === 'Bulto' ? 'BTO' : (u === 'Und' ? 'UND' : 'KG')}
+                              </button>
+                            ))}
+                          </div>
+                          {item.unit === 'Bulto' && (
+                            <input 
+                              type="text"
+                              inputMode="decimal"
+                              title="Contenido por bulto"
+                              value={item.contentPerBulto || ''}
+                              onChange={(e) => handleUpdateItem(item.uiId, 'contentPerBulto', e.target.value)}
+                              onBlur={() => handleBlurItem(item.uiId, 'contentPerBulto')}
+                              className="w-16 bg-amber-500/10 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 focus:outline-none focus:border-amber-500 font-mono placeholder:text-amber-500/30"
+                              placeholder="Cnt/Blt"
+                            />
+                          )}
+                        </div>
+                      </td>
+
+                      {/* COSTO ($) */}
+                      <td className="py-2 px-3">
+                        <div className="flex flex-col gap-1 relative">
+                          <input 
+                            type="text"
+                            inputMode="decimal"
+                            value={item.purchasePrice === 0 || item.purchasePrice === '0' ? '' : item.purchasePrice}
+                            onChange={(e) => handleUpdateItem(item.uiId, 'purchasePrice', e.target.value)}
+                            onBlur={() => handleBlurItem(item.uiId, 'purchasePrice')}
+                            className={`w-full bg-black/30 border rounded px-2 py-1.5 text-xs text-white focus:outline-none font-mono ${item.previousCost !== undefined && item.previousCost !== parseSafeDecimal(item.purchasePrice) ? 'border-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.2)]' : 'border-editorial-border focus:border-amber-500'}`}
+                            placeholder="0.00"
+                          />
+                          {item.previousCost !== undefined && item.previousCost !== parseSafeDecimal(item.purchasePrice) && (
+                            <div className="absolute -bottom-5 left-0 whitespace-nowrap bg-amber-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded shadow-lg animate-pulse z-10">
+                              ⚠️ Antes ${item.previousCost.toFixed(2)}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* % GANANCIA */}
+                      <td className="py-2 px-3">
+                        <input 
+                          type="text"
+                          inputMode="decimal"
+                          value={item.marginPercent === undefined || item.marginPercent === null ? '' : item.marginPercent}
+                          onChange={(e) => handleUpdateItem(item.uiId, 'marginPercent', e.target.value)}
+                          onBlur={() => handleBlurItem(item.uiId, 'marginPercent')}
+                          className="w-full bg-black/30 border border-editorial-border rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500 font-mono"
+                          placeholder="30"
+                        />
+                      </td>
+
+                      {/* P. VENTA ($) */}
+                      <td className="py-2 px-3">
+                        <input 
+                          type="text"
+                          inputMode="decimal"
+                          value={item.sellingPrice === 0 || item.sellingPrice === '0' ? '' : item.sellingPrice}
+                          onChange={(e) => handleUpdateItem(item.uiId, 'sellingPrice', e.target.value)}
+                          onBlur={() => handleBlurItem(item.uiId, 'sellingPrice')}
+                          className="w-full bg-black/30 border border-amber-500/40 rounded px-2 py-1.5 text-xs text-amber-500 font-bold focus:outline-none focus:border-amber-500 font-mono"
+                          placeholder="0.00"
+                        />
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono font-bold text-editorial-text-primary">
+                        ${((parseSafeDecimal(item.quantityKg) || 0) * (parseSafeDecimal(item.purchasePrice) || 0)).toFixed(2)}
+                      </td>
+                      <td className="py-2 px-2 text-right">
+                        <button 
+                          onClick={() => handleRemoveItem(item.uiId)}
+                          className="p-1.5 text-editorial-text-muted hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Datalist for Product Autocomplete */}
+          <datalist id="inventory-products">
+            {products.map(p => (
+              <option key={p.id} value={p.name} />
+            ))}
+          </datalist>
+
+          <div className="p-4 bg-black/20 border-t border-editorial-border flex justify-center">
+            <button 
+              onClick={handleAddManualItem}
+              className="flex items-center gap-2 px-6 py-2 border border-editorial-border hover:border-editorial-text-muted text-editorial-text-primary rounded text-xs font-mono uppercase tracking-wider transition-all cursor-pointer bg-editorial-bg"
+            >
+              <Plus className="w-3.5 h-3.5" /> Añadir Producto Manualmente
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      {/* RIGHT COLUMN: Summary Panel */}
+      <div className="w-full lg:w-[320px] xl:w-[380px] shrink-0">
+        <div className="bg-editorial-card border border-editorial-border rounded p-6 sticky top-6 space-y-6">
+          <div className="border-b border-editorial-border/40 pb-4">
+            <h3 className="font-serif text-lg font-bold text-editorial-text-primary">Resumen de Compra</h3>
+            <p className="text-[10px] font-mono text-editorial-text-muted uppercase mt-1">Totalización e Ingreso</p>
+          </div>
+
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-mono text-editorial-text-muted uppercase block tracking-wider">Productor / Proveedor</label>
+              <input
+                type="text"
+                list="suppliers-list"
+                value={suppliers.find(s => s.id === supplierId)?.name || supplierId}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const matched = suppliers.find(s => s.name === val);
+                  if (matched) {
+                    setSupplierId(matched.id);
+                  } else {
+                    setSupplierId(val);
+                  }
+                }}
+                onFocus={(e) => { if (e.target.value === '') e.target.value = '' }}
+                placeholder="Seleccione o busque el proveedor..."
+                className="w-full h-11 px-3 bg-black/30 border border-editorial-border rounded text-sm text-white focus:outline-none focus:border-amber-500 font-serif placeholder:text-editorial-text-muted/50"
+              />
+              <datalist id="suppliers-list">
+                {suppliers.filter(s => !s.isCheeseProducer).map(s => (
+                  <option key={s.id} value={s.name} />
+                ))}
+              </datalist>
+            </div>
+
+            <div className="flex items-center justify-between p-4 bg-black/30 border border-editorial-border rounded">
+              <div>
+                <span className="block text-[10px] font-mono text-amber-500 uppercase tracking-wider">MODO: CUENTAS POR PAGAR</span>
+                <span className="text-[10px] text-editorial-text-muted font-sans block mt-1">Toda la factura entrará como deuda.</span>
+                <span className="text-[10px] text-editorial-text-muted font-sans block">Los pagos se liquidan luego desde Bóveda.</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-4 border-t border-editorial-border/40 space-y-3">
+            <div className="flex justify-between items-center text-sm">
+              <span className="font-mono text-editorial-text-muted uppercase text-[10px]">Ítems Totales</span>
+              <span className="font-mono font-bold text-white">{totalItems.toFixed(2)} Kg</span>
+            </div>
+            
+            <div className="bg-amber-500/10 border border-amber-500/20 p-4 rounded text-right space-y-1">
+              <span className="block text-[10px] font-mono text-amber-500/80 uppercase tracking-wider text-left mb-2">Monto Total a Invertir</span>
+              <span className="block font-mono text-3xl font-extrabold text-amber-500">${totalCostUSD.toFixed(2)} USD</span>
+              <span className="block font-mono text-xs text-editorial-text-muted">Bs {totalCostBs.toLocaleString('es-MX', { minimumFractionDigits: 2 })}</span>
+            </div>
+          </div>
+
+          <button 
+            onClick={handleSavePurchase}
+            className="w-full py-4 mt-6 bg-amber-500 text-white rounded font-serif font-bold text-sm tracking-widest uppercase hover:brightness-110 flex justify-center items-center gap-2 shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
+          >
+            <Save className="w-5 h-5" /> Guardar e Incrementar
+          </button>
+        </div>
+      </div>
+
+      {showFrozenModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+          <div className="bg-editorial-card border border-editorial-border rounded p-6 w-full max-w-2xl shadow-2xl">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="font-serif text-2xl font-bold text-editorial-text-primary flex items-center gap-2">
+                <Snowflake className="w-6 h-6 text-amber-500" /> Facturas en Espera
+              </h3>
+              <button onClick={() => setShowFrozenModal(false)} className="text-editorial-text-muted hover:text-white cursor-pointer p-1">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
+              {frozenInvoices.map(inv => {
+                const supplierName = suppliers.find(s => s.id === inv.supplierId)?.name || 'Sin Proveedor';
+                const dateString = new Date(inv.timestamp).toLocaleString();
+                
+                return (
+                  <div key={inv.id} className="flex flex-col md:flex-row items-start md:items-center justify-between p-4 bg-editorial-bg border border-editorial-border rounded gap-4">
+                    <div>
+                      <div className="font-mono text-xs text-editorial-text-muted mb-1">{dateString}</div>
+                      <div className="font-serif font-bold text-white text-lg">{supplierName}</div>
+                      <div className="text-xs text-editorial-text-muted mt-1">{inv.items.length} ítems registrados</div>
+                    </div>
+                    <div className="flex flex-col items-end gap-2 w-full md:w-auto">
+                      <div className="font-mono text-amber-500 font-bold text-lg">${inv.totalCost.toFixed(2)}</div>
+                      <div className="flex gap-2 w-full md:w-auto">
+                        <button 
+                          onClick={() => {
+                            setItems(inv.items);
+                            setSupplierId(inv.supplierId);
+                            setIsCredit(inv.isCredit);
+                            
+                            const newFrozen = frozenInvoices.filter(f => f.id !== inv.id);
+                            setFrozenInvoices(newFrozen);
+                            localStorage.setItem('kalu_frozen_invoices', JSON.stringify(newFrozen));
+                            
+                            setShowFrozenModal(false);
+                            onAddNotification('Factura recuperada exitosamente', 'success');
+                          }}
+                          className="flex-1 md:flex-none px-4 py-2 bg-amber-500 text-white rounded text-xs font-mono font-bold hover:brightness-110 transition-colors cursor-pointer"
+                        >
+                          Cargar
+                        </button>
+                        <button 
+                          onClick={() => {
+                            if(window.confirm('¿Seguro que deseas eliminar este borrador?')) {
+                              const newFrozen = frozenInvoices.filter(f => f.id !== inv.id);
+                              setFrozenInvoices(newFrozen);
+                              localStorage.setItem('kalu_frozen_invoices', JSON.stringify(newFrozen));
+                              if (newFrozen.length === 0) setShowFrozenModal(false);
+                            }
+                          }}
+                          className="px-3 py-2 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded hover:bg-rose-500/20 transition-colors cursor-pointer"
+                          title="Eliminar borrador"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
