@@ -10,11 +10,45 @@ import { addLocalDoc, onCollectionSnapshot } from '../../services/localApi';
 import KaluLoader from '../KaluLoader';
 import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
 
+const parseCustomDate = (dateStr: string): number => {
+  if (!dateStr) return 0;
+  try {
+    const direct = new Date(dateStr).getTime();
+    if (!isNaN(direct) && direct > 0) return direct;
+
+    const monthMap: Record<string, string> = {
+      'ene': 'Jan', 'feb': 'Feb', 'mar': 'Mar', 'abr': 'Apr', 'may': 'May', 'jun': 'Jun',
+      'jul': 'Jul', 'ago': 'Aug', 'sep': 'Sep', 'oct': 'Oct', 'nov': 'Nov', 'dic': 'Dec'
+    };
+    
+    let normalizedStr = dateStr.toLowerCase();
+    Object.keys(monthMap).forEach(es => {
+      normalizedStr = normalizedStr.replace(es, monthMap[es].toLowerCase());
+    });
+    
+    const translatedTime = new Date(normalizedStr).getTime();
+    if (!isNaN(translatedTime) && translatedTime > 0) return translatedTime;
+
+    const [datePart, timePart = "00:00:00"] = dateStr.split(',').map(s => s.trim());
+    const [day, month, year] = datePart.split('/').map(Number);
+    const [hours, minutes, seconds] = timePart.split(':').map(Number);
+
+    if (year && month && day) {
+      return new Date(year, month - 1, day, hours || 0, minutes || 0, seconds || 0).getTime();
+    }
+  } catch (e) {
+    console.error("Error parsing date in portal:", dateStr, e);
+  }
+  return 0;
+};
+
 export default function ProducerPortal({ 
   products, suppliers, onAddNotification, isolatedType, isolatedId,
-  cheeseTrips = [], transactions = [], mobileOrders = []
+  cheeseTrips = [], transactions = [], mobileOrders = [], settings, exchangeRate
 }: MobilePortalsViewProps) {
   
+  const activeRate = exchangeRate || (settings as any)?.exchangeRate || 45.0;
+
   const [loggedSupplier, setLoggedSupplier] = useState<SupplierProfile | null>(() => {
     try {
       const cached = localStorage.getItem('kaluMobileSupplierData');
@@ -405,9 +439,76 @@ export default function ProducerPortal({
     return matchesSearch && matchesCategory && isStoreItem && isNotFakeCheese;
   });
 
-  const producerTxs = (transactions || []).filter(t => t.clientId === loggedSupplier?.id || t.entity === loggedSupplier?.name);
-  const producerArrimes = (producerTxs || []).filter(t => t.category === 'compras');
+  const supNameClean = (loggedSupplier?.name || '').trim().toLowerCase();
+  const producerTxs = (transactions || []).filter((t: any) => {
+    if (!t || !loggedSupplier) return false;
+    const entityMatch = t.entity && String(t.entity).trim().toLowerCase() === supNameClean;
+    const supplierIdMatch = (t.supplierId && String(t.supplierId) === String(loggedSupplier.id)) ||
+                            (t.entityId && String(t.entityId) === String(loggedSupplier.id)) ||
+                            (t.clientId && String(t.clientId) === String(loggedSupplier.id));
+    return entityMatch || supplierIdMatch;
+  });
+
+  const getTxKg = (tx: any): number => {
+    if (!tx) return 0;
+    if (Array.isArray(tx.items) && tx.items.length > 0) {
+      const sum = tx.items.reduce((s: number, it: any) => s + (Number(it.kg || it.quantityKg || it.quantity) || 0), 0);
+      if (sum > 0) return sum;
+    }
+    if (tx.notes) {
+      const match = String(tx.notes).match(/(\d+(?:[.,]\d+)?)\s*kg/i);
+      if (match) return parseFloat(match[1].replace(',', '.'));
+    }
+    return Number(tx.kg) || 0;
+  };
+
+  const getTxTimeMs = (tx: any): number => {
+    if (!tx) return 0;
+    if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+    if (tx.timestamp) {
+      if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+      if (typeof tx.timestamp === 'number') return tx.timestamp;
+    }
+    if (tx.id && typeof tx.id === 'string') {
+      const parts = tx.id.split('-');
+      for (const part of parts) {
+        if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+      }
+    }
+    return parseCustomDate(tx.date || '') || 0;
+  };
+
+  const producerArrimes = (producerTxs || []).filter((t: any) => {
+    const isCategory = t.category === 'compras';
+    const hasKg = getTxKg(t) > 0;
+    const notesLower = String(t.notes || '').toLowerCase();
+    const isArrimeNote = notesLower.includes('arrime') || notesLower.includes('queso') || notesLower.includes('recep') || notesLower.includes('entrega');
+    const notAdvance = !notesLower.includes('adelanto') && !notesLower.includes('pago a él') && !notesLower.includes('préstamo');
+    return (isCategory || hasKg || isArrimeNote) && notAdvance;
+  });
+
   const producerMobileOrders = (mobileOrders || []).filter(o => String(o.entityId) === String(loggedSupplier?.id));
+
+  // Cálculo de Kilos Semanales (últimos 7 días)
+  const nowMs = Date.now();
+  const sevenDaysAgoMs = nowMs - (7 * 24 * 60 * 60 * 1000);
+  const weeklyArrimes = producerArrimes.filter((t: any) => {
+    const tMs = getTxTimeMs(t);
+    return tMs >= sevenDaysAgoMs;
+  });
+  let semanaKg = weeklyArrimes.reduce((acc: number, t: any) => acc + getTxKg(t), 0);
+  // Si no hay arrimes en los últimos 7 días pero hay historial de arrimes, mostrar la última entrega
+  if (semanaKg === 0 && producerArrimes.length > 0) {
+    const sortedArrimes = [...producerArrimes].sort((a, b) => getTxTimeMs(b) - getTxTimeMs(a));
+    semanaKg = getTxKg(sortedArrimes[0]);
+  }
+
+  // Cálculo de Kilos Históricos / Anuales
+  const txTotalKg = producerArrimes.reduce((acc: number, t: any) => acc + getTxKg(t), 0);
+  const totalAnoKg = Math.max(Number(loggedSupplier?.totalKgHistorical) || 0, txTotalKg);
+
+  // Puntos Kalu (Fidelidad)
+  const puntosKalu = Number((loggedSupplier as any)?.puntos) || Math.floor(totalAnoKg);
 
   return (
     <div className={!isolatedType ? "flex flex-col items-center bg-slate-500/5 border border-slate-500/20 rounded-xl p-6 shadow-sm" : "w-full min-h-screen bg-black text-white flex flex-col"}>
@@ -518,7 +619,7 @@ export default function ProducerPortal({
                               </span>
                               <span className="text-xs font-bold text-slate-500 font-mono">USD</span>
                             </div>
-                            <p className="text-[10px] text-slate-400 font-mono mt-0.5">~ Bs. {(Math.abs(net) * 45.0).toFixed(2)} (Tasa: 45.0)</p>
+                            <p className="text-[10px] text-slate-400 font-mono mt-0.5">~ Bs. {(Math.abs(net) * activeRate).toFixed(2)} (Tasa: {activeRate})</p>
                           </>
                         );
                       })()}
@@ -534,7 +635,7 @@ export default function ProducerPortal({
                         <span className="text-[8px] font-bold text-slate-500 uppercase">Fidelidad</span>
                       </div>
                       <div>
-                        <p className="text-lg font-black font-mono text-slate-200">{Number((loggedSupplier as any).puntos || 0)}</p>
+                        <p className="text-lg font-black font-mono text-slate-200">{puntosKalu.toLocaleString('es-MX')}</p>
                         <p className="text-[8px] text-slate-400 uppercase">Puntos Kalu</p>
                       </div>
                     </div>
@@ -547,7 +648,7 @@ export default function ProducerPortal({
                       </div>
                       <div>
                         <p className="text-lg font-black font-mono text-slate-200">
-                          {producerArrimes.reduce((acc, a) => acc + (Number((a as any).kg) || 0), 0)}<span className="text-xs text-slate-500 font-normal">kg</span>
+                          {semanaKg.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-xs text-slate-500 font-normal">kg</span>
                         </p>
                         <p className="text-[8px] text-slate-400 uppercase">Arrime Actual</p>
                       </div>
@@ -561,8 +662,7 @@ export default function ProducerPortal({
                       </div>
                       <div>
                         <p className="text-lg font-black font-mono text-slate-200">
-                          {/* Fake historical data for demonstration */}
-                          {(producerArrimes.reduce((acc, a) => acc + (Number((a as any).kg) || 0), 0) * 1.5).toFixed(0)}<span className="text-xs text-slate-500 font-normal">kg</span>
+                          {totalAnoKg.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-xs text-slate-500 font-normal">kg</span>
                         </p>
                         <p className="text-[8px] text-slate-400 uppercase">Total Año</p>
                       </div>
@@ -688,7 +788,7 @@ export default function ProducerPortal({
                                 <div className="mt-2 space-y-1.5">
                                   <div className="flex flex-col">
                                     <p className="text-xs text-emerald-400 font-mono font-black">${Number(p.sellingPrice || 0).toFixed(2)}</p>
-                                    <p className="text-[9px] text-slate-500 font-mono">~ Bs. {(Number(p.sellingPrice || 0) * 45.0).toFixed(2)}</p>
+                                    <p className="text-[9px] text-slate-500 font-mono">~ Bs. {(Number(p.sellingPrice || 0) * activeRate).toFixed(2)}</p>
                                   </div>
                                   
                                   <div className="pt-1 flex gap-2">
@@ -790,7 +890,7 @@ export default function ProducerPortal({
                                 ~ Bs. {(supplierCart.reduce((sum, item) => {
                                   const p = products.find(prod => prod.id === item.productId) || baseProducts.find(prod => prod.id === item.productId);
                                   return sum + (p ? (p.sellingPrice || 0) * item.quantity : 0);
-                                }, 0) * 45.0).toFixed(2)}
+                                }, 0) * activeRate).toFixed(2)}
                               </span>
                             </div>
                           </div>
@@ -1406,15 +1506,25 @@ export default function ProducerPortal({
                       ))}
                       
                       <p className="text-[10px] text-slate-400 mb-2 mt-6 font-bold uppercase tracking-widest border-b border-slate-800 pb-1">Arrimes Anteriores</p>
-                      {(producerArrimes || []).length === 0 ? <p className="text-slate-500 text-[10px] text-center mt-4">No hay registros de arrime</p> : (producerArrimes || []).map(arrime => (
-                        <div key={arrime.id} className="bg-slate-950 border border-slate-800 rounded-lg p-3 mb-2">
-                          <div className="flex justify-between items-center mb-1">
-                            <span className="text-[9px] text-slate-400">{new Date(arrime.date).toLocaleDateString()}</span>
-                            <span className={`text-[8px] px-1.5 py-0.5 rounded ${arrime.status === 'Completado' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>{arrime.status}</span>
+                      {(producerArrimes || []).length === 0 ? <p className="text-slate-500 text-[10px] text-center mt-4">No hay registros de arrime</p> : (producerArrimes || []).map(arrime => {
+                        const arrimeKg = getTxKg(arrime);
+                        return (
+                          <div key={arrime.id} className="bg-slate-950 border border-slate-800 rounded-lg p-3 mb-2">
+                            <div className="flex justify-between items-center mb-1">
+                              <span className="text-[9px] text-slate-400">{new Date(arrime.date).toLocaleDateString()}</span>
+                              <div className="flex items-center gap-1.5">
+                                {arrimeKg > 0 && (
+                                  <span className="text-[9px] font-mono font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                                    {arrimeKg.toFixed(2)} kg
+                                  </span>
+                                )}
+                                <span className={`text-[8px] px-1.5 py-0.5 rounded ${arrime.status === 'Completado' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>{arrime.status || 'Registrado'}</span>
+                              </div>
+                            </div>
+                            <p className="font-bold text-slate-200 text-[11px]">{arrime.notes || 'Recepción de Queso'}</p>
                           </div>
-                          <p className="font-bold text-slate-200 text-[11px]">{arrime.notes || 'Recepción de Queso'}</p>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
