@@ -91,10 +91,17 @@ export const calculateDynamicBalances = (s: SupplierProfile, txList: Transaction
     } else {
       // PRODUCTORES Y PROVEEDORES
       asc.forEach(tx => {
-        if (tx.isIncome) {
-          running += (Number(tx.amount) || 0); // (+) Entrega de queso
+        const isStoreDebt = (tx.category === 'credito' && !tx.isIncome) || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda'));
+        const isDelivery = (tx.category === 'compras' && tx.isIncome) || (tx.notes && (tx.notes.toLowerCase().includes('recibido') || tx.notes.toLowerCase().includes('arrime') || tx.notes.toLowerCase().includes('entrega')));
+        
+        if (isDelivery) {
+          running += (Number(tx.amount) || 0); // (+) Entrega / Arrime de queso
+        } else if (isStoreDebt) {
+          running -= (Number(tx.amount) || 0); // (-) Consumo / Fiado de tienda
+        } else if (tx.isIncome) {
+          running += (Number(tx.amount) || 0);
         } else {
-          running -= (Number(tx.amount) || 0); // (-) Pago o adelanto
+          running -= (Number(tx.amount) || 0); // (-) Pagos, liquidaciones, adelantos
         }
       });
     }
@@ -893,7 +900,16 @@ export default function SuppliersDebtsView({
                       currentBalance -= rest;
                     }
                   } else {
-                    if (tx.isIncome) {
+                    const isStoreDebt = (tx.category === 'credito' && !tx.isIncome) || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda'));
+                    const isDelivery = (tx.category === 'compras' && tx.isIncome) || (tx.notes && (tx.notes.toLowerCase().includes('recibido') || tx.notes.toLowerCase().includes('arrime') || tx.notes.toLowerCase().includes('entrega')));
+
+                    if (isDelivery) {
+                      sum = Number(tx.amount) || 0;
+                      currentBalance += sum;
+                    } else if (isStoreDebt) {
+                      rest = Number(tx.amount) || 0;
+                      currentBalance -= rest;
+                    } else if (tx.isIncome) {
                       sum = Number(tx.amount) || 0;
                       currentBalance += sum;
                     } else {
