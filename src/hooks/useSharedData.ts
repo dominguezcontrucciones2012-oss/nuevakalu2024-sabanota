@@ -180,81 +180,36 @@ export function useSharedData(): SharedDataState {
 
     // Listeners reactivos de colecciones
     const unsubProducts = onCollectionSnapshot('products', (data) => {
-      if (data && data.length > 0) {
+      if (Array.isArray(data)) {
         setProducts(data as CheeseProduct[]);
       }
     });
 
     const unsubTransactions = onCollectionSnapshot('transactions', (data) => {
-      if (data && data.length > 0) {
+      if (Array.isArray(data)) {
         const txs = data as Transaction[];
         txs.sort((a, b) => (a.id > b.id ? -1 : a.id < b.id ? 1 : 0));
         setTransactions(txs);
-      } else {
-        const saved = localStorage.getItem('kalu_sales_history');
-        if (saved) {
-          try {
-            const parsed = JSON.parse(saved);
-            if (parsed.length > 0) {
-              setTransactions(parsed);
-              parsed.forEach((t: any) => addLocalDoc('transactions', t).catch(console.error));
-            }
-          } catch (e) {
-            console.error('[useSharedData] Error parsing sales history:', e);
-          }
-        }
       }
     });
 
     const unsubClients = onCollectionSnapshot('clients', (data) => {
-      if (data && data.length > 0) {
+      if (Array.isArray(data)) {
         setClients(data as ClientProfile[]);
-      } else {
-        const saved = localStorage.getItem('kalu_clients');
-        if (saved) {
-          try {
-            const localData = JSON.parse(saved);
-            if (localData && localData.length > 0) {
-              setClients(localData);
-              localData.forEach((c: any) => addLocalDoc('clients', c).catch(console.error));
-            } else {
-              setClients(INITIAL_CLIENTS);
-            }
-          } catch {
-            setClients(INITIAL_CLIENTS);
-          }
-        } else {
-          setClients(INITIAL_CLIENTS);
-        }
       }
     });
 
     const unsubCheeseTrips = onCollectionSnapshot('cheeseTrips', (data) => {
-      const trips = data as CheeseTrip[];
-      trips.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      setCheeseTrips(trips);
+      if (Array.isArray(data)) {
+        const trips = [...(data as CheeseTrip[])];
+        trips.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setCheeseTrips(trips);
+      }
     });
 
     const unsubSuppliers = onCollectionSnapshot('suppliers', (data) => {
-      if (data && data.length > 0) {
+      if (Array.isArray(data)) {
         setSuppliers(data as SupplierProfile[]);
-      } else {
-        const saved = localStorage.getItem('kalu_suppliers');
-        if (saved) {
-          try {
-            const localData = JSON.parse(saved);
-            if (localData && localData.length > 0) {
-              setSuppliers(localData);
-              localData.forEach((s: any) => addLocalDoc('suppliers', s).catch(console.error));
-            } else {
-              setSuppliers(INITIAL_SUPPLIERS);
-            }
-          } catch {
-            setSuppliers(INITIAL_SUPPLIERS);
-          }
-        } else {
-          setSuppliers(INITIAL_SUPPLIERS);
-        }
       }
     });
 

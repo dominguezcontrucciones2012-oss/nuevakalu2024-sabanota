@@ -145,13 +145,13 @@ export default function App() {
     }).catch(e => console.error("Error loading local products:", e));
 
     const unsubProducts = onCollectionSnapshot('products', (data) => {
-      if (data && data.length > 0) {
+      if (Array.isArray(data)) {
         setCheeseProducts(data as CheeseProduct[]);
       }
     });
 
     const unsubTransactions = onCollectionSnapshot('transactions', (data) => {
-      if (data && Array.isArray(data) && data.length > 0) {
+      if (Array.isArray(data)) {
         const txs = [...(data as Transaction[])];
         txs.sort((a, b) => {
           if (a.id > b.id) return -1;
@@ -160,65 +160,26 @@ export default function App() {
         });
         setTransactions(txs);
         localStorage.setItem('kalu_sales_history', JSON.stringify(txs));
-      } else {
-        // RESCATE AUTOMÁTICO: Si el servidor devuelve vacío, recuperar del almacenamiento local del navegador
-        try {
-          const saved = localStorage.getItem('kalu_sales_history');
-          if (saved) {
-            const localTxs = JSON.parse(saved);
-            if (Array.isArray(localTxs) && localTxs.length > 0) {
-              setTransactions(localTxs);
-              // Re-sincronizar de inmediato al servidor para persistir
-              localTxs.forEach((t: any) => addLocalDoc('transactions', t).catch(console.error));
-            }
-          }
-        } catch (err) {
-          console.error("Error al rescatar transacciones de localStorage:", err);
-        }
       }
     });
 
     const unsubClients = onCollectionSnapshot('clients', (data) => {
-      if (data && data.length > 0) {
-         setClients(data as ClientProfile[]);
-      } else {
-         const saved = localStorage.getItem('kalu_clients');
-         if (saved) {
-            const localData = JSON.parse(saved);
-            if (localData && localData.length > 0) {
-               setClients(localData);
-               localData.forEach((c: any) => addLocalDoc('clients', c).catch(console.error));
-            } else {
-               setClients(INITIAL_CLIENTS);
-            }
-         } else {
-            setClients(INITIAL_CLIENTS);
-         }
+      if (Array.isArray(data)) {
+        setClients(data as ClientProfile[]);
       }
     });
 
     const unsubCheeseTrips = onCollectionSnapshot('cheeseTrips', (data) => {
-      const trips = data as CheeseTrip[];
-      trips.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      setCheeseTrips(trips);
+      if (Array.isArray(data)) {
+        const trips = [...(data as CheeseTrip[])];
+        trips.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setCheeseTrips(trips);
+      }
     });
 
     const unsubSuppliers = onCollectionSnapshot('suppliers', (data) => {
-      if (data && data.length > 0) {
-         setSuppliers(data as SupplierProfile[]);
-      } else {
-         const saved = localStorage.getItem('kalu_suppliers');
-         if (saved) {
-            const localData = JSON.parse(saved);
-            if (localData && localData.length > 0) {
-               setSuppliers(localData);
-               localData.forEach((s: any) => addLocalDoc('suppliers', s).catch(console.error));
-            } else {
-               setSuppliers(INITIAL_SUPPLIERS);
-            }
-         } else {
-            setSuppliers(INITIAL_SUPPLIERS);
-         }
+      if (Array.isArray(data)) {
+        setSuppliers(data as SupplierProfile[]);
       }
     });
 
