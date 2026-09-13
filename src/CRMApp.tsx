@@ -1454,13 +1454,18 @@ export default function App() {
     }
 
     const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
-    const rate = settings?.exchangeRate || 42.5;
+    const rate = Number(settings?.exchangeRate) > 1 ? Number(settings.exchangeRate) : 42.5;
     let newVault = { ...currentVault };
     const src = (paymentSource || '').toLowerCase();
-    if (currency === 'VES' || src.includes('bs') || src.includes('pago móvil') || src.includes('pago movil') || src.includes('transferencia')) {
-      newVault.bankBs -= (amount * (currency === 'USD' ? rate : 1));
+
+    if (src.includes('pago móvil') || src.includes('pago movil') || src.includes('banco') || src.includes('transferencia')) {
+      const bsToDeduct = Math.round((amount * rate) * 100) / 100;
+      newVault.bankBs = Math.round(((newVault.bankBs || 0) - bsToDeduct) * 100) / 100;
+    } else if (currency === 'VES' || src.includes('efectivo bs')) {
+      const bsToDeduct = Math.round((amount * rate) * 100) / 100;
+      newVault.bs = Math.round(((newVault.bs || 0) - bsToDeduct) * 100) / 100;
     } else {
-      newVault.usd -= amount;
+      newVault.usd = Math.round(((newVault.usd || 0) - amount) * 100) / 100;
     }
     handleUpdateSettings({ centralVaultBalance: newVault });
 
@@ -1507,13 +1512,18 @@ export default function App() {
     }
 
     const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
-    const rate = settings?.exchangeRate || 42.5;
+    const rate = Number(settings?.exchangeRate) > 1 ? Number(settings.exchangeRate) : 42.5;
     let newVault = { ...currentVault };
     const m = (method || '').toLowerCase();
-    if (currency === 'VES' || m.includes('bs') || m.includes('pago móvil') || m.includes('pago movil') || m.includes('transferencia')) {
-      newVault.bankBs += (amount * (currency === 'USD' ? rate : 1));
+
+    if (m.includes('pago móvil') || m.includes('pago movil') || m.includes('banco') || m.includes('transferencia')) {
+      const bsToAdd = Math.round((amount * rate) * 100) / 100;
+      newVault.bankBs = Math.round(((newVault.bankBs || 0) + bsToAdd) * 100) / 100;
+    } else if (currency === 'VES' || m.includes('efectivo bs')) {
+      const bsToAdd = Math.round((amount * rate) * 100) / 100;
+      newVault.bs = Math.round(((newVault.bs || 0) + bsToAdd) * 100) / 100;
     } else {
-      newVault.usd += amount;
+      newVault.usd = Math.round(((newVault.usd || 0) + amount) * 100) / 100;
     }
     handleUpdateSettings({ centralVaultBalance: newVault });
 
