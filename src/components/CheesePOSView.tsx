@@ -496,17 +496,8 @@ export default function CheesePOSView({
     let currency = '$';
 
     if (paymentMethod !== 'Efectivo $' && paymentMethod !== 'Mundo Kalu') {
-       const curRemainingUsd = Math.max(0, Math.round((total - totalAbonado) * 100) / 100);
        const rate = activeExchangeRate || 1;
-       const convertedUsd = rawAmount / rate;
-
-       // Tolerancia estricta de céntimos: Si el monto en Bs ingresado cubre prácticamente la totalidad del saldo restante
-       // (diferencia menor a 0.05 USD o 2 Bs), asignamos el remanente exacto para evitar residuos por redondeo.
-       if (convertedUsd >= (curRemainingUsd - 0.05)) {
-          amountInUsd = curRemainingUsd;
-       } else {
-          amountInUsd = Math.round(convertedUsd * 100) / 100;
-       }
+       amountInUsd = Math.round((rawAmount / rate) * 100) / 100;
        currency = 'Bs';
     }
 
@@ -699,12 +690,7 @@ export default function CheesePOSView({
 
         if (paymentMethod !== 'Efectivo $') {
           const rate = activeExchangeRate || 1;
-          const convertedUsd = rawInput / rate;
-          if (convertedUsd >= (total - 0.05)) {
-            amountInUsd = total;
-          } else {
-            amountInUsd = Math.round(convertedUsd * 100) / 100;
-          }
+          amountInUsd = Math.round((rawInput / rate) * 100) / 100;
           currency = 'Bs';
         }
 
