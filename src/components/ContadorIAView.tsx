@@ -131,6 +131,7 @@ export default function ContadorIAView({
           onBack={() => handleNavigateToModule(null)}
           vaultBalance={vaultBalance}
           exchangeRate={exchangeRate}
+          cheeseTrips={cheeseTrips}
           onAddTransaction={onAddTransaction}
           onUpdateVault={onUpdateVault}
         />

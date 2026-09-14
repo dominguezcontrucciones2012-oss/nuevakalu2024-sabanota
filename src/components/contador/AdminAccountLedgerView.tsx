@@ -96,7 +96,9 @@ export default function AdminAccountLedgerView({
   const [paymentMethodType, setPaymentMethodType] = useState<'Pago Móvil' | 'Transferencia' | 'Efectivo USD' | 'Efectivo Bs'>('Pago Móvil');
   const [paymentReference, setPaymentReference] = useState('');
 
-  // 1. Cargar Asientos, Proveedores y Bandeja de Validación en Tiempo Real
+  const [localTrips, setLocalTrips] = useState<CheeseTrip[]>(cheeseTrips || []);
+
+  // 1. Cargar Asientos, Proveedores, Bandeja de Validación y Viajes en Tiempo Real
   useEffect(() => {
     const unsubLedger = onCollectionSnapshot('adminLedger', (data) => {
       const list = (data || []) as AdminAccountEntry[];
@@ -117,10 +119,17 @@ export default function AdminAccountLedgerView({
       }
     });
 
+    const unsubTrips = onCollectionSnapshot('cheeseTrips', (data) => {
+      if (data && Array.isArray(data)) {
+        setLocalTrips(data as CheeseTrip[]);
+      }
+    });
+
     return () => {
       unsubLedger();
       unsubVoicePending();
       unsubSuppliers();
+      unsubTrips();
     };
   }, []);
 
@@ -339,7 +348,52 @@ export default function AdminAccountLedgerView({
 
       await addLocalDoc('adminLedger', newEntry);
       await deleteLocalDoc('admin_voice_pending', item.id);
-      onAddNotification?.('✅ Nota aprobada e inyectada exitosamente a la Ficha de la Administradora.', 'success');
+
+      // Amortizar viaje activo en curso si existe
+      try {
+        const activeTrip = (localTrips.length > 0 ? localTrips : cheeseTrips).find(t => t.status === 'en_ruta');
+        if (activeTrip && creditUsd > 0) {
+          const currentInvoicesUsd = activeTrip.totalInvoicesValueUsd || 0;
+          const newInvoicesUsd = currentInvoicesUsd + creditUsd;
+          
+          const moneyUsd = (activeTrip.cashReturnedUsd || 0) + (activeTrip.bankReturnedUsd || 0);
+          const moneyBsToUsd = ((activeTrip.cashReturnedBs || 0) + (activeTrip.bankReturnedBs || 0)) / (activeTrip.bcvRateAtSettlement || exchangeRate || 45.0);
+          const totalMoneyUsd = moneyUsd + moneyBsToUsd;
+
+          const totalSettlementValue = totalMoneyUsd + newInvoicesUsd;
+          const tripBagValue = activeTrip.totalBagValueUsd || activeTrip.dispatchedCostValue || 0;
+          const netProfit = totalSettlementValue - tripBagValue;
+
+          const tripInvoicesList = activeTrip.invoices || [];
+          tripInvoicesList.push({
+            id: `INV-VOICE-${Date.now()}`,
+            supplierName: item.structured.title || item.structured.summary || 'Nota de Voz',
+            invoiceNumber: `VOZ-${Date.now().toString().slice(-4)}`,
+            date: new Date().toISOString(),
+            totalUsd: creditUsd,
+            items: [{
+              description: item.structured.summary || item.rawText,
+              quantity: 1,
+              unitCostUsd: creditUsd,
+              totalCostUsd: creditUsd
+            }]
+          });
+
+          const tripUpdateData: Partial<CheeseTrip> = {
+            invoices: tripInvoicesList,
+            totalInvoicesValueUsd: newInvoicesUsd,
+            totalSettlementValueUsd: totalSettlementValue,
+            netProfitUsd: netProfit
+          };
+
+          await updateLocalDoc('cheeseTrips', activeTrip.id, tripUpdateData);
+          setLocalTrips(prev => prev.map(t => t.id === activeTrip.id ? { ...t, ...tripUpdateData } : t));
+        }
+      } catch (eTrip) {
+        console.warn('Error amortizando viaje activo desde nota de voz:', eTrip);
+      }
+
+      onAddNotification?.('✅ Nota aprobada e inyectada exitosamente a la Ficha de la Administradora y Viaje Activo.', 'success');
     } catch (err) {
       console.error('Error inyectando nota:', err);
       onAddNotification?.('Error al inyectar asiento contable.', 'warning');
@@ -500,8 +554,97 @@ export default function AdminAccountLedgerView({
         };
         await addLocalDoc('transactions', supTx);
 
-        onAddNotification?.(`✅ Pago de $${totalEquivUsd.toFixed(2)} registrado. Libreta y Ficha de ${targetSupplier.name} actualizadas en vivo.`, 'success');
+        // 3. PUENTE CONTABLE: Amortizar automáticamente la gira/viaje activo en cheeseTrips
+        try {
+          const activeTrip = (localTrips.length > 0 ? localTrips : cheeseTrips).find(t => t.status === 'en_ruta');
+          if (activeTrip) {
+            const currentInvoicesUsd = activeTrip.totalInvoicesValueUsd || 0;
+            const newInvoicesUsd = currentInvoicesUsd + totalEquivUsd;
+            
+            const moneyUsd = (activeTrip.cashReturnedUsd || 0) + (activeTrip.bankReturnedUsd || 0);
+            const moneyBsToUsd = ((activeTrip.cashReturnedBs || 0) + (activeTrip.bankReturnedBs || 0)) / (activeTrip.bcvRateAtSettlement || exchangeRate || 45.0);
+            const totalMoneyUsd = moneyUsd + moneyBsToUsd;
+
+            const totalSettlementValue = totalMoneyUsd + newInvoicesUsd;
+            const tripBagValue = activeTrip.totalBagValueUsd || activeTrip.dispatchedCostValue || 0;
+            const netProfit = totalSettlementValue - tripBagValue;
+
+            const tripInvoicesList = activeTrip.invoices || [];
+            tripInvoicesList.push({
+              id: `INV-ADM-${nowMs}`,
+              supplierName: targetSupplier.name,
+              invoiceNumber: paymentReference || `PAGO-${nowMs.toString().slice(-4)}`,
+              date: new Date().toISOString(),
+              totalUsd: totalEquivUsd,
+              items: [{
+                description: `${finalConcept} (${targetSupplier.name})`,
+                quantity: 1,
+                unitCostUsd: totalEquivUsd,
+                totalCostUsd: totalEquivUsd
+              }]
+            });
+
+            const tripUpdateData: Partial<CheeseTrip> = {
+              invoices: tripInvoicesList,
+              totalInvoicesValueUsd: newInvoicesUsd,
+              totalSettlementValueUsd: totalSettlementValue,
+              netProfitUsd: netProfit
+            };
+
+            await updateLocalDoc('cheeseTrips', activeTrip.id, tripUpdateData);
+            setLocalTrips(prev => prev.map(t => t.id === activeTrip.id ? { ...t, ...tripUpdateData } : t));
+          }
+        } catch (eTrip) {
+          console.warn("Error amortizando viaje activo desde pago a productor:", eTrip);
+        }
+
+        onAddNotification?.(`✅ Pago de $${totalEquivUsd.toFixed(2)} registrado. Libreta de ${targetSupplier.name} y Viaje activo amortizados en vivo.`, 'success');
       } else {
+        // Si es gasto general operativo (o fondeo), también amortizar si hay un viaje en curso
+        if (!newIsDebit) {
+          try {
+            const activeTrip = (localTrips.length > 0 ? localTrips : cheeseTrips).find(t => t.status === 'en_ruta');
+            if (activeTrip) {
+              const currentInvoicesUsd = activeTrip.totalInvoicesValueUsd || 0;
+              const newInvoicesUsd = currentInvoicesUsd + totalEquivUsd;
+              
+              const moneyUsd = (activeTrip.cashReturnedUsd || 0) + (activeTrip.bankReturnedUsd || 0);
+              const moneyBsToUsd = ((activeTrip.cashReturnedBs || 0) + (activeTrip.bankReturnedBs || 0)) / (activeTrip.bcvRateAtSettlement || exchangeRate || 45.0);
+              const totalMoneyUsd = moneyUsd + moneyBsToUsd;
+
+              const totalSettlementValue = totalMoneyUsd + newInvoicesUsd;
+              const tripBagValue = activeTrip.totalBagValueUsd || activeTrip.dispatchedCostValue || 0;
+              const netProfit = totalSettlementValue - tripBagValue;
+
+              const tripInvoicesList = activeTrip.invoices || [];
+              tripInvoicesList.push({
+                id: `INV-ADM-${Date.now()}`,
+                supplierName: finalConcept,
+                invoiceNumber: paymentReference || `GASTO-${Date.now().toString().slice(-4)}`,
+                date: new Date().toISOString(),
+                totalUsd: totalEquivUsd,
+                items: [{
+                  description: finalConcept,
+                  quantity: 1,
+                  unitCostUsd: totalEquivUsd,
+                  totalCostUsd: totalEquivUsd
+                }]
+              });
+
+              const tripUpdateData: Partial<CheeseTrip> = {
+                invoices: tripInvoicesList,
+                totalInvoicesValueUsd: newInvoicesUsd,
+                totalSettlementValueUsd: totalSettlementValue,
+                netProfitUsd: netProfit
+              };
+
+              await updateLocalDoc('cheeseTrips', activeTrip.id, tripUpdateData);
+              setLocalTrips(prev => prev.map(t => t.id === activeTrip.id ? { ...t, ...tripUpdateData } : t));
+            }
+          } catch (eTrip) {
+            console.warn("Error amortizando viaje activo desde gasto operativo:", eTrip);
+          }
+        }
         onAddNotification?.('Asiento registrado exitosamente en la Ficha Administradora.', 'success');
       }
 
@@ -1120,13 +1263,21 @@ export default function AdminAccountLedgerView({
 
             <div className="bg-editorial-bg border border-editorial-border p-3 rounded-xl space-y-1.5">
               <span className="font-bold text-white uppercase text-[11px] block mb-1">Viajes Activos En Ruta:</span>
-              {cheeseTrips.filter(t => t.status === 'en_ruta').map(t => (
-                <div key={t.id} className="flex justify-between text-[11px] border-b border-editorial-border/20 pb-1">
-                  <span>Viaje #{t.tripNumber} ({t.clientName})</span>
-                  <span className="text-amber-400 font-bold">{formatUsd(t.totalBagValueUsd || 0)}</span>
-                </div>
-              ))}
-              {cheeseTrips.filter(t => t.status === 'en_ruta').length === 0 && (
+              {(localTrips.length > 0 ? localTrips : cheeseTrips).filter(t => t.status === 'en_ruta').map(t => {
+                const bagVal = t.totalBagValueUsd || t.dispatchedCostValue || 0;
+                const settledVal = t.totalSettlementValueUsd || 0;
+                const pendingDebt = Math.max(0, bagVal - settledVal);
+                return (
+                  <div key={t.id} className="flex justify-between items-center text-[11px] border-b border-editorial-border/20 pb-1">
+                    <span>Viaje #{t.tripNumber} ({t.clientName})</span>
+                    <div className="text-right">
+                      <span className="text-amber-400 font-bold block">Bolsa: {formatUsd(bagVal)}</span>
+                      <span className="text-rose-400 text-[10px] font-mono block">Pendiente: {formatUsd(pendingDebt)}</span>
+                    </div>
+                  </div>
+                );
+              })}
+              {(localTrips.length > 0 ? localTrips : cheeseTrips).filter(t => t.status === 'en_ruta').length === 0 && (
                 <p className="text-editorial-text-muted">No hay viajes en ruta pendientes.</p>
               )}
             </div>

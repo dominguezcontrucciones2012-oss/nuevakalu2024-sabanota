@@ -433,11 +433,21 @@ export default function CheeseTripsView({
                 const bsValInUsd = (trip.cashTakenBs || 0) / exchangeRate;
                 const bankUsdVal = (trip.bankTakenUsd || 0) + ((trip.bankTakenBs || 0) / exchangeRate);
                 const computedTotalBag = cheeseVal + usdVal + bsValInUsd + bankUsdVal;
+                const settledVal = trip.totalSettlementValueUsd || 0;
+                const pendingDebt = Math.max(0, computedTotalBag - settledVal);
 
                 return (
-                  <div className="flex justify-between border-t border-editorial-border pt-2 mt-2">
-                    <span className="text-editorial-text-muted font-bold">Bolsa Total:</span>
-                    <span className="text-amber-500 font-bold text-sm">{formatCurrency(computedTotalBag)}</span>
+                  <div className="border-t border-editorial-border pt-2 mt-2 space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-editorial-text-muted font-bold">Bolsa Total:</span>
+                      <span className="text-amber-500 font-bold text-sm">{formatCurrency(computedTotalBag)}</span>
+                    </div>
+                    {trip.status === 'en_ruta' && (
+                      <div className="flex justify-between items-center text-[11px] pt-0.5">
+                        <span className="text-editorial-text-muted">Amortizado: <span className="text-emerald-400 font-bold">{formatCurrency(settledVal)}</span></span>
+                        <span className="text-rose-400 font-bold font-mono">Deuda: {formatCurrency(pendingDebt)}</span>
+                      </div>
+                    )}
                   </div>
                 );
               })()}

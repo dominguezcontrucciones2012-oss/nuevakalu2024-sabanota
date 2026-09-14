@@ -3,12 +3,13 @@ import React, { useState, useEffect } from 'react';
 
 
 import { ArrowLeft, Wallet, Truck, Plus, Save, Banknote, Landmark, CircleDollarSign, Loader2, Calendar } from 'lucide-react';
-import { CentralVaultBalance, Transaction } from '../../types';
+import { CentralVaultBalance, Transaction, CheeseTrip } from '../../types';
 
 interface BudgetControlViewProps {
   onBack: () => void;
   vaultBalance: CentralVaultBalance;
   exchangeRate: number;
+  cheeseTrips?: CheeseTrip[];
   onAddTransaction: (tx: Partial<Transaction>) => void;
   onUpdateVault?: (updates: Partial<CentralVaultBalance>) => Promise<void>;
 }
@@ -17,6 +18,7 @@ export default function BudgetControlView({
   onBack,
   vaultBalance,
   exchangeRate,
+  cheeseTrips = [],
   onAddTransaction,
   onUpdateVault
 }: BudgetControlViewProps) {
@@ -29,8 +31,8 @@ export default function BudgetControlView({
   // Trips State
   const [trips, setTrips] = useState<any[]>([]);
   const [loadingTrips, setLoadingTrips] = useState(true);
+  const [localCheeseTrips, setLocalCheeseTrips] = useState<CheeseTrip[]>(cheeseTrips);
 
-  // Load Debts
   // Load Debts
   useEffect(() => {
     const unsubscribe = onCollectionSnapshot('business_debts', (data) => {
@@ -48,7 +50,17 @@ export default function BudgetControlView({
       setTrips(data);
       setLoadingTrips(false);
     });
-    return () => unsubscribe();
+
+    const unsubCheese = onCollectionSnapshot('cheeseTrips', (data) => {
+      if (data && Array.isArray(data)) {
+        setLocalCheeseTrips(data as CheeseTrip[]);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      unsubCheese();
+    };
   }, []);
 
   return (
@@ -105,6 +117,7 @@ export default function BudgetControlView({
             loading={loadingDebts}
             vaultBalance={vaultBalance}
             exchangeRate={exchangeRate}
+            cheeseTrips={localCheeseTrips}
             onAddTransaction={onAddTransaction}
             onUpdateVault={onUpdateVault}
           />
@@ -123,7 +136,7 @@ export default function BudgetControlView({
   );
 }
 
-function DebtsTab({ debts, loading, vaultBalance, exchangeRate, onAddTransaction, onUpdateVault }: any) {
+function DebtsTab({ debts, loading, vaultBalance, exchangeRate, cheeseTrips = [], onAddTransaction, onUpdateVault }: any) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showPayModal, setShowPayModal] = useState<string | null>(null);
 
@@ -186,6 +199,7 @@ function DebtsTab({ debts, loading, vaultBalance, exchangeRate, onAddTransaction
           onClose={() => setShowPayModal(null)}
           vaultBalance={vaultBalance}
           exchangeRate={exchangeRate}
+          cheeseTrips={cheeseTrips}
           onAddTransaction={onAddTransaction}
           onUpdateVault={onUpdateVault}
         />
@@ -276,7 +290,7 @@ function AddDebtModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function PayDebtModal({ debt, onClose, vaultBalance, exchangeRate, onAddTransaction, onUpdateVault }: any) {
+function PayDebtModal({ debt, onClose, vaultBalance, exchangeRate, cheeseTrips = [], onAddTransaction, onUpdateVault }: any) {
   const [amount, setAmount] = useState(debt.pendingBalance.toString());
   const [currency, setCurrency] = useState<'USD'|'VES'>('USD');
   const [method, setMethod] = useState<'usd'|'bs'|'bankUsd'|'bankBs'>('usd');
@@ -351,6 +365,49 @@ function PayDebtModal({ debt, onClose, vaultBalance, exchangeRate, onAddTransact
         await addLocalDoc('adminLedger', adminEntry);
       } catch (eLedger) {
         console.warn('Error registrando asiento en adminLedger desde control presupuestario:', eLedger);
+      }
+
+      // 4. PUENTE CONTABLE: Amortizar automáticamente la gira activa en cheeseTrips
+      try {
+        const activeTrip = (cheeseTrips || []).find((t: any) => t.status === 'en_ruta');
+        if (activeTrip && usdAmount > 0) {
+          const currentInvoicesUsd = activeTrip.totalInvoicesValueUsd || 0;
+          const newInvoicesUsd = currentInvoicesUsd + usdAmount;
+          
+          const moneyUsd = (activeTrip.cashReturnedUsd || 0) + (activeTrip.bankReturnedUsd || 0);
+          const moneyBsToUsd = ((activeTrip.cashReturnedBs || 0) + (activeTrip.bankReturnedBs || 0)) / (activeTrip.bcvRateAtSettlement || exchangeRate || 45.0);
+          const totalMoneyUsd = moneyUsd + moneyBsToUsd;
+
+          const totalSettlementValue = totalMoneyUsd + newInvoicesUsd;
+          const tripBagValue = activeTrip.totalBagValueUsd || activeTrip.dispatchedCostValue || 0;
+          const netProfit = totalSettlementValue - tripBagValue;
+
+          const tripInvoicesList = activeTrip.invoices || [];
+          tripInvoicesList.push({
+            id: `INV-BUDGET-${Date.now()}`,
+            supplierName: `Presupuesto: ${debt.concept}`,
+            invoiceNumber: `DEBT-${Date.now().toString().slice(-4)}`,
+            date: new Date().toISOString(),
+            totalUsd: usdAmount,
+            items: [{
+              description: `Pago de deuda/pasivo: ${debt.concept} (${debt.category || 'General'})`,
+              quantity: 1,
+              unitCostUsd: usdAmount,
+              totalCostUsd: usdAmount
+            }]
+          });
+
+          const tripUpdateData: Partial<CheeseTrip> = {
+            invoices: tripInvoicesList,
+            totalInvoicesValueUsd: newInvoicesUsd,
+            totalSettlementValueUsd: totalSettlementValue,
+            netProfitUsd: netProfit
+          };
+
+          await updateLocalDoc('cheeseTrips', activeTrip.id, tripUpdateData);
+        }
+      } catch (eTrip) {
+        console.warn('Error amortizando viaje activo desde pago presupuestario:', eTrip);
       }
 
       onClose();
