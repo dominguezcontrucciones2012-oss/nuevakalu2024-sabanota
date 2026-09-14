@@ -852,7 +852,7 @@ app.post('/api/pos/process-sale', async (req, res) => {
         }
       }
 
-      // 3. BILLS / RECEIVABLES
+      // 3. BILLS / RECEIVABLES & KALU INSTALLMENTS
       if (debtAmount > 0) {
         const billsData = readCollection('bills');
         const newBill = {
@@ -867,6 +867,39 @@ app.post('/api/pos/process-sale', async (req, res) => {
         };
         billsData.push(newBill);
         writeCollection('bills', billsData, { action: 'add', collection: 'bills', doc: newBill });
+
+        // Atomic Installments generation for Kalu Credit
+        const hasKaluMethod = (addedPayments || []).some(p => p.method === 'Mundo Kalu') || paymentMethodType === 'Mundo Kalu';
+        if (hasKaluMethod && clientId) {
+          const installmentsData = readCollection('installments');
+          const kaluItem = (addedPayments || []).find(p => p.method === 'Mundo Kalu');
+          const financedAmount = kaluItem ? Number(kaluItem.amount || debtAmount) : debtAmount;
+          const installmentsCount = Number(req.body.installmentsCount || 3);
+          const cuotaVal = Math.round((financedAmount / installmentsCount) * 100) / 100;
+          let nextDate = new Date();
+          nextDate.setDate(nextDate.getDate() + 15);
+
+          for (let i = 0; i < installmentsCount; i++) {
+            const installmentDoc = {
+              id: `inst-${Date.now()}-${i + 1}`,
+              clientId: clientId,
+              transactionId: `TX-${Date.now()}`,
+              amount: cuotaVal,
+              dueDate: nextDate.toISOString().split('T')[0],
+              status: 'pending',
+              installmentNumber: i + 1,
+              totalInstallments: installmentsCount,
+              pointsEarned: Math.round(cuotaVal),
+              pointsAwarded: false,
+              createdAt: new Date().toISOString(),
+              type: req.body.kaluCreditType || 'cotidiano'
+            };
+            installmentsData.push(installmentDoc);
+            io.emit('collection_delta', { action: 'add', collection: 'installments', doc: installmentDoc });
+            nextDate.setDate(nextDate.getDate() + 15);
+          }
+          writeCollection('installments', installmentsData);
+        }
       }
 
       // 4. CENTRAL VAULT BALANCE (BÓVEDA)
@@ -1118,6 +1151,111 @@ app.post('/api/collections/:name/batchDelete', (req, res) => {
   } catch (error) {
     console.error(`Error batch deleting ${req.params.name}:`, error);
     res.status(500).json({ error: 'Error batch deleting documents' });
+  }
+});
+
+// Endpoint Atómico Oficial para Procesar Venta de Caja y Crédito Kalú
+app.post('/api/pos/process-sale', (req, res) => {
+  try {
+    const payload = req.body;
+    const {
+      saleItems = [],
+      clientId,
+      customerName,
+      supplierId,
+      paidAmount = 0,
+      saleTotalAmount = 0,
+      debtAmount = 0,
+      addedPayments = [],
+      paymentMethodType = 'Efectivo',
+      transaction: customTx,
+      creditDetails
+    } = payload;
+
+    const txId = (customTx && customTx.id) || `TX-${Date.now()}`;
+    const invoiceNum = (customTx && customTx.invoiceNumber) || `F-${Date.now().toString().slice(-4)}`;
+    
+    // 1. Persistir Transacción
+    const transactions = readCollection('transactions');
+    const finalTx = {
+      id: txId,
+      entity: customerName || 'Cliente General',
+      clientId: clientId || null,
+      supplierId: supplierId || null,
+      amount: Number(paidAmount || saleTotalAmount || 0),
+      debtAmount: Number(debtAmount || 0),
+      totalUSD: Number(saleTotalAmount || 0),
+      category: 'ventas',
+      status: 'Completado',
+      paymentMethod: paymentMethodType || 'Multipago',
+      invoiceNumber: invoiceNum,
+      date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+      timestamp: new Date().toISOString(),
+      createdAt: Date.now(),
+      isIncome: true,
+      items: saleItems,
+      addedPayments: addedPayments,
+      ...(customTx || {})
+    };
+
+    transactions.unshift(finalTx);
+    writeCollection('transactions', transactions, { action: 'add', collection: 'transactions', doc: finalTx });
+
+    // 2. Si es Crédito Kalú, generar cuotas en 'installments'
+    const kaluPayment = addedPayments.find(p => p.method === 'Mundo Kalu');
+    if (kaluPayment || creditDetails?.isKaluCredit) {
+      const financedAmount = Number(kaluPayment?.amount || creditDetails?.financedAmount || debtAmount || 0);
+      const installmentsCount = Number(creditDetails?.installmentsCount || 2);
+      const cuotaAmount = Number((financedAmount / installmentsCount).toFixed(2));
+      
+      const installments = readCollection('installments');
+      let nextDueDate = new Date();
+      nextDueDate.setDate(nextDueDate.getDate() + 15);
+
+      for (let i = 0; i < installmentsCount; i++) {
+        const instDoc = {
+          id: `INST-${Date.now()}-${i + 1}`,
+          clientId: clientId || finalTx.clientId,
+          transactionId: txId,
+          amount: cuotaAmount,
+          amountUSD: cuotaAmount,
+          dueDate: nextDueDate.toISOString().split('T')[0],
+          status: 'pending',
+          installmentNumber: i + 1,
+          totalInstallments: installmentsCount,
+          pointsEarned: Math.round(cuotaAmount),
+          pointsAwarded: false,
+          createdAt: new Date().toISOString(),
+          type: creditDetails?.creditType || 'cotidiano'
+        };
+        installments.push(instDoc);
+        nextDueDate.setDate(nextDueDate.getDate() + 15);
+      }
+      writeCollection('installments', installments, { action: 'add', collection: 'installments' });
+    }
+
+    // 3. Descontar Inventario de Productos
+    if (saleItems.length > 0) {
+      const products = readCollection('products');
+      saleItems.forEach(item => {
+        const prodId = item.productId || item.id;
+        const pIndex = products.findIndex(p => String(p.id) === String(prodId));
+        if (pIndex !== -1) {
+          const deductQty = Number(item.quantityKg || item.quantity || 1);
+          products[pIndex].stockKg = Math.max(0, Number(products[pIndex].stockKg || 0) - deductQty);
+        }
+      });
+      writeCollection('products', products, { action: 'update', collection: 'products' });
+    }
+
+    res.json({
+      success: true,
+      transaction: finalTx,
+      message: 'Venta procesada y cuotas registradas atómicamente.'
+    });
+  } catch (error) {
+    console.error('Error en /api/pos/process-sale:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

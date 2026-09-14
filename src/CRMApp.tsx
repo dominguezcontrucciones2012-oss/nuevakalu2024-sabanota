@@ -461,6 +461,16 @@ export default function App() {
       updatedVaultBalance: updatedVault
     };
 
+    // Backup state for atomic rollback
+    const prevProductsState = cheeseProducts;
+    const prevClientsState = clients;
+    const prevSuppliersState = suppliers;
+    const prevTransactionsState = transactions;
+    const prevVaultState = settings?.centralVaultBalance;
+    const prevBalance = balance;
+    const prevSalesRevenue = totalSalesRevenue;
+    const prevSalesCount = totalSalesCount;
+
     // Optimistic UI state updates
     setCheeseProducts((prevProducts) =>
       prevProducts.map((p) => {
@@ -527,11 +537,24 @@ export default function App() {
     };
     setActivities((prev) => [newAct, ...prev]);
 
-    // Send single atomic request to server
+    // Send single atomic request to server with rollback support
     try {
       await processSaleAtomic(salePayload);
-    } catch (err) {
-      console.error("Error executing atomic sale on backend:", err);
+    } catch (err: any) {
+      console.error("[ROLLBACK] Error crítico al procesar venta atómica en servidor:", err);
+      // Rollback optimistic state
+      setCheeseProducts(prevProductsState);
+      setClients(prevClientsState);
+      setSuppliers(prevSuppliersState);
+      setTransactions(prevTransactionsState);
+      setBalance(prevBalance);
+      setTotalSalesRevenue(prevSalesRevenue);
+      setTotalSalesCount(prevSalesCount);
+      if (prevVaultState) {
+        setSettings((prev: any) => ({ ...prev, centralVaultBalance: prevVaultState }));
+      }
+      addNotification(`ERROR CRÍTICO: La transacción fue cancelada y revertida (Rollback). ${err?.message || ''}`, 'warning');
+      throw err;
     }
   };
 

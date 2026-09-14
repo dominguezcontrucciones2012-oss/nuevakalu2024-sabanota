@@ -212,7 +212,7 @@ export default function ClientPortal({
 
   // Shopping Catalog Local States (Separate for each portal)
   const [clientSearch, setClientSearch] = useState('');
-  const [clientCategory, setClientCategory] = useState<'Todos' | 'Quesos' | 'Repuestos' | 'Comidas'>('Todos');
+  const [clientCategory, setClientCategory] = useState<'Todos' | 'Víveres' | 'Repuestos de Moto' | 'Ferretería'>('Todos');
   const [clientCart, setClientCart] = useState<{ productId: string; quantity: number }[]>([]);
   const [clientPayment, setClientPayment] = useState<'contado' | 'fiado'>('contado');
   const [localQuantities, setLocalQuantities] = useState<Record<string, number>>({});
@@ -224,22 +224,21 @@ export default function ClientPortal({
   const [showBenefitsModal, setShowBenefitsModal] = useState(false);
   const [showProgressModal, setShowProgressModal] = useState(false);
   const [showCreditLineModal, setShowCreditLineModal] = useState(false);
-  
-  // Real-Time Sync: Aprobación de Crédito (Cashea Style)
-  const [pendingCreditRequest, setPendingCreditRequest] = useState<any>(null);
 
   // Swipe Navigation for Client Mobile Tabs (Inicio <-> Tienda <-> QR <-> Pagos <-> Perfil)
   const clientSwipeHandlers = useSwipeNavigation({
     tabs: ['inicio', 'tienda', 'qr', 'pagos', 'perfil'],
     activeTab: clientActiveTab,
     onTabChange: (newTab) => setClientActiveTab(newTab),
-    disabled: !loggedClient || showClientCartModal || showQrPaymentModal || pendingCreditRequest !== null
+    disabled: !loggedClient || showClientCartModal || showQrPaymentModal
   });
 
   const [pwaBcvRate, setPwaBcvRate] = useState<number>(0);
   
   const [activeInstallments, setActiveInstallments] = useState<any[]>([]);
   const [paymentHistory, setPaymentHistory] = useState<any[]>([]);
+  const [clientMovements, setClientMovements] = useState<any[]>([]);
+  const [clientAllTxs, setClientAllTxs] = useState<any[]>([]);
 
   React.useEffect(() => {
     const unsubSettings = onCollectionSnapshot('settings', (docs) => {
@@ -258,42 +257,66 @@ export default function ClientPortal({
 
   React.useEffect(() => {
     if (!loggedClient) {
-       setPendingCreditRequest(null);
        setActiveInstallments([]);
+       setPaymentHistory([]);
+       setClientMovements([]);
+       setClientAllTxs([]);
        return;
     }
-    
-    // Listener de peticiones pendientes
-    const unsubscribe = onCollectionSnapshot('transactions', (data) => {
-        const txs = data.filter((d: any) => 
-            d.status === 'pending_approval' && 
-            (d.clientId === loggedClient.id || 
-             (d.clientCiRif && d.clientCiRif === loggedClient.ciRif) || 
-             (d.clientPhone && d.clientPhone === loggedClient.phone) ||
-             (d.clientCiRif && d.clientCiRif === loggedClient.cedula))
-          );
-        if (txs.length > 0) {
-           setPendingCreditRequest(txs[0]);
-        } else {
-           setPendingCreditRequest(null);
-        }
-    });
 
-    // Listener de cuotas (deuda real)
+    // Listener de cuotas (deuda real y por pagar)
     const unsubInst = onCollectionSnapshot('installments', (data) => {
-        const inst = data.filter((d: any) => d.clientId === loggedClient.id && d.status === 'pending');
+        const inst = data.filter((d: any) => d.clientId === loggedClient.id && (d.status === 'pending' || d.status === 'in_review'));
         setActiveInstallments(inst);
     });
 
-    // Listener de historial de pagos
+    // Listener de historial de transacciones, compras y pagos
     const unsubPayments = onCollectionSnapshot('transactions', (data) => {
-        const payments = data.filter((d: any) => d.clientId === loggedClient.id && d.category === 'ingresos_cobranza');
-        payments.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
-        setPaymentHistory(payments);
+        const userTxs = data.filter((d: any) => d.clientId === loggedClient.id);
+        setClientAllTxs(userTxs);
+        
+        // Pagos aprobados o en revisión
+        const payments = userTxs.filter((d: any) => d.category === 'ingresos_cobranza' || d.category === 'pagos');
+        payments.sort((a: any, b: any) => new Date(b.date || b.timestamp || 0).getTime() - new Date(a.date || a.timestamp || 0).getTime());
+        
+        // Listener complementario de pagos reportados en PWA pendientes
+        const unsubPwaPay = onCollectionSnapshot('pwa_payments', (pwaData) => {
+          const clientPwa = pwaData.filter((p: any) => p.entityId === loggedClient.id);
+          const pendingPwaAsTxs = clientPwa.map((p: any) => ({
+            id: p.id,
+            clientId: p.entityId,
+            entity: p.entityName,
+            category: 'ingresos_cobranza',
+            date: p.date || p.timestamp,
+            amount: p.amount,
+            status: p.status === 'pending' ? 'pending_approval' : p.status,
+            reference: p.reference,
+            receiptImageUrl: p.receiptImageUrl || p.receiptImage,
+            isPwaReported: true
+          }));
+
+          // Unir pagos reportados en revisión con pagos ya conciliados
+          const combinedPayments = [...pendingPwaAsTxs.filter((p: any) => p.status === 'pending_approval'), ...payments];
+          combinedPayments.sort((a: any, b: any) => new Date(b.date || b.timestamp || 0).getTime() - new Date(a.date || a.timestamp || 0).getTime());
+          setPaymentHistory(combinedPayments);
+        });
+
+        // Movimientos generales (compras a crédito, iniciales y abonos)
+        const movements = userTxs.map((tx: any) => {
+          const isPayment = tx.category === 'ingresos_cobranza' || tx.category === 'pagos' || tx.isAbono;
+          return {
+            id: tx.id,
+            title: isPayment ? 'Abono a Cuenta' : 'Compra en Tienda',
+            date: tx.date || (tx.timestamp ? new Date(tx.timestamp).toLocaleDateString('es-ES') : 'Reciente'),
+            amount: Number(tx.amount || tx.totalUSD || tx.total || 0),
+            isPayment: isPayment
+          };
+        });
+        movements.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        setClientMovements(movements.slice(0, 10));
     });
 
     return () => {
-       unsubscribe();
        unsubInst();
        unsubPayments();
     };
@@ -561,10 +584,21 @@ export default function ClientPortal({
     onAddNotification(`¡Pedido de Insumos/Víveres ${newOrder.id} mandado a Libreta!`, 'success');
   };
 
-  // Filtering Products for Client Portal
+  // Filtering Products for Client Portal (3 Categorías Oficiales)
   const filteredClientProducts = products.filter(p => {
-    const matchesSearch = p.name?.toLowerCase().includes(clientSearch.toLowerCase());
-    const matchesCat = clientCategory === 'Todos' || p.category === clientCategory;
+    const pCat = (p.category || '').toUpperCase();
+    const pName = (p.name || '').toLowerCase();
+    const matchesSearch = pName.includes(clientSearch.toLowerCase());
+    
+    let matchesCat = true;
+    if (clientCategory === 'Víveres') {
+      matchesCat = pCat.includes('VÍVERE') || pCat.includes('VIVERE');
+    } else if (clientCategory === 'Repuestos de Moto') {
+      matchesCat = pCat.includes('REPUESTO') || pCat.includes('MOTO');
+    } else if (clientCategory === 'Ferretería') {
+      matchesCat = pCat.includes('FERRETER');
+    }
+    
     return matchesSearch && matchesCat;
   });
 
@@ -732,32 +766,31 @@ export default function ClientPortal({
                         <div className="border-t border-neutral-800 my-5"></div>
                         <div>
                           <p className="text-[10px] font-bold text-zinc-300 uppercase mb-3">Últimos Movimientos</p>
-                          <div className="space-y-4">
-                            {/* Dummy history items */}
-                            <div className="flex justify-between items-center">
-                              <div className="flex items-center gap-3">
-                                <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center">
-                                  <ShoppingBag className="w-4 h-4 text-emerald-500" />
+                          <div className="space-y-3">
+                            {clientMovements.length === 0 ? (
+                              <p className="text-center text-[10px] text-zinc-500 py-3 font-mono">Sin movimientos registrados</p>
+                            ) : (
+                              clientMovements.map((mov: any) => (
+                                <div key={mov.id} className="flex justify-between items-center">
+                                  <div className="flex items-center gap-3">
+                                    <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center">
+                                      {mov.isPayment ? (
+                                        <CreditCard className="w-4 h-4 text-emerald-500" />
+                                      ) : (
+                                        <ShoppingBag className="w-4 h-4 text-emerald-500" />
+                                      )}
+                                    </div>
+                                    <div>
+                                      <p className="text-xs font-bold text-zinc-200">{mov.title}</p>
+                                      <p className="text-[9px] text-zinc-500">{mov.date}</p>
+                                    </div>
+                                  </div>
+                                  <span className={`text-xs font-black ${mov.isPayment ? 'text-emerald-400' : 'text-white'}`}>
+                                    {mov.isPayment ? '-' : ''}${mov.amount.toFixed(2)}
+                                  </span>
                                 </div>
-                                <div>
-                                  <p className="text-xs font-bold text-zinc-200">Compra en Tienda</p>
-                                  <p className="text-[9px] text-zinc-500">Ayer, 14:30</p>
-                                </div>
-                              </div>
-                              <span className="text-xs font-black text-white">$45.00</span>
-                            </div>
-                            <div className="flex justify-between items-center">
-                              <div className="flex items-center gap-3">
-                                <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center">
-                                  <CreditCard className="w-4 h-4 text-emerald-500" />
-                                </div>
-                                <div>
-                                  <p className="text-xs font-bold text-zinc-200">Abono a Cuenta</p>
-                                  <p className="text-[9px] text-zinc-500">Hace 3 días</p>
-                                </div>
-                              </div>
-                              <span className="text-xs font-black text-emerald-400">-$20.00</span>
-                            </div>
+                              ))
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1011,6 +1044,8 @@ export default function ClientPortal({
                       clientData={loggedClient}
                       clubLevel={Number((loggedClient as any)?.level || 1)}
                       kaluPoints={Number((loggedClient as any)?.loyaltyPoints || 0)}
+                      activeInstallments={activeInstallments}
+                      allTransactions={clientAllTxs}
                       onLogout={() => {
                         setLoggedClient(null);
                         setClientActiveTab('inicio');
@@ -1720,89 +1755,6 @@ export default function ClientPortal({
           </div>
         )}
       </div>
-      )}
-      {/* Real-Time Sync: Cashea-style Approval Lock */}
-      {pendingCreditRequest && (
-        <div className="fixed inset-0 z-[1000] flex flex-col bg-slate-950 text-slate-100 overflow-hidden animate-in slide-in-from-bottom-full duration-300">
-          <div className="flex-1 flex flex-col p-6 items-center justify-center text-center relative">
-            <div className="absolute inset-0 bg-emerald-900/20 animate-pulse pointer-events-none" />
-            <div className="w-24 h-24 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-6 relative z-10 mx-auto">
-              <Store className="w-12 h-12 text-amber-500" />
-            </div>
-            <h2 className="text-3xl font-black mb-2 relative z-10 uppercase tracking-widest text-emerald-400">Aprobar Compra</h2>
-            <p className="text-slate-400 mb-8 relative z-10">La tienda física solicita tu aprobación para finalizar esta compra a crédito.</p>
-
-            <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-2xl p-6 mb-8 relative z-10 mx-auto">
-              <div className="text-4xl font-black text-white mb-6">
-                ${(pendingCreditRequest.totalUSD || pendingCreditRequest.amount || 0).toFixed(2)}
-              </div>
-              
-              <div className="space-y-3 text-sm font-mono text-left">
-                <div className="flex justify-between border-b border-slate-800 pb-2">
-                  <span className="text-slate-500">Inicial Requerida (20%)</span>
-                  <span className="text-white">${(pendingCreditRequest.downPayment || pendingCreditRequest.kaluCreditData?.inicial || 0).toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between border-b border-slate-800 pb-2">
-                  <span className="text-slate-500">Monto a Financiar</span>
-                  <span className="text-white">${(pendingCreditRequest.financedAmount || pendingCreditRequest.kaluCreditData?.aFinanciar || 0).toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between border-b border-slate-800 pb-2">
-                  <span className="text-slate-500">Plan de Cuotas</span>
-                  <span className="text-amber-400 font-bold">{pendingCreditRequest.installmentsCount || 4} x ${(pendingCreditRequest.financedAmount ? (pendingCreditRequest.financedAmount/(pendingCreditRequest.installmentsCount || 4)) : pendingCreditRequest.kaluCreditData?.cuotas || 0).toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between pt-2">
-                  <span className="text-slate-500">Factura #</span>
-                  <span className="text-slate-300">{pendingCreditRequest.invoiceNumber}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="w-full max-w-sm space-y-3 relative z-10 mx-auto">
-              <button
-                                onClick={async () => {
-                  try {
-                    // Validar identidad del cliente contra la orden
-                    if (!loggedClient || (
-                        pendingCreditRequest.clientId && 
-                        pendingCreditRequest.clientId !== loggedClient.id && 
-                        pendingCreditRequest.clientCiRif !== loggedClient.ciRif && 
-                        pendingCreditRequest.clientPhone !== loggedClient.phone &&
-                        pendingCreditRequest.clientCiRif !== loggedClient.cedula
-                      )) {
-                      onAddNotification('Esta orden no te pertenece o no has iniciado sesión correctamente.', 'warning');
-                      return;
-                    }
-
-                    // 3. Marcar la transacción como completada en la BD (trigger para el POS)
-                    await updateLocalDoc('transactions', pendingCreditRequest.id, { status: 'approved' });
-                    setPendingCreditRequest(null);
-                    onAddNotification('¡Compra aprobada con éxito!', 'success');
-                  } catch (e) {
-                    console.error(e);
-                    onAddNotification('Error al procesar la aprobación del crédito', 'warning');
-                  }
-                }}
-                className="w-full py-4 bg-emerald-500 text-slate-950 font-black text-lg uppercase tracking-wider rounded-xl hover:bg-emerald-400 active:scale-95 transition-all shadow-lg shadow-emerald-500/20"
-              >
-                Aprobar y Comprar
-              </button>
-              <button
-                onClick={async () => {
-                  try {
-                    await updateLocalDoc('transactions', pendingCreditRequest.id, { status: 'rejected' });
-                    setPendingCreditRequest(null);
-                    onAddNotification('Has rechazado la solicitud de crédito.', 'info');
-                  } catch (e) {
-                    console.error(e);
-                  }
-                }}
-                className="w-full py-4 bg-slate-900 border border-slate-800 text-rose-500 font-black text-lg uppercase tracking-wider rounded-xl hover:bg-rose-500/10 active:scale-95 transition-all"
-              >
-                Rechazar
-              </button>
-            </div>
-          </div>
-        </div>
       )}
     </div>
   );

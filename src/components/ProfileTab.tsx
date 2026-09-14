@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { User, ShoppingBag, HelpCircle, Gift, ShieldCheck, Info, LogOut, ChevronRight, ArrowLeft, MapPin, Calendar, Wind, Sparkles, Lock, Key, MessageCircle, MessageSquare, Mail, Trash2, Award, Zap } from 'lucide-react';
-import { ClientProfile } from '../types';
+import { ClientProfile, DebtInstallment, Transaction } from '../types';
 import { getVIPLevelInfo, VIP_LEVELS_MATRIX } from '../config/vipMatrix';
 
 interface ProfileTabProps {
   clientData: ClientProfile | null;
   clubLevel: number;
   kaluPoints: number;
+  activeInstallments?: DebtInstallment[];
+  allTransactions?: Transaction[];
   onLogout: () => void;
   onNavigateSubView?: (view: string) => void;
   onNavigateTab?: (tab: 'inicio' | 'tienda' | 'qr' | 'pagos' | 'perfil') => void;
@@ -17,22 +19,12 @@ type SubViewType = 'main' | 'mis_datos' | 'info_personal' | 'mis_direcciones' | 
 type FilterTabType = 'por_pagar' | 'pagadas' | 'canceladas';
 type RewardTabType = 'disponibles' | 'utilizadas' | 'vencidas';
 
-// Mock data for purchases
-const MOCK_COMPRAS = {
-  por_pagar: [],
-  pagadas: [
-    { id: 'c-1', concept: 'Supermercado Kalu', date: '15 Ago 2026', amountUSD: 155.82, type: 'Compra Online' },
-    { id: 'c-2', concept: 'Tiendas Daka', date: '02 Ago 2026', amountUSD: 45.00, type: 'Compra con QR' }
-  ],
-  canceladas: [
-    { id: 'c-3', concept: 'Repuestos Moto', date: '28 Jul 2026', amountUSD: 12.50, type: 'Compra Online' }
-  ]
-};
-
 export default function ProfileTab({
   clientData,
   clubLevel,
   kaluPoints,
+  activeInstallments = [],
+  allTransactions = [],
   onLogout,
   onNavigateSubView,
   onNavigateTab,
@@ -357,69 +349,153 @@ export default function ProfileTab({
         </div>
 
         <div className="space-y-3">
-          {filterTab === 'por_pagar' && (
-            MOCK_COMPRAS.por_pagar.length === 0 ? (
-              <div className="py-12 flex flex-col items-center justify-center text-center animate-in fade-in">
-                <Wind className="w-12 h-12 text-slate-700 mb-4" />
-                <p className="text-sm font-bold text-slate-400">Respira, no tienes pagos pendientes.</p>
-              </div>
-            ) : (
-              MOCK_COMPRAS.por_pagar.map((compra: any) => (
-                <div key={compra.id} className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex justify-between items-center shadow-sm">
+          {filterTab === 'por_pagar' && (() => {
+            const pendingList = activeInstallments.filter((i: any) => i.status === 'pending' || i.status === 'in_review');
+            if (pendingList.length === 0) {
+              return (
+                <div className="py-12 flex flex-col items-center justify-center text-center animate-in fade-in">
+                  <Wind className="w-12 h-12 text-slate-700 mb-4" />
+                  <p className="text-sm font-bold text-slate-400">Respira, no tienes pagos pendientes.</p>
+                </div>
+              );
+            }
+            return pendingList.map((compra: any, idx: number) => {
+              const amount = Number(compra.amountUSD || compra.amount || 0);
+              const dueStr = compra.dueDate ? new Date(compra.dueDate).toLocaleDateString('es-ES') : 'Próximamente';
+              const isInReview = compra.status === 'in_review';
+              return (
+                <div key={compra.id || idx} className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex justify-between items-center shadow-sm">
                   <div>
-                    <h4 className="font-bold text-sm text-slate-100">{compra.concept}</h4>
-                    <p className="text-[10px] text-slate-400 mt-1">{compra.date}</p>
+                    <h4 className="font-bold text-sm text-slate-100">
+                      Cuota {compra.installmentNumber || (idx + 1)} {compra.transactionId ? `(Venta #${String(compra.transactionId).slice(-6)})` : ''}
+                    </h4>
+                    <p className="text-[10px] text-slate-400 mt-1">Vence: {dueStr}</p>
+                    {isInReview && (
+                      <span className="inline-block mt-1 text-[9px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20">
+                        En Revisión
+                      </span>
+                    )}
                   </div>
                   <div className="text-right">
-                    <p className="font-black text-white text-lg">${Number(compra.amountUSD || 0).toFixed(2)}</p>
-                    <button className="text-[9px] font-bold text-emerald-400 uppercase tracking-widest mt-1">Pagar &gt;</button>
+                    <p className="font-black text-white text-lg">${amount.toFixed(2)}</p>
+                    <button 
+                      onClick={() => {
+                        setActiveSubView('main');
+                        if (onNavigateTab) onNavigateTab('pagos');
+                      }}
+                      className="text-[9px] font-bold text-emerald-400 uppercase tracking-widest mt-1 hover:text-emerald-300 transition-colors"
+                    >
+                      Pagar &gt;
+                    </button>
                   </div>
                 </div>
-              ))
-            )
-          )}
+              );
+            });
+          })()}
 
-          {filterTab === 'pagadas' && (
-            MOCK_COMPRAS.pagadas.map((compra: any) => (
-              <div key={compra.id} className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex justify-between items-center animate-in fade-in shadow-sm">
-                <div>
-                  <h4 className="font-bold text-sm text-slate-100">{compra.concept}</h4>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-[9px] px-2 py-0.5 rounded bg-slate-800 text-slate-300">{compra.type}</span>
-                    <span className="text-[10px] text-slate-500">{compra.date}</span>
-                  </div>
-                </div>
-                <div className="text-right flex items-center gap-3">
-                  <div>
-                    <p className="font-black text-white text-lg">${Number(compra.amountUSD || 0).toFixed(2)}</p>
-                    <p className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">Finalizada</p>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-slate-600" />
-                </div>
-              </div>
-            ))
-          )}
+          {filterTab === 'pagadas' && (() => {
+            const paidTxs = allTransactions.filter((t: any) => 
+              t.clientId === clientData?.id && 
+              (t.status === 'approved' || t.status === 'Completado' || !t.isVoided) &&
+              (t.category === 'ventas' || t.category === 'credito' || t.category === 'ingresos_cobranza' || t.category === 'payment')
+            );
+            const paidInsts = activeInstallments.filter((i: any) => i.status === 'paid');
 
-          {filterTab === 'canceladas' && (
-            MOCK_COMPRAS.canceladas.map((compra: any) => (
-              <div key={compra.id} className="bg-slate-900/40 border border-slate-800/50 rounded-2xl p-4 flex justify-between items-center animate-in fade-in opacity-80">
-                <div>
-                  <h4 className="font-bold text-sm text-slate-300">{compra.concept}</h4>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-[9px] px-2 py-0.5 rounded bg-slate-800/50 text-slate-400">{compra.type}</span>
-                    <span className="text-[10px] text-slate-600">{compra.date}</span>
-                  </div>
+            if (paidTxs.length === 0 && paidInsts.length === 0) {
+              return (
+                <div className="py-12 flex flex-col items-center justify-center text-center animate-in fade-in">
+                  <ShoppingBag className="w-12 h-12 text-slate-700 mb-4" />
+                  <p className="text-sm font-bold text-slate-400">No hay compras finalizadas registradas.</p>
                 </div>
-                <div className="text-right flex items-center gap-3">
+              );
+            }
+
+            return (
+              <>
+                {paidTxs.map((compra: any) => {
+                  const dateStr = compra.date || (compra.timestamp ? new Date(compra.timestamp).toLocaleDateString('es-ES') : 'Reciente');
+                  const amount = Number(compra.amount || compra.totalUSD || compra.total || 0);
+                  const isCredit = compra.category === 'credito' || compra.paymentMethod?.toLowerCase().includes('crédito');
+                  return (
+                    <div key={compra.id} className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex justify-between items-center animate-in fade-in shadow-sm">
+                      <div>
+                        <h4 className="font-bold text-sm text-slate-100">{compra.entity || 'Compra en Tienda Kalu'}</h4>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-[9px] px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                            {isCredit ? 'Crédito Kalú' : (compra.paymentMethod || 'Contado')}
+                          </span>
+                          <span className="text-[10px] text-slate-500">{dateStr}</span>
+                        </div>
+                      </div>
+                      <div className="text-right flex items-center gap-3">
+                        <div>
+                          <p className="font-black text-white text-lg">${amount.toFixed(2)}</p>
+                          <p className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">Finalizada</p>
+                        </div>
+                        <ChevronRight className="w-4 h-4 text-slate-600" />
+                      </div>
+                    </div>
+                  );
+                })}
+                {paidInsts.map((inst: any) => (
+                  <div key={inst.id} className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex justify-between items-center animate-in fade-in shadow-sm">
+                    <div>
+                      <h4 className="font-bold text-sm text-slate-100">Cuota Pagada {inst.transactionId ? `(#${String(inst.transactionId).slice(-6)})` : ''}</h4>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-bold">Cuota Liquidada</span>
+                        <span className="text-[10px] text-slate-500">{inst.paidAt ? new Date(inst.paidAt).toLocaleDateString('es-ES') : 'Pagada'}</span>
+                      </div>
+                    </div>
+                    <div className="text-right flex items-center gap-3">
+                      <div>
+                        <p className="font-black text-white text-lg">${Number(inst.amountUSD || inst.amount || 0).toFixed(2)}</p>
+                        <p className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">Pagada</p>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-slate-600" />
+                    </div>
+                  </div>
+                ))}
+              </>
+            );
+          })()}
+
+          {filterTab === 'canceladas' && (() => {
+            const cancelledTxs = allTransactions.filter((t: any) => 
+              t.clientId === clientData?.id && 
+              (t.isVoided || t.status === 'rejected' || t.status === 'voided' || t.status === 'cancelado')
+            );
+
+            if (cancelledTxs.length === 0) {
+              return (
+                <div className="py-12 flex flex-col items-center justify-center text-center animate-in fade-in">
+                  <p className="text-sm font-bold text-slate-500">No tienes compras canceladas.</p>
+                </div>
+              );
+            }
+
+            return cancelledTxs.map((compra: any) => {
+              const dateStr = compra.date || (compra.timestamp ? new Date(compra.timestamp).toLocaleDateString('es-ES') : 'Reciente');
+              const amount = Number(compra.amount || compra.totalUSD || 0);
+              return (
+                <div key={compra.id} className="bg-slate-900/40 border border-slate-800/50 rounded-2xl p-4 flex justify-between items-center animate-in fade-in opacity-80">
                   <div>
-                    <p className="font-black text-slate-400 text-lg line-through decoration-slate-600 decoration-2 opacity-80">${Number(compra.amountUSD || 0).toFixed(2)}</p>
-                    <p className="text-[9px] font-bold text-rose-400/80 uppercase tracking-widest">Cancelada</p>
+                    <h4 className="font-bold text-sm text-slate-300">{compra.entity || 'Orden Anulada'}</h4>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-[9px] px-2 py-0.5 rounded bg-slate-800/50 text-slate-400">{compra.paymentMethod || 'Crédito'}</span>
+                      <span className="text-[10px] text-slate-600">{dateStr}</span>
+                    </div>
                   </div>
-                  <ChevronRight className="w-4 h-4 text-slate-700" />
+                  <div className="text-right flex items-center gap-3">
+                    <div>
+                      <p className="font-black text-slate-400 text-lg line-through decoration-slate-600 decoration-2 opacity-80">${amount.toFixed(2)}</p>
+                      <p className="text-[9px] font-bold text-rose-400/80 uppercase tracking-widest">Cancelada</p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-700" />
+                  </div>
                 </div>
-              </div>
-            ))
-          )}
+              );
+            });
+          })()}
         </div>
       </div>
     </div>

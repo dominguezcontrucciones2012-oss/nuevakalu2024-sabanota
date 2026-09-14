@@ -21,6 +21,10 @@ export interface Transaction {
     aFinanciar: number;
     cuotas: number;
   };
+  authNonce?: string;
+  authSignature?: string;
+  approvedByClientAt?: string;
+  clientPublicKey?: string;
   clientCi?: string;
   totalUSD?: number;
   downPayment?: number;

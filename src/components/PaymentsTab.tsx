@@ -97,7 +97,9 @@ export default function PaymentsTab({
       date: new Date().toISOString(),
       timestamp: new Date().toISOString(),
       installmentIds,
-      notes: notesText
+      notes: notesText,
+      receiptImageUrl: imagePreview || undefined,
+      receiptImage: imagePreview || undefined
     };
     
     try {
@@ -238,10 +240,10 @@ export default function PaymentsTab({
                       <p className="text-xs font-bold text-zinc-200">{new Date(hist.date).toLocaleDateString('es-ES')}</p>
                       <p className={`text-[9px] uppercase tracking-wider font-bold ${
                         (hist.status === 'approved' || hist.status === 'Completado') ? 'text-emerald-500' :
-                        (hist.status === 'pending_approval' || hist.status === 'Pendiente') ? 'text-amber-500' : 'text-red-500'
+                        (['pending_approval', 'Pendiente', 'pending', 'in_review', 'pending_verification'].includes(hist.status as string)) ? 'text-amber-400' : 'text-red-500'
                       }`}>
-                        {hist.status === 'approved' || hist.status === 'Completado' ? 'Aprobado' :
-                         hist.status === 'pending_approval' || hist.status === 'Pendiente' ? 'En Revisión' : 'Rechazado'}
+                        {hist.status === 'approved' || hist.status === 'Completado' ? 'Aprobado / Conciliado' :
+                         (['pending_approval', 'Pendiente', 'pending', 'in_review', 'pending_verification'].includes(hist.status as string)) ? 'POR VERIFICAR / EN REVISIÓN' : 'Rechazado'}
                       </p>
                     </div>
                   </div>

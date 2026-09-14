@@ -5,6 +5,7 @@ import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '
 
 import { fetchCollection, addLocalDoc, updateLocalDoc, deleteLocalDoc, batchDeleteLocalDocs, onCollectionSnapshot } from '../services/localApi';
 import { updateLocalProduct } from '../services/productApi';
+import { generateAuthNonce, verifyTransactionSignature } from '../utils/crypto';
 
 interface CheesePOSViewProps {
   exchangeRate: number;
@@ -78,8 +79,20 @@ export default function CheesePOSView({
   const [isPedidosModalOpen, setIsPedidosModalOpen] = useState(false);
   const [changeCurrency, setChangeCurrency] = useState<'USD' | 'BS' | 'PAGO_MOVIL' | 'MIXED'>('USD');
   const [changeReference, setChangeReference] = useState('');
-    const [isWaitingForApproval, setIsWaitingForApproval] = useState(false);
+  const [isWaitingForApproval, setIsWaitingForApproval] = useState(false);
   const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(null);
+  const [kaluApprovedPendingInitial, setKaluApprovedPendingInitial] = useState<{
+    txId: string;
+    invoiceNumber: string;
+    totalUSD: number;
+    kaluInitial: number;
+    kaluDebt: number;
+    clientName: string;
+    clientId: string;
+  } | null>(null);
+  const [kaluInitialPaymentMethod, setKaluInitialPaymentMethod] = useState<string>('Efectivo $');
+  const [kaluInitialPaymentAmount, setKaluInitialPaymentAmount] = useState<string>('');
+  const [kaluInitialPaymentRef, setKaluInitialPaymentRef] = useState<string>('');
   
   // DIAGNOSTIC STATE
   const [approvalTimer, setApprovalTimer] = useState(40);
@@ -118,8 +131,18 @@ export default function CheesePOSView({
           const txs = await res.json();
           const tx = txs.find((t: any) => String(t.id) === String(pendingApprovalId));
           if (tx && tx.status === 'approved') {
-              onAddNotification('Transacción aprobada en servidor. Gatillando local...', 'success');
-              await updateLocalDoc('transactions', pendingApprovalId, { status: 'approved' });
+              const signatureCheck = await verifyTransactionSignature(tx);
+              if (!signatureCheck.isValid) {
+                onAddNotification(`BLINDAJE DE SEGURIDAD: Transacción rechazada (${signatureCheck.reason}).`, 'warning');
+                return;
+              }
+              onAddNotification('Transacción aprobada y verificada criptográficamente en servidor.', 'success');
+              await updateLocalDoc('transactions', pendingApprovalId, { 
+                status: 'approved',
+                authSignature: tx.authSignature,
+                authNonce: tx.authNonce,
+                approvedByClientAt: tx.approvedByClientAt
+              });
           } else {
               onAddNotification(`Estado actual: ${tx?.status || 'No encontrada'}`, 'warning');
           }
@@ -441,16 +464,19 @@ export default function CheesePOSView({
     return 0;
   })();
 
-  // Monto que se enviará a crédito / libreta en la transacción actual
-  const supplierPendingCreditAmount = isCreditSale ? Math.max(0, total - totalAbonado) : 0;
-  // Proyección del saldo deudor en tienda tras procesar la venta
-  const projectedSupplierStoreDebt = currentSupplierDebt + supplierPendingCreditAmount;
-  // Validación de exceso de crédito con el tope dinámico del productor
-  const isSupplierOverCreditLimit = customerType === 'supplier' && isCreditSale && projectedSupplierStoreDebt > producerDynamicCreditLimit;
-  // Monto mínimo que debe abonarse al contado para que la deuda fiada no supere su propio tope dinámico
-  const requiredSupplierDownPayment = isSupplierOverCreditLimit 
-    ? Math.max(0, (total - totalAbonado) - Math.max(0, producerDynamicCreditLimit - currentSupplierDebt))
-    : 0;
+  // Proyección de deuda y límites para productores
+  const projectedSupplierStoreDebt = currentSupplierDebt + remainingDebt;
+  const isSupplierOverCreditLimit = customerType === 'supplier' && isCreditSale && producerDynamicCreditLimit > 0 && projectedSupplierStoreDebt > producerDynamicCreditLimit;
+  const requiredSupplierDownPayment = isSupplierOverCreditLimit ? parseNum(projectedSupplierStoreDebt - producerDynamicCreditLimit) : 0;
+
+  // GUARDIÁN MATEMÁTICO PASO 4: Ecuación Exacta [Monto Total] = [Inicial Física] + [Financiado Kalu]
+  const hasKaluPayment = addedPayments.some(p => p.method === 'Mundo Kalu') || paymentMethod === 'Mundo Kalu';
+  const kaluPaymentObj = addedPayments.find(p => p.method === 'Mundo Kalu');
+  const kaluFinancedAmount = kaluPaymentObj ? Number(kaluPaymentObj.amount || 0) : 0;
+  const physicalPaymentsTotal = Math.round(addedPayments.filter(p => p.method !== 'Mundo Kalu').reduce((sum, p) => sum + p.amount, 0) * 100) / 100;
+  const kaluMathSum = Math.round((kaluFinancedAmount + physicalPaymentsTotal) * 100) / 100;
+  const kaluMathDiscrepancy = Math.abs(Math.round((total - kaluMathSum) * 100) / 100);
+  const isKaluMathValid = !hasKaluPayment || kaluMathDiscrepancy <= 0.02;
 
   const handleAddPayment = async () => {
     let rawAmount = parseSafeDecimal(paidAmountInput);
@@ -515,8 +541,7 @@ export default function CheesePOSView({
     setPaymentReference('');
     // El método de pago (paymentMethod) se mantiene seleccionado durante la transacción para comodidad visual del cajero.
 
-    // ==========================================
-    // INTERCEPT: MUNDO KALU LOCK (Aprobación PWA)
+    // ========    // INTERCEPT: MUNDO KALU LOCK (Aprobación PWA)
     // ==========================================
     if (paymentMethod === 'Mundo Kalu') {
       const client = customerType === 'client' ? clients.find(c => c.id === selectedClientId) : null;
@@ -526,11 +551,14 @@ export default function CheesePOSView({
       const numCuotas = getKaluInstallmentsCount(kaluCreditType, client?.loyaltyPoints || 0);
       const kaluCuota = parseNum(kaluDebt / numCuotas);
       
+      const authNonce = generateAuthNonce();
+
       const pendingTx: Partial<Transaction> = {
         category: 'credito',
         isIncome: true,
         amount: total,
         status: 'pending_approval',
+        authNonce,
         clientId: client?.id,
         clientCi: client?.ciRif || client?.ci || client?.idNumber || client?.cedula || client?.rfc || '',
         
@@ -562,27 +590,41 @@ export default function CheesePOSView({
           setIsWaitingForApproval(true);
         setPendingApprovalId(docRef.id);
         
-        // Setup listener via WebSocket for real-time approval
+        // Setup listener via WebSocket for real-time approval with strict cryptographic verification
         const handleApprovedDoc = async (updatedDoc: any) => {
             if (updatedDoc.status === 'approved') {
+                   // BLINDAJE DE SEGURIDAD PASO 1: Validación de Firma Criptográfica Temporal
+                   const verification = await verifyTransactionSignature(updatedDoc);
+                   if (!verification.isValid) {
+                     console.error('[POS Security Reject] Firma criptográfica inválida o ausente:', verification.reason);
+                     onAddNotification(`ALERTA DE SEGURIDAD: Transacción bloqueada. ${verification.reason}`, 'warning');
+                     return;
+                   }
+
                    setIsWaitingForApproval(false);
                    setPendingApprovalId(null);
-   
+    
                    // FASE 1: GENERACIÓN DE CUOTAS
                    if (updatedDoc.kaluCreditData && client) {
                      let nextDate = new Date();
                      nextDate.setDate(nextDate.getDate() + 15);
                      
-                     const cuotaVal = Number(updatedDoc.kaluCreditData.cuotas || 0);
-                     for (let i = 0; i < updatedDoc.installmentsCount; i++) {
+                     const totalCuotas = updatedDoc.installmentsCount || getKaluInstallmentsCount(kaluCreditType, client.loyaltyPoints || 0);
+                     const cuotaVal = parseNum(kaluDebt / totalCuotas);
+                     
+                     for (let i = 0; i < totalCuotas; i++) {
                        const installmentDoc = {
+                         id: `INST-${updatedDoc.id}-${i + 1}`,
                          clientId: client.id,
+                         clientName: client.name || '',
+                         saleId: updatedDoc.id,
                          transactionId: updatedDoc.id,
                          amount: cuotaVal,
+                         amountUSD: cuotaVal,
                          dueDate: nextDate.toISOString().split('T')[0],
                          status: 'pending',
                          installmentNumber: i + 1,
-                         totalInstallments: updatedDoc.installmentsCount,
+                         totalInstallments: totalCuotas,
                          pointsEarned: Math.round(cuotaVal),
                          pointsAwarded: false,
                          createdAt: new Date().toISOString(),
@@ -593,7 +635,7 @@ export default function CheesePOSView({
                      }
                    }
                    
-                   // FASE 2: PROCESAR VENTA ATÓMICA FINAL
+                   // FASE 2: PREPARAR REGISTRO MANDATORIO DE INICIAL FÍSICA EN CAJA
                    const kaluPayment = {
                      id: Date.now().toString(),
                      method: 'Mundo Kalu',
@@ -604,12 +646,30 @@ export default function CheesePOSView({
                    };
                    
                    setAddedPayments(prev => [...prev.filter(p => p.id !== newPayment.id), kaluPayment]);
-                   onAddNotification('Crédito Mundo Kalu aprobado exitosamente.', 'success');
+                   onAddNotification('Crédito Mundo Kalu verificado criptográficamente.', 'success');
                    
-                   // Si el abono inicial fue cubierto (o es $0), proceder a liquidar
-                   setTimeout(() => {
-                     handleProcessSaleSubmit();
-                   }, 300);
+                   // Si la inicial es > $0, bloquear cierre automático y exigir cobro físico de la inicial
+                   if (kaluInitial > 0.01) {
+                     setKaluApprovedPendingInitial({
+                       txId: updatedDoc.id,
+                       invoiceNumber: updatedDoc.invoiceNumber || '',
+                       totalUSD: total,
+                       kaluInitial: kaluInitial,
+                       kaluDebt: kaluDebt,
+                       clientName: client ? client.name : 'Cliente Registrado',
+                       clientId: client ? client.id : ''
+                     });
+                     setKaluInitialPaymentMethod('Efectivo $');
+                     setKaluInitialPaymentAmount(kaluInitial.toFixed(2));
+                     setKaluInitialPaymentRef('');
+                     setIsPaymentModalOpen(false);
+                     onAddNotification(`Paso Obligatorio: Registre el método de pago físico para la inicial ($${kaluInitial.toFixed(2)} USD).`, 'info');
+                   } else {
+                     // Si la inicial es $0, proceder a liquidar pasando el pago consolidado
+                     setTimeout(() => {
+                       handleProcessSaleSubmit(undefined, true, [kaluPayment]);
+                     }, 300);
+                   }
             }
         };
 
@@ -649,7 +709,7 @@ export default function CheesePOSView({
     setAddedPayments(addedPayments.filter(p => p.id !== id));
   };
 
-  const handleProcessSaleSubmit = async (e?: React.FormEvent, bypassChangeModal = false) => {
+  const handleProcessSaleSubmit = async (e?: React.FormEvent, bypassChangeModal = false, customPayments?: any[]) => {
     if (e) e.preventDefault();
     
     // Seguro Antirrebote Sincrónico Inmediato (Prevención de Doble Clic / Concurrencia)
@@ -681,7 +741,7 @@ export default function CheesePOSView({
 
     // Auto-registro de seguridad: Si el cajero seleccionó un método y llenó el monto pero olvidó presionar '+ AGREGAR ABONO',
     // registramos automáticamente ese abono en currentPayments para que la venta guarde el método y moneda exactos.
-    let currentPayments = [...addedPayments];
+    let currentPayments = customPayments ? [...customPayments] : [...addedPayments];
     if (currentPayments.length === 0 && !isCreditSale && paymentMethod !== 'Mundo Kalu') {
       const rawInput = parseSafeDecimal(paidAmountInput);
       if (rawInput > 0) {
@@ -719,8 +779,41 @@ export default function CheesePOSView({
       mainPaymentMethod = isCreditSale ? 'Crédito / Fiado' : 'Efectivo ($)';
     }
 
-    const isKaluTransaction = mainPaymentMethod === 'Mundo Kalu';
+    const hasKaluInAdded = currentPayments.some(p => p.method === 'Mundo Kalu');
+    const isKaluTransaction = mainPaymentMethod === 'Mundo Kalu' || hasKaluInAdded;
     const isEffectiveCredit = isCreditSale || isKaluTransaction;
+
+    // BLINDAJE PASO 2 & PASO 4: Validación Obligatoria y Guardián Matemático Estricto para Crédito Kalu
+    if (isKaluTransaction) {
+      const kaluPaymentItem = currentPayments.find(p => p.method === 'Mundo Kalu');
+      const financedPortion = kaluPaymentItem ? Number(kaluPaymentItem.amount || 0) : 0;
+      const physicalPayments = currentPayments.filter(p => p.method !== 'Mundo Kalu');
+      const totalPhysicalAbonado = Math.round(physicalPayments.reduce((sum, p) => sum + p.amount, 0) * 100) / 100;
+      const client = customerType === 'client' ? clients.find(c => c.id === selectedClientId) : null;
+      const initialPct = getClientLevelPct(client?.loyaltyPoints || 0);
+      const requiredInitial = parseNum(total * initialPct);
+
+      if (requiredInitial > 0.01) {
+        if (physicalPayments.length === 0 || totalPhysicalAbonado < (requiredInitial - 0.02)) {
+          console.warn('[POS Security Lock] Intento de cierre de Crédito Kalu sin inicial física registrada.');
+          onAddNotification(`BLOQUEO: Debe registrar el pago físico de la inicial ($${requiredInitial.toFixed(2)} USD) antes de facturar.`, 'warning');
+          isSubmittingRef.current = false;
+          setIsProcessing(false);
+          return;
+        }
+      }
+
+      // Guardián Matemático Estricto: [Total Venta] = [Inicial Física en Caja] + [Financiado Kalu]
+      const currentMathSum = Math.round((financedPortion + totalPhysicalAbonado) * 100) / 100;
+      const currentDiscrepancy = Math.abs(Math.round((total - currentMathSum) * 100) / 100);
+      if (currentDiscrepancy > 0.02) {
+        console.error(`[POS Math Guardian Block] Descuadre matemático detectado: Total Factura ($${total.toFixed(2)}) != Inicial ($${totalPhysicalAbonado.toFixed(2)}) + Financiado ($${financedPortion.toFixed(2)}). Diferencia: $${currentDiscrepancy.toFixed(2)}`);
+        onAddNotification(`DESCUADRE MATEMÁTICO: El total de la factura ($${total.toFixed(2)}) no coincide con la suma del pago inicial ($${totalPhysicalAbonado.toFixed(2)}) y el monto financiado ($${financedPortion.toFixed(2)}). Diferencia: $${currentDiscrepancy.toFixed(2)} USD. Bloqueo de facturación activo.`, 'warning');
+        isSubmittingRef.current = false;
+        setIsProcessing(false);
+        return;
+      }
+    }
 
     if (isEffectiveCredit && customerType === 'client' && !selectedClientId) {
       onAddNotification('Por favor, seleccione un cliente para ventas a crédito o Mundo Kalu.', 'warning');
@@ -2061,95 +2154,128 @@ export default function CheesePOSView({
                           </button>
                        </div>
 
-                       {/* Credit Toggle */}
-                       {(customerType === 'client' || customerType === 'supplier') && (
-                         <div className="mt-auto">
-                            <button
-                              type="button"
-                              onClick={() => setIsCreditSale(!isCreditSale)}
-                              className={`w-full py-3 px-4 flex items-center justify-between rounded border transition-all cursor-pointer ${
-                                isCreditSale
-                                  ? 'bg-amber-500/10 border-amber-500 text-amber-500'
-                                  : 'bg-editorial-bg border-editorial-border text-editorial-text-muted hover:text-editorial-text-primary hover:border-editorial-border/80'
-                              }`}
-                            >
-                              <span className="font-mono text-[11px] font-bold uppercase tracking-wider">
-                                {customerType === 'client' ? 'VENTA A CRÉDITO / FIADO' : 'LIBRETA QUESERO'}
-                              </span>
-                              <div className={`w-4 h-4 rounded-sm border flex items-center justify-center transition-colors ${
-                                isCreditSale ? 'border-amber-500 bg-amber-500' : 'border-editorial-text-muted'
-                              }`}>
-                                {isCreditSale && <div className="w-2 h-2 bg-black rounded-sm" />}
-                              </div>
-                            </button>
-                            {isCreditSale && (
-                               <p className="text-[9px] text-editorial-text-muted mt-2 font-mono">
-                                 Nota: El monto restante de ${(total - totalAbonado).toFixed(2)} (Bs {((total - totalAbonado) * exchangeRate).toFixed(2)}) se enviará a cuenta por cobrar automáticamente.
-                               </p>
-                            )}
+                         {/* Alerta Visual de Guardián Matemático Kalú (Paso 4) */}
+                         {hasKaluPayment && !isKaluMathValid && (
+                           <div className="mt-3 p-3 bg-rose-950/70 border-2 border-rose-500 rounded-lg text-xs font-mono space-y-2 animate-in fade-in duration-200">
+                             <div className="flex items-center gap-2 text-rose-400 font-bold uppercase text-[11px]">
+                               <ShieldAlert className="w-4 h-4 shrink-0 text-rose-400" />
+                               <span>DESCUADRE MATEMÁTICO: FACTURACIÓN BLOQUEADA</span>
+                             </div>
+                             <p className="text-[10px] text-rose-200 leading-tight">
+                               La ecuación obligatoria <strong>[Total ($${total.toFixed(2)})] = [Inicial Física ($${physicalPaymentsTotal.toFixed(2)})] + [Financiado ($${kaluFinancedAmount.toFixed(2)})]</strong> no cuadra.
+                             </p>
+                             <div className="p-2 bg-black/60 border border-rose-500/40 rounded text-[10px] text-amber-300 flex justify-between items-center">
+                               <span>Diferencia no conciliada:</span>
+                               <span className="font-bold text-xs text-rose-400 font-mono">
+                                 ${kaluMathDiscrepancy.toFixed(2)} USD (Bs {(kaluMathDiscrepancy * activeExchangeRate).toFixed(2)})
+                               </span>
+                             </div>
+                           </div>
+                         )}
 
-                             {/* Bloqueo Estricto de Crédito para Productor (Tope Dinámico por Historial) */}
-                             {customerType === 'supplier' && isCreditSale && isSupplierOverCreditLimit && (
-                               <div className="mt-3 p-3 bg-rose-950/60 border-2 border-rose-500 rounded-lg text-xs font-mono space-y-2 animate-in fade-in duration-200">
-                                 <div className="flex items-center gap-2 text-rose-400 font-bold uppercase text-[11px]">
-                                   <ShieldAlert className="w-4 h-4 shrink-0 text-rose-400" />
-                                   <span>VENTA BLOQUEADA: TOPE DE CRÉDITO EXCEDIDO</span>
-                                 </div>
-                                 <p className="text-[10px] text-rose-200 leading-tight">
-                                   El productor <strong>{selectedSupplier?.name}</strong> acumularía una deuda de <strong>${projectedSupplierStoreDebt.toFixed(2)}</strong>, superando su tope dinámico de última entrega de <strong>${producerDynamicCreditLimit.toFixed(2)}</strong>.
-                                 </p>
-                                 <div className="p-2 bg-black/50 border border-rose-500/40 rounded text-[10px] text-amber-300 flex justify-between items-center">
-                                   <span>Abono de contado requerido:</span>
-                                   <span className="font-bold text-xs text-rose-400 font-mono">
-                                     ${requiredSupplierDownPayment.toFixed(2)} USD (Bs {(requiredSupplierDownPayment * activeExchangeRate).toFixed(2)})
-                                   </span>
-                                 </div>
-                                 <button
-                                   type="button"
-                                   onClick={() => {
-                                     setPaidAmountInput(paymentMethod === 'Efectivo $' ? requiredSupplierDownPayment.toFixed(2) : (requiredSupplierDownPayment * activeExchangeRate).toFixed(2));
-                                   }}
-                                   className="w-full py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded font-bold text-[10px] uppercase tracking-wider transition-colors cursor-pointer"
-                                 >
-                                   Autocompletar Abono Excedente (${requiredSupplierDownPayment.toFixed(2)})
-                                 </button>
+                         {/* Credit Toggle */}
+                         {(customerType === 'client' || customerType === 'supplier') && (
+                          <div className="mt-auto">
+                             <button
+                               type="button"
+                               onClick={() => setIsCreditSale(!isCreditSale)}
+                               className={`w-full py-3 px-4 flex items-center justify-between rounded border transition-all cursor-pointer ${
+                                 isCreditSale
+                                   ? 'bg-amber-500/10 border-amber-500 text-amber-500'
+                                   : 'bg-editorial-bg border-editorial-border text-editorial-text-muted hover:text-editorial-text-primary hover:border-editorial-border/80'
+                               }`}
+                             >
+                               <span className="font-mono text-[11px] font-bold uppercase tracking-wider">
+                                 {customerType === 'client' ? 'VENTA A CRÉDITO / FIADO' : 'LIBRETA QUESERO'}
+                               </span>
+                               <div className={`w-4 h-4 rounded-sm border flex items-center justify-center transition-colors ${
+                                 isCreditSale ? 'border-amber-500 bg-amber-500' : 'border-editorial-text-muted'
+                               }`}>
+                                 {isCreditSale && <div className="w-2 h-2 bg-black rounded-sm" />}
                                </div>
+                             </button>
+                             {isCreditSale && (
+                                <p className="text-[9px] text-editorial-text-muted mt-2 font-mono">
+                                  Nota: El monto restante de ${(total - totalAbonado).toFixed(2)} (Bs {((total - totalAbonado) * exchangeRate).toFixed(2)}) se enviará a cuenta por cobrar automáticamente.
+                                </p>
                              )}
-                         </div>
-                       )}
-                     </div>
-                  </div>
 
-                  {/* Action Buttons Footer */}
-                  <form ref={formRef} onSubmit={handleProcessSaleSubmit} className="pt-6 mt-6 border-t border-editorial-border/60 flex items-center justify-end gap-4">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsPaymentModalOpen(false);
-                        setCart([]);
-                        setSelectedClientId('');
-                        setSelectedSupplierId('');
-                        setClientSearchText('');
-                        setSupplierSearchText('');
-                        setAddedPayments([]);
-                        setIsCreditSale(false);
-                        onAddNotification('Factura congelada y carrito limpiado exitosamente.', 'info');
-                      }}
-                      className="h-12 px-6 bg-editorial-bg border border-editorial-border text-editorial-text-primary font-serif font-bold text-[11px] tracking-widest uppercase hover:bg-editorial-card transition-all cursor-pointer rounded"
-                    >
-                      Congelar Factura
-                    </button>
-                    
-                    <button
-                      type="submit"
-                      disabled={isProcessing || (!isCreditSale && !isFullyPaid) || isSupplierOverCreditLimit}
-                      className="h-12 px-8 bg-amber-500 text-black font-serif font-bold text-[13px] tracking-widest uppercase flex items-center justify-center gap-2 hover:brightness-110 active:scale-98 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer rounded shadow-[0_0_15px_rgba(245,158,11,0.2)]"
-                      title={isSupplierOverCreditLimit ? `Debe abonar al menos $${requiredSupplierDownPayment.toFixed(2)} al contado para autorizar la venta.` : undefined}
-                    >
-                      <CheckCircle className="w-4 h-4" />
-                      <span>{isProcessing ? 'PROCESANDO...' : isSupplierOverCreditLimit ? 'TOPE EXCEDIDO (BLOQUEADO)' : 'FACTURAR / CONFIRMAR VENTA (F4)'}</span>
-                    </button>
-                  </form>
+                              {/* Bloqueo Estricto de Crédito para Productor (Tope Dinámico por Historial) */}
+                              {customerType === 'supplier' && isCreditSale && isSupplierOverCreditLimit && (
+                                <div className="mt-3 p-3 bg-rose-950/60 border-2 border-rose-500 rounded-lg text-xs font-mono space-y-2 animate-in fade-in duration-200">
+                                  <div className="flex items-center gap-2 text-rose-400 font-bold uppercase text-[11px]">
+                                    <ShieldAlert className="w-4 h-4 shrink-0 text-rose-400" />
+                                    <span>VENTA BLOQUEADA: TOPE DE CRÉDITO EXCEDIDO</span>
+                                  </div>
+                                  <p className="text-[10px] text-rose-200 leading-tight">
+                                    El productor <strong>{selectedSupplier?.name}</strong> acumularía una deuda de <strong>${projectedSupplierStoreDebt.toFixed(2)}</strong>, superando su tope dinámico de última entrega de <strong>${producerDynamicCreditLimit.toFixed(2)}</strong>.
+                                  </p>
+                                  <div className="p-2 bg-black/50 border border-rose-500/40 rounded text-[10px] text-amber-300 flex justify-between items-center">
+                                    <span>Abono de contado requerido:</span>
+                                    <span className="font-bold text-xs text-rose-400 font-mono">
+                                      ${requiredSupplierDownPayment.toFixed(2)} USD (Bs {(requiredSupplierDownPayment * activeExchangeRate).toFixed(2)})
+                                    </span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setPaidAmountInput(paymentMethod === 'Efectivo $' ? requiredSupplierDownPayment.toFixed(2) : (requiredSupplierDownPayment * activeExchangeRate).toFixed(2));
+                                    }}
+                                    className="w-full py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded font-bold text-[10px] uppercase tracking-wider transition-colors cursor-pointer"
+                                  >
+                                    Autocompletar Abono Excedente (${requiredSupplierDownPayment.toFixed(2)})
+                                  </button>
+                                </div>
+                              )}
+                          </div>
+                        )}
+                      </div>
+                   </div>
+
+                   {/* Action Buttons Footer */}
+                   <form ref={formRef} onSubmit={handleProcessSaleSubmit} className="pt-6 mt-6 border-t border-editorial-border/60 flex items-center justify-end gap-4">
+                     <button
+                       type="button"
+                       onClick={() => {
+                         setIsPaymentModalOpen(false);
+                         setCart([]);
+                         setSelectedClientId('');
+                         setSelectedSupplierId('');
+                         setClientSearchText('');
+                         setSupplierSearchText('');
+                         setAddedPayments([]);
+                         setIsCreditSale(false);
+                         onAddNotification('Factura congelada y carrito limpiado exitosamente.', 'info');
+                       }}
+                       className="h-12 px-6 bg-editorial-bg border border-editorial-border text-editorial-text-primary font-serif font-bold text-[11px] tracking-widest uppercase hover:bg-editorial-card transition-all cursor-pointer rounded"
+                     >
+                       Congelar Factura
+                     </button>
+                     
+                     <button
+                       type="submit"
+                       disabled={isProcessing || (!isCreditSale && !isFullyPaid) || isSupplierOverCreditLimit || (hasKaluPayment && !isKaluMathValid)}
+                       className="h-12 px-8 bg-amber-500 text-black font-serif font-bold text-[13px] tracking-widest uppercase flex items-center justify-center gap-2 hover:brightness-110 active:scale-98 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer rounded shadow-[0_0_15px_rgba(245,158,11,0.2)]"
+                       title={
+                         hasKaluPayment && !isKaluMathValid 
+                           ? `Descuadre matemático de $${kaluMathDiscrepancy.toFixed(2)} USD entre inicial física y financiado.`
+                           : isSupplierOverCreditLimit 
+                             ? `Debe abonar al menos $${requiredSupplierDownPayment.toFixed(2)} al contado para autorizar la venta.` 
+                             : undefined
+                       }
+                     >
+                       <CheckCircle className="w-4 h-4" />
+                       <span>
+                         {isProcessing 
+                           ? 'PROCESANDO...' 
+                           : (hasKaluPayment && !isKaluMathValid)
+                             ? 'DESCUADRE KALÚ (BLOQUEADO)'
+                             : isSupplierOverCreditLimit 
+                               ? 'TOPE EXCEDIDO (BLOQUEADO)' 
+                               : 'FACTURAR / CONFIRMAR VENTA (F4)'}
+                       </span>
+                     </button>
+                   </form>
                 </div>
               </div>
             )}
@@ -3322,6 +3448,194 @@ export default function CheesePOSView({
                 Cancelar Solicitud
               </button>
               
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL MANDATORIO PASO 2: Cobro Físico de Inicial para Crédito Kalu */}
+      {kaluApprovedPendingInitial && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 animate-fade-in">
+          <div className="bg-editorial-card border-2 border-emerald-500 rounded-2xl w-full max-w-lg shadow-2xl p-6 relative animate-scale-in">
+            <div className="flex items-center gap-3 border-b border-editorial-border pb-4 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                <CheckCircle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-serif text-lg font-bold text-white uppercase tracking-tight">
+                  Crédito Aprobado Digitalmente
+                </h3>
+                <p className="text-[11px] font-mono text-emerald-400 font-semibold">
+                  Paso Obligatorio: Cobro de Inicial en Caja
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-editorial-bg border border-editorial-border rounded-xl p-4 mb-4 space-y-2 font-mono text-xs">
+              <div className="flex justify-between text-editorial-text-muted">
+                <span>Cliente:</span>
+                <span className="font-bold text-white uppercase">{kaluApprovedPendingInitial.clientName}</span>
+              </div>
+              <div className="flex justify-between text-editorial-text-muted">
+                <span>Total Venta:</span>
+                <span className="text-white font-bold">${kaluApprovedPendingInitial.totalUSD.toFixed(2)} USD</span>
+              </div>
+              <div className="flex justify-between text-editorial-text-muted">
+                <span>Monto Financiado (Kalu):</span>
+                <span className="text-amber-400 font-bold">${kaluApprovedPendingInitial.kaluDebt.toFixed(2)} USD</span>
+              </div>
+              <div className="h-px bg-editorial-border/60 my-2" />
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-emerald-400 font-bold uppercase">Inicial a Cobrar:</span>
+                <div className="text-right">
+                  <span className="text-xl font-bold text-emerald-400">${kaluApprovedPendingInitial.kaluInitial.toFixed(2)} USD</span>
+                  <div className="text-[10px] text-editorial-text-muted">Bs. {(kaluApprovedPendingInitial.kaluInitial * activeExchangeRate).toFixed(2)}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4 mb-6">
+              <div>
+                <label className="text-[10px] font-mono uppercase tracking-wider text-editorial-text-muted block mb-2">
+                  1. Seleccione Forma de Pago Física de la Inicial:
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {[
+                    { id: 'Efectivo $', label: '$ USD', icon: Banknote },
+                    { id: 'Efectivo Bs', label: 'Bs Efectivo', icon: Coins },
+                    { id: 'Pago Móvil', label: 'Pago Móvil', icon: Smartphone },
+                    { id: 'Tarjeta / Punto', label: 'Tarjeta / Punto', icon: CreditCard }
+                  ].map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => {
+                        setKaluInitialPaymentMethod(m.id);
+                        if (m.id === 'Efectivo $') {
+                          setKaluInitialPaymentAmount(kaluApprovedPendingInitial.kaluInitial.toFixed(2));
+                        } else {
+                          setKaluInitialPaymentAmount((kaluApprovedPendingInitial.kaluInitial * activeExchangeRate).toFixed(2));
+                        }
+                      }}
+                      className={`p-2.5 rounded-xl border text-center flex flex-col items-center justify-center gap-1 transition-all ${
+                        kaluInitialPaymentMethod === m.id
+                          ? 'border-emerald-500 bg-emerald-500/20 text-emerald-400 font-bold shadow-md scale-105'
+                          : 'border-editorial-border bg-editorial-bg text-editorial-text-muted hover:border-editorial-border/80'
+                      }`}
+                    >
+                      <m.icon className="w-5 h-5" />
+                      <span className="text-[9px] font-mono uppercase">{m.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-mono uppercase tracking-wider text-editorial-text-muted block">
+                    Monto Recibido ({kaluInitialPaymentMethod === 'Efectivo $' ? 'USD $' : 'BS'})
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={kaluInitialPaymentAmount}
+                    onChange={(e) => setKaluInitialPaymentAmount(e.target.value)}
+                    className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-sm text-emerald-400 font-mono font-bold focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                {(kaluInitialPaymentMethod === 'Pago Móvil' || kaluInitialPaymentMethod === 'Tarjeta / Punto') && (
+                  <div className="space-y-1 animate-in fade-in">
+                    <label className="text-[10px] font-mono uppercase tracking-wider text-editorial-text-muted block">
+                      {kaluInitialPaymentMethod === 'Pago Móvil' ? 'N° Referencia Pago Móvil' : 'N° Voucher / Aprobación'}
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ej: 849201"
+                      value={kaluInitialPaymentRef}
+                      onChange={(e) => setKaluInitialPaymentRef(e.target.value)}
+                      className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-sm text-white font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setKaluApprovedPendingInitial(null);
+                  setIsProcessing(false);
+                  onAddNotification('Proceso de cobro de inicial en pausa. Puede retomar agregando el pago manualmente.', 'info');
+                }}
+                className="py-3 px-4 border border-editorial-border text-editorial-text-muted font-serif font-bold text-xs uppercase rounded-xl hover:bg-editorial-bg transition-colors"
+              >
+                Cerrar sin Facturar
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const rawAmount = parseSafeDecimal(kaluInitialPaymentAmount);
+                  if (rawAmount <= 0) {
+                    onAddNotification('Por favor, ingrese un monto válido para la inicial.', 'warning');
+                    return;
+                  }
+
+                  let amountInUsd = rawAmount;
+                  let currency = '$';
+                  if (kaluInitialPaymentMethod !== 'Efectivo $') {
+                    const rate = activeExchangeRate || 1;
+                    amountInUsd = Math.round((rawAmount / rate) * 100) / 100;
+                    currency = 'Bs';
+                  }
+
+                  // Validar que cubra al menos la inicial
+                  if (amountInUsd < (kaluApprovedPendingInitial.kaluInitial - 0.02)) {
+                    onAddNotification(`El monto ingresado ($${amountInUsd.toFixed(2)} USD) no cubre la inicial obligatoria ($${kaluApprovedPendingInitial.kaluInitial.toFixed(2)} USD).`, 'warning');
+                    return;
+                  }
+
+                  if ((kaluInitialPaymentMethod === 'Pago Móvil' || kaluInitialPaymentMethod === 'Tarjeta / Punto') && !kaluInitialPaymentRef.trim()) {
+                    onAddNotification('Debe ingresar la referencia o voucher del pago de la inicial.', 'warning');
+                    return;
+                  }
+
+                  const initialPayment = {
+                    id: (Date.now() + 1).toString(),
+                    method: kaluInitialPaymentMethod,
+                    amount: amountInUsd,
+                    originalAmount: rawAmount,
+                    currency,
+                    reference: kaluInitialPaymentRef.trim()
+                  };
+
+                  // Construir el array completo consolidado de pagos (Financiado Mundo Kalu + Inicial Física en Caja)
+                  const existingKaluPayment = addedPayments.find(p => p.method === 'Mundo Kalu') || {
+                    id: Date.now().toString(),
+                    method: 'Mundo Kalu',
+                    amount: kaluApprovedPendingInitial.kaluDebt,
+                    originalAmount: kaluApprovedPendingInitial.kaluDebt,
+                    currency: '$',
+                    reference: kaluApprovedPendingInitial.invoiceNumber || ''
+                  };
+
+                  const otherPayments = addedPayments.filter(p => p.method !== 'Mundo Kalu');
+                  const consolidatedPayments = [...otherPayments, existingKaluPayment, initialPayment];
+
+                  setAddedPayments(consolidatedPayments);
+                  setKaluApprovedPendingInitial(null);
+                  onAddNotification('Inicial física registrada exitosamente. Cerrando venta...', 'success');
+
+                  // Procesamiento síncrono e inmediato pasando los pagos directamente
+                  handleProcessSaleSubmit(undefined, true, consolidatedPayments);
+                }}
+                className="flex-1 py-3.5 bg-emerald-500 hover:bg-emerald-400 text-black font-serif font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <CheckCircle className="w-4 h-4" />
+                Registrar Inicial y Facturar
+              </button>
             </div>
           </div>
         </div>

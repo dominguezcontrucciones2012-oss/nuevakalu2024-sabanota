@@ -16,17 +16,26 @@ const STORE_BANNERS = [
 ];
 
 const CATEGORY_COLORS: Record<string, string> = {
-  Fresco:     'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
-  Semicurado: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
-  Curado:     'bg-orange-500/15 text-orange-400 border-orange-500/30',
-  Azul:       'bg-blue-500/15 text-blue-400 border-blue-500/30',
-  Especial:   'bg-purple-500/15 text-purple-400 border-purple-500/30',
-  'Repuestos y Ferretería': 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30',
-  'Víveres y Agro':         'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  'VÍVERES': 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  'REPUESTOS DE MOTO': 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30',
+  'FERRETERÍA': 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  'Víveres': 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  'Repuestos de Moto': 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30',
+  'Ferretería': 'bg-amber-500/15 text-amber-400 border-amber-500/30',
 };
 
 function catStyle(cat: string) {
   return CATEGORY_COLORS[cat] ?? 'bg-slate-700/40 text-slate-300 border-slate-600/40';
+}
+
+function getProductInstallmentsInfo(item: CheeseProduct) {
+  const cat = (item.category || '').toUpperCase();
+  const name = (item.name || '').toUpperCase();
+  
+  if (cat.includes('REPUESTO') || cat.includes('FERRETER') || name.includes('MOTO') || name.includes('BOMBA') || name.includes('HERRAMIENTA')) {
+    return { count: 3, label: '3 cuotas quincenales' };
+  }
+  return { count: 1, label: '1 cuota (15 días)' };
 }
 
 /** Tarjeta reutilizable — nunca se desmonta, no causa removeChild */
@@ -34,6 +43,9 @@ const PCard: React.FC<{ item: CheeseProduct }> = ({ item }) => {
   const price = Number(item.sellingPrice || (item as any).price || 0);
   const stock = Number(item.stockKg || (item as any).stock || 0);
   const ok = stock > 0;
+  const instInfo = getProductInstallmentsInfo(item);
+  const cuotaAmount = price / instInfo.count;
+
   return (
     <div className={`bg-slate-900 border rounded-2xl overflow-hidden flex flex-col relative shadow-sm cursor-pointer ${ok ? 'border-slate-800 hover:border-emerald-500/30' : 'border-slate-800/50 opacity-60'}`}>
       {!ok && (
@@ -57,14 +69,20 @@ const PCard: React.FC<{ item: CheeseProduct }> = ({ item }) => {
         <div>
           <p className="font-black text-sm text-white">${price.toFixed(2)}</p>
           <p className="text-[9px] text-slate-500">Stock: {stock.toFixed(1)} {item.unit ?? 'kg'}</p>
-          <div className="mt-1.5 inline-block px-1.5 py-0.5 bg-slate-800 text-emerald-400 text-[8px] font-bold uppercase rounded border border-emerald-500/20">
-            A cuotas
+          <div className="mt-1.5 flex items-center gap-1">
+            <span className={`inline-block px-1.5 py-0.5 text-[8px] font-bold uppercase rounded border ${
+              instInfo.count === 1 
+                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' 
+                : 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+            }`}>
+              {instInfo.count === 1 ? '1 Cuota' : `3 Cuotas ($${cuotaAmount.toFixed(2)})`}
+            </span>
           </div>
         </div>
       </div>
     </div>
   );
-}
+};
 
 export default function StoreTab({ products = [] }: StoreTabProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -118,22 +136,33 @@ export default function StoreTab({ products = [] }: StoreTabProps) {
   const [searchQ, setSearchQ] = useState('');
   const [selCat, setSelCat] = useState('Todos');
 
-  // Categorias unicas dinamicamente de Firebase
-  const categories = useMemo(() => {
-    const cs = Array.from(new Set(products.map(p => p.category)));
-    return ['Todos', ...cs.sort()];
-  }, [products]);
+  // 3 Categorías oficiales y exclusivas
+  const OFFICIAL_CATEGORIES = ['Todos', 'Víveres', 'Repuestos de Moto', 'Ferretería'] as const;
 
-  // Filtrado completo sin limite
+  const categories = OFFICIAL_CATEGORIES;
+
+  // Filtrado completo normalizado a las 3 categorías oficiales
   const filtered = useMemo(() => {
     const lq = searchQ.toLowerCase().trim();
     return products.filter(p => {
+      const pCat = (p.category || '').toUpperCase();
+      const pName = (p.name || '').toLowerCase();
+      
       const ms = !lq ||
-        (p.name || '').toLowerCase().includes(lq) ||
-        (p.category || '').toLowerCase().includes(lq) ||
+        pName.includes(lq) ||
+        pCat.toLowerCase().includes(lq) ||
         (p.origin || '').toLowerCase().includes(lq);
-      const mc = selCat === 'Todos' || p.category === selCat;
-      return ms && mc;
+      
+      let matchesCat = true;
+      if (selCat === 'Víveres') {
+        matchesCat = pCat.includes('VÍVERE') || pCat.includes('VIVERE');
+      } else if (selCat === 'Repuestos de Moto') {
+        matchesCat = pCat.includes('REPUESTO') || pCat.includes('MOTO');
+      } else if (selCat === 'Ferretería') {
+        matchesCat = pCat.includes('FERRETER');
+      }
+
+      return ms && matchesCat;
     });
   }, [products, searchQ, selCat]);
 
