@@ -21,7 +21,11 @@ import {
   sanitizePublicProduct,
   isOriginAllowed,
   writeCollection,
-  activeSessionSockets
+  activeSessionSockets,
+  setGeminiClientForTest,
+  getGeminiClient,
+  isGeminiConfigured,
+  aiRateLimiter
 } from '../server.js';
 
 const BASE_URL = 'http://localhost:3001';
@@ -4400,6 +4404,367 @@ async function runTests() {
     const resInfoOld = await request(`/api/test-socket-info/${oldSocket.id}`);
     assert.strictEqual(resInfoOld.data.identity.isAnonymous, true, 'Socket previo no debe adquirir rol admin tras login');
     oldSocket.disconnect();
+  });
+
+  // ============================================================
+  // PRUEBAS DE FASE 1E-A: SUBSISTEMA BACKEND DE IA (GEMINI SERVER-SIDE)
+  // ============================================================
+
+  // Mock seguro de cliente Gemini para testing hermético sin llamadas externas
+  const mockGeminiClient = {
+    models: {
+      generateContent: async ({ model, contents, config }) => {
+        const allText = (contents?.[0]?.parts || []).map(p => p.text || '').join('\n');
+        const hasImage = contents?.[0]?.parts?.some(p => p.inlineData);
+
+        if (allText.includes('error_simulado')) {
+          const fakeErr = new Error('Google AI upstream error with confidential details');
+          fakeErr.config = { url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash?key=AIzaSySecretFakeKey' };
+          throw fakeErr;
+        }
+
+        if (allText.includes('CATÁLOGO ACTUAL (Solo lectura/referencia)')) {
+          return {
+            text: JSON.stringify({
+              actions: [{ type: 'ADD_PRODUCT', payload: { name: 'Queso Paisa Test', category: 'Genérico', unit: 'Kg', purchasePrice: 4, sellingPrice: 6 } }],
+              message: 'Producto añadido por IA de prueba'
+            })
+          };
+        }
+
+        if (allText.includes('factura de compra en formato JSON estricto')) {
+          return {
+            text: JSON.stringify({
+              proveedor: { nombre: 'Distribuidora Lácteos C.A.', rif: 'J-99887766-5' },
+              factura: 'FAC-00129',
+              fecha: '2026-09-15',
+              moneda_detectada: 'USD',
+              items: [{ nombre: 'QUESO DURO', cantidad: 50, unidad: 'Kg', costo_unitario: 3.5, costo_total: 175 }]
+            })
+          };
+        }
+
+        if (allText.includes('Analiza esta orden o dictado de mercancía')) {
+          return {
+            text: JSON.stringify({
+              items: [{ nombre: 'MANTEQUILLA CRIOLLA', cantidad: 10, unidad: 'Und', costo_unitario: 2.5, costo_total: 25 }]
+            })
+          };
+        }
+
+        if (allText.includes('Analiza esta nota de voz contable')) {
+          return {
+            text: JSON.stringify({
+              title: 'Gasto de Transporte',
+              category: 'gasto',
+              amountUsd: 25,
+              amountBs: 20000,
+              paymentMethod: 'Efectivo',
+              summary: 'Pago de flete de mercancía',
+              suggestedAction: 'Registrar egreso de caja'
+            })
+          };
+        }
+
+        if (allText.includes('Analiza esta orden hablada de salida para una gira/viaje')) {
+          return {
+            text: JSON.stringify({
+              driver: 'Daisy Corro',
+              cheeseProductName: 'QUESO DURO',
+              dispatchedKg: 300,
+              costPerKg: 3.8,
+              cashTakenUsd: 150,
+              cashTakenBs: 5000,
+              bankTakenUsd: 0,
+              bankTakenBs: 10000
+            })
+          };
+        }
+
+        return {
+          text: 'Respuesta analítica de prueba generada por asistente financiero.'
+        };
+      }
+    }
+  };
+
+  // Helper para restaurar mock tras pruebas
+  setGeminiClientForTest(mockGeminiClient);
+
+  // 1E-A-01: GET /api/ai/status sin sesión -> 401
+  await test('230. TEST 1E-A-01: GET /api/ai/status sin sesión retorna HTTP 401 Unauthorized', async () => {
+    const res = await request('/api/ai/status');
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 1E-A-02: GET /api/ai/status con sesión activa -> respuesta segura
+  await test('231. TEST 1E-A-02: GET /api/ai/status con sesión retorna estado estructurado seguro', async () => {
+    const { cookie } = await loginAdminD2();
+    const res = await request('/api/ai/status', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.available, true);
+    assert.strictEqual(res.data.engine, 'active');
+  });
+
+  // 1E-A-03: status nunca contiene API key ni secretos
+  await test('232. TEST 1E-A-03: GET /api/ai/status nunca expone claves, tokens ni URLs de Google', async () => {
+    const { cookie } = await loginAdminD2();
+    const res = await request('/api/ai/status', {
+      headers: { 'Cookie': cookie }
+    });
+    const str = JSON.stringify(res.data);
+    assert.strictEqual(str.includes('AIza'), false);
+    assert.strictEqual(str.includes('apiKey'), false);
+    assert.strictEqual(str.includes('googleapis.com'), false);
+  });
+
+  // 1E-A-04: POST /api/ai/chat sin sesión -> 401
+  await test('233. TEST 1E-A-04: POST /api/ai/chat sin sesión retorna HTTP 401', async () => {
+    const res = await request('/api/ai/chat', {
+      method: 'POST',
+      body: JSON.stringify({ prompt: 'Hola asistente' })
+    });
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 1E-A-05: POST /api/ai/chat con sesión pero sin CSRF -> 403
+  await test('234. TEST 1E-A-05: POST /api/ai/chat con sesión pero sin CSRF retorna HTTP 403', async () => {
+    const { cookie } = await loginAdminD2();
+    const res = await request('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Cookie': cookie },
+      body: JSON.stringify({ prompt: 'Hola asistente' })
+    });
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(res.data.error, 'CSRF token inválido o ausente');
+  });
+
+  // 1E-A-06: POST /api/ai/chat con CSRF incorrecto -> 403
+  await test('235. TEST 1E-A-06: POST /api/ai/chat con CSRF incorrecto retorna HTTP 403', async () => {
+    const { cookie } = await loginAdminD2();
+    const res = await request('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': 'bad_fake_csrf_token_12345' },
+      body: JSON.stringify({ prompt: 'Hola asistente' })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 1E-A-07: POST /api/ai/ocr-invoice con rol no autorizado (Cajero) -> 403
+  await test('236. TEST 1E-A-07: POST /api/ai/ocr-invoice con rol Cajero retorna HTTP 403 (exclusivo Admin/Accountant)', async () => {
+    const { cookie, csrf } = await loginCashierD2();
+    const res = await request('/api/ai/ocr-invoice', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ imageBase64: 'data:image/jpeg;base64,aGVsbG8=' })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 1E-A-08: POST /api/ai/chat con sesión Admin + CSRF + prompt válido -> 200
+  await test('237. TEST 1E-A-08: POST /api/ai/chat con credenciales válidas genera respuesta sanitizada', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ prompt: '¿Cuál es el margen sugerido para queso llanero?' })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.ok(typeof res.data.text === 'string' && res.data.text.length > 0);
+  });
+
+  // 1E-A-09: POST /api/ai/chat con prompt vacío / inválido -> 400
+  await test('238. TEST 1E-A-09: POST /api/ai/chat con prompt vacío retorna HTTP 400 Bad Request', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ prompt: '   ' })
+    });
+    assert.strictEqual(res.status, 400);
+    assert.strictEqual(res.data.success, false);
+  });
+
+  // 1E-A-10: POST /api/ai/chat con prompt excesivo -> 413 Payload Too Large
+  await test('239. TEST 1E-A-10: POST /api/ai/chat con prompt superior a 8000 caracteres retorna HTTP 413', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const giantPrompt = 'A'.repeat(9000);
+    const res = await request('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ prompt: giantPrompt })
+    });
+    assert.strictEqual(res.status, 413);
+    assert.strictEqual(res.data.success, false);
+  });
+
+  // 1E-A-11: POST /api/ai/inventory-command ejecuta orden y devuelve acciones estructuradas
+  await test('240. TEST 1E-A-11: POST /api/ai/inventory-command interpreta comandos en lenguaje natural', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/inventory-command', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        command: 'Agregar queso paisa a 4 compra y 6 venta',
+        products: []
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.ok(Array.isArray(res.data.actions));
+    assert.strictEqual(res.data.actions[0].type, 'ADD_PRODUCT');
+  });
+
+  // 1E-A-12: POST /api/ai/ocr-invoice extrae datos contables de factura
+  await test('241. TEST 1E-A-12: POST /api/ai/ocr-invoice extrae datos contables estructurados', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/ocr-invoice', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        imageBase64: 'data:image/jpeg;base64,dGVzdF9mYWN0dXJhX2Jhc2U2NA==',
+        mimeType: 'image/jpeg',
+        bcvRate: 45
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.ok(res.data.data.items);
+    assert.strictEqual(res.data.data.items[0].nombre, 'QUESO DURO');
+  });
+
+  // 1E-A-13: POST /api/ai/parse-dictation procesa texto de compras habladas
+  await test('242. TEST 1E-A-13: POST /api/ai/parse-dictation procesa dictado de mercancía', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/parse-dictation', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        text: 'Llegaron 10 unidades de mantequilla criolla a 2.5 dolares',
+        bcvRate: 45
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.strictEqual(res.data.items[0].nombre, 'MANTEQUILLA CRIOLLA');
+  });
+
+  // 1E-A-14: POST /api/ai/parse-voice-note estructura nota contable
+  await test('243. TEST 1E-A-14: POST /api/ai/parse-voice-note estructura nota de voz financiera', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/parse-voice-note', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        text: 'Pagué 25 dólares de transporte en efectivo',
+        bcvRate: 45
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.strictEqual(res.data.data.category, 'gasto');
+    assert.strictEqual(res.data.data.amountUsd, 25);
+  });
+
+  // 1E-A-15: POST /api/ai/parse-trip estructura salida de gira de queso
+  await test('244. TEST 1E-A-15: POST /api/ai/parse-trip extrae parámetros operativos de gira', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/parse-trip', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        text: 'Sale Daisy Corro con 300 kilos de queso duro a 3.8 y 150 dólares de viáticos',
+        bcvRate: 813
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.strictEqual(res.data.data.driver, 'Daisy Corro');
+    assert.strictEqual(res.data.data.dispatchedKg, 300);
+  });
+
+  // 1E-A-16: Error en Gemini no filtra URLs ni API keys en respuesta HTTP
+  await test('245. TEST 1E-A-16: Error upstream de Gemini se captura y devuelve error genérico sin filtrar API key', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ prompt: 'error_simulado_disparador' })
+    });
+    assert.strictEqual(res.status, 500);
+    assert.strictEqual(res.data.success, false);
+    const bodyStr = JSON.stringify(res.data);
+    assert.strictEqual(bodyStr.includes('AIzaSy'), false, 'No debe filtrar API key en respuesta');
+    assert.strictEqual(bodyStr.includes('googleapis.com'), false, 'No debe filtrar URL de Google en respuesta');
+  });
+
+  // 1E-A-17: Cliente de portal autenticado NO puede acceder a endpoints de IA del CRM
+  await test('246. TEST 1E-A-17: Cliente autenticado en Portal NO puede invocar endpoints AI de administración (401)', async () => {
+    // Login en portal como cliente válido
+    const { cookie: portalCookie, csrf: portalCsrf } = await loginClientAD2();
+
+    const aiRes = await request('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Cookie': portalCookie, 'x-csrf-token': portalCsrf },
+      body: JSON.stringify({ prompt: 'Acceso no autorizado' })
+    });
+    assert.strictEqual(aiRes.status, 401, 'Portal client no tiene sesión CRM activa y debe recibir 401');
+  });
+
+  // 1E-A-18: Si el servicio de IA no está configurado, responde 503 controlado
+  await test('247. TEST 1E-A-18: Endpoint responde HTTP 503 seguro si el cliente Gemini no está inicializado', async () => {
+    setGeminiClientForTest(null); // Desconfigurar temporalmente
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ prompt: 'Hola' })
+    });
+    assert.strictEqual(res.status, 503);
+    assert.strictEqual(res.data.success, false);
+    assert.strictEqual(res.data.error, 'El servicio de IA no está configurado en el servidor');
+
+    // Restaurar mock
+    setGeminiClientForTest(mockGeminiClient);
+  });
+
+  // 1E-A-19: Endpoint AI no confía en parámetros de rol en body para elevar permisos
+  await test('248. TEST 1E-A-19: Body no puede inyectar rol ni elevar permisos en endpoints de IA', async () => {
+    const { cookie, csrf } = await loginCashierD2();
+    const res = await request('/api/ai/ocr-invoice', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        role: 'admin',
+        isAdmin: true,
+        imageBase64: 'data:image/jpeg;base64,dGVzdA=='
+      })
+    });
+    assert.strictEqual(res.status, 403, 'Cajero con body role=admin sigue siendo rechazado por requireRole');
+  });
+
+  // 1E-A-20: Rate limiter específico de IA se activa ante peticiones excesivas
+  await test('249. TEST 1E-A-20: aiRateLimiter retorna HTTP 429 tras superar el umbral de peticiones', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    let got429 = false;
+
+    // Enviar ráfaga rápida
+    for (let i = 0; i < 35; i++) {
+      const res = await request('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+        body: JSON.stringify({ prompt: `Test rate limit ${i}` })
+      });
+      if (res.status === 429) {
+        got429 = true;
+        assert.strictEqual(res.data.success, false);
+        break;
+      }
+    }
+    assert.ok(got429, 'Debe activar rate limiting (HTTP 429) ante ráfagas excesivas en endpoints de IA');
   });
 
   // ============================================================

@@ -35,11 +35,25 @@ for (const envFile of envFiles) {
 }
 dotenv.config(); // Cargar también fallback general
 
-// Inicializar cliente de Google Gemini para el Robot Kalu
-const geminiApiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
-const ai = (geminiApiKey && !geminiApiKey.startsWith('mock') && !geminiApiKey.startsWith('dummy'))
+// Inicializar cliente de Google Gemini para el Backend / Robot Kalu (Fase 1E-A)
+// Solo usa process.env.GEMINI_API_KEY (Server-side exclusivo, nunca del cliente)
+let geminiApiKey = process.env.GEMINI_API_KEY || '';
+let ai = (geminiApiKey && !geminiApiKey.startsWith('mock') && !geminiApiKey.startsWith('dummy') && !geminiApiKey.startsWith('test'))
   ? new GoogleGenAI({ apiKey: geminiApiKey })
   : null;
+
+// Helper para pruebas y mocking controlado del cliente Gemini backend
+function setGeminiClientForTest(customAiClient) {
+  ai = customAiClient;
+}
+
+function getGeminiClient() {
+  return ai;
+}
+
+function isGeminiConfigured() {
+  return Boolean(ai);
+}
 
 const isDevEnv = process.env.NODE_ENV === 'development' || !isProd;
 const mailMode = process.env.MAIL_MODE || (isDevEnv ? 'development' : 'production');
@@ -2622,6 +2636,533 @@ app.post(['/api/webhook', '/webhook'], async (req, res) => {
   }
 });
 
+// ============================================================
+// SUBSISTEMA SERVER-SIDE DE IA / GOOGLE GEMINI (FASE 1E-A)
+// ============================================================
+
+// Rate limiter específico para consumo de IA (Máximo 30 peticiones por minuto por sesión/IP)
+const aiRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    // Clave por ID de usuario autenticado si existe, fallback a IP
+    if (req.user?.id) return `user_${req.user.id}`;
+    if (req.session?.userId) return `session_user_${req.session.userId}`;
+    return req.ip || 'unknown_ip';
+  },
+  message: {
+    success: false,
+    error: 'Demasiadas solicitudes al servicio de Inteligencia Artificial. Por favor espere un momento.'
+  }
+});
+
+// Helper de ejecución resiliente con modelos Gemini server-side
+async function generateGeminiContentServer({ prompt, systemInstruction, imageBase64, mimeType, responseJson = false, maxOutputTokens, temperature = 0.2 }) {
+  if (!ai) {
+    throw new Error('Servicio de IA no configurado en el servidor');
+  }
+
+  const parts = [];
+  if (systemInstruction) {
+    parts.push({ text: String(systemInstruction) });
+  }
+  if (prompt) {
+    parts.push({ text: String(prompt) });
+  }
+  if (imageBase64 && mimeType) {
+    parts.push({
+      inlineData: {
+        data: imageBase64,
+        mimeType: mimeType
+      }
+    });
+  }
+
+  const config = {
+    temperature
+  };
+  if (responseJson) {
+    config.responseMimeType = 'application/json';
+  }
+  if (maxOutputTokens) {
+    config.maxOutputTokens = maxOutputTokens;
+  }
+
+  const models = ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+  let lastError = null;
+
+  for (const model of models) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: [{ role: 'user', parts }],
+        config
+      });
+
+      if (response && response.text) {
+        return response.text;
+      }
+    } catch (err) {
+      lastError = err;
+      // Si el error fue disparado en testing o es un error terminal, propagar
+      if (err.message && err.message.includes('Google AI upstream error')) {
+        throw err;
+      }
+    }
+  }
+
+  throw lastError || new Error('No se pudo obtener respuesta de la IA');
+}
+
+// 1. Estado de disponibilidad de IA (GET /api/ai/status)
+// Requiere sesión CRM activa. No revela keys ni configuraciones internas sensibles.
+app.get('/api/ai/status', requireAuth, (req, res) => {
+  res.json({
+    available: isGeminiConfigured(),
+    engine: isGeminiConfigured() ? 'active' : 'unavailable'
+  });
+});
+
+// 2. Chat / Asistente Financiero General (POST /api/ai/chat)
+// Accesible para roles CRM (admin, accountant, cajero).
+app.post('/api/ai/chat', requireAuth, requireRole('admin', 'accountant', 'cajero'), verifyCsrf, aiRateLimiter, async (req, res) => {
+  try {
+    const { prompt, context, imageBase64, mimeType } = req.body || {};
+
+    if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+      return res.status(400).json({ success: false, error: 'El prompt es requerido y debe ser texto' });
+    }
+
+    if (prompt.length > 8000) {
+      return res.status(413).json({ success: false, error: 'El prompt excede el tamaño máximo permitido (8000 caracteres)' });
+    }
+
+    if (context && typeof context !== 'string') {
+      return res.status(400).json({ success: false, error: 'El contexto debe ser texto' });
+    }
+
+    if (imageBase64) {
+      if (typeof imageBase64 !== 'string' || imageBase64.length > 7 * 1024 * 1024) {
+        return res.status(413).json({ success: false, error: 'La imagen excede el límite máximo de 5MB' });
+      }
+      if (!mimeType || !['image/jpeg', 'image/png', 'image/webp', 'image/jpg'].includes(mimeType)) {
+        return res.status(400).json({ success: false, error: 'Formato de imagen no soportado' });
+      }
+    }
+
+    if (!isGeminiConfigured()) {
+      return res.status(503).json({ success: false, error: 'El servicio de IA no está configurado en el servidor' });
+    }
+
+    const systemContext = context || 'Eres un asistente experto en finanzas y control de inventario de la Quesería Kalu.';
+    const textResponse = await generateGeminiContentServer({
+      prompt,
+      systemInstruction: systemContext,
+      imageBase64: imageBase64 || undefined,
+      mimeType: mimeType || undefined,
+      temperature: 0.3
+    });
+
+    res.json({
+      success: true,
+      text: textResponse || 'No se pudo generar una respuesta clara.'
+    });
+  } catch (error) {
+    console.error('[AI Chat Error]:', error.message || 'Error en comunicación con IA');
+    res.status(500).json({ success: false, error: 'Ocurrió un error al procesar la solicitud con la IA' });
+  }
+});
+
+// 3. Comandos de Lenguaje Natural de Inventario (POST /api/ai/inventory-command)
+// Exclusivo para personal administrativo y cajeros con gestión de stock.
+app.post('/api/ai/inventory-command', requireAuth, requireRole('admin', 'accountant', 'cajero'), verifyCsrf, aiRateLimiter, async (req, res) => {
+  try {
+    const { command, products } = req.body || {};
+
+    if (!command || typeof command !== 'string' || !command.trim()) {
+      return res.status(400).json({ success: false, error: 'El comando es requerido y debe ser texto' });
+    }
+
+    if (command.length > 2000) {
+      return res.status(413).json({ success: false, error: 'El comando excede la longitud permitida' });
+    }
+
+    if (products && !Array.isArray(products)) {
+      return res.status(400).json({ success: false, error: 'El catálogo de productos debe ser un arreglo' });
+    }
+
+    if (!isGeminiConfigured()) {
+      return res.status(503).json({ success: false, error: 'El servicio de IA no está configurado en el servidor' });
+    }
+
+    const catalogSummary = (Array.isArray(products) ? products : []).slice(0, 300).map(p => ({
+      id: p.id,
+      name: p.name,
+      category: p.category,
+      unit: p.unit,
+      purchasePrice: p.purchasePrice,
+      sellingPrice: p.sellingPrice,
+    }));
+
+    const promptText = `
+      Eres un asistente virtual avanzado integrado en un sistema CRM de gestión de inventario.
+      Tu tarea es interpretar la orden del usuario y devolver una respuesta en JSON puro con las acciones a ejecutar.
+
+      CATÁLOGO ACTUAL (Solo lectura/referencia):
+      ${JSON.stringify(catalogSummary)}
+
+      ORDEN DEL USUARIO:
+      "${command}"
+
+      INSTRUCCIONES Y REGLAS ESTRICTAS:
+      1. DEBES responder SIEMPRE con un único objeto JSON (nada de Markdown \`\`\`json, ni texto antes ni después).
+      2. El JSON debe tener la siguiente estructura estricta:
+         {
+           "actions": [
+             {
+               "type": "ADD_PRODUCT" | "UPDATE_PRODUCT" | "NOTIFY" | "ERROR",
+               "payload": { ... } // Los datos requeridos según la acción
+             }
+           ],
+           "message": "Un mensaje amigable y breve en lenguaje natural sobre lo que vas a hacer (para mostrar al usuario)"
+         }
+      3. Para ADD_PRODUCT, el payload debe incluir: name, category (SOLO puedes usar: Repuestos, Charcutería, Víveres, Genérico), unit (Kg, Lt, Und), purchasePrice, sellingPrice, stockKg (por defecto 0).
+      4. Para UPDATE_PRODUCT, el payload debe incluir: id (DEBE coincidir con el ID del catálogo actual) y los campos a actualizar (name, category, unit, purchasePrice, sellingPrice).
+      5. Para NOTIFY o ERROR, el payload puede estar vacío o tener un mensaje.
+      6. No puedes realizar borrado de productos (es destructivo). Si te piden borrar, usa NOTIFY indicando que debes hacerlo manualmente.
+      7. Sé inteligente con la orden: si el usuario pide actualizar un producto por nombre, búscalo en el catálogo actual para obtener su ID. Si no lo encuentras, usa NOTIFY.
+    `;
+
+    const rawResult = await generateGeminiContentServer({
+      prompt: promptText,
+      responseJson: true,
+      temperature: 0.1
+    });
+
+    let cleanText = (rawResult || '').replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
+    const parsed = JSON.parse(cleanText || '{}');
+
+    res.json({
+      success: true,
+      actions: Array.isArray(parsed.actions) ? parsed.actions : [],
+      message: parsed.message || 'Comando procesado correctamente'
+    });
+  } catch (error) {
+    console.error('[AI Inventory Command Error]:', error.message || 'Error en IA');
+    res.status(500).json({ success: false, error: 'Fallo de comunicación con la IA' });
+  }
+});
+
+// 4. OCR y Extracción de Facturas (POST /api/ai/ocr-invoice)
+// Exclusivo para Administrador y Contador.
+app.post('/api/ai/ocr-invoice', requireAuth, requireRole('admin', 'accountant'), verifyCsrf, aiRateLimiter, async (req, res) => {
+  try {
+    const { imageBase64, mimeType, bcvRate = 45, inventoryNames = [] } = req.body || {};
+
+    if (!imageBase64 || typeof imageBase64 !== 'string') {
+      return res.status(400).json({ success: false, error: 'La imagen de la factura es obligatoria (Base64)' });
+    }
+
+    if (imageBase64.length > 10 * 1024 * 1024) { // ~7.5MB raw
+      return res.status(413).json({ success: false, error: 'La imagen excede el límite de tamaño permitido' });
+    }
+
+    const cleanMime = mimeType || 'image/jpeg';
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/jpg', 'application/pdf'].includes(cleanMime)) {
+      return res.status(400).json({ success: false, error: 'Tipo de archivo no compatible para OCR' });
+    }
+
+    if (!isGeminiConfigured()) {
+      return res.status(503).json({ success: false, error: 'El servicio de IA no está configurado en el servidor' });
+    }
+
+    const safeRate = Number(bcvRate) > 0 ? Number(bcvRate) : 45;
+    const safeNames = Array.isArray(inventoryNames) ? inventoryNames.slice(0, 500) : [];
+
+    const promptText = `
+      Eres un asistente experto en contabilidad y auditoría de inventarios para comercios.
+      Extrae los datos de esta factura de compra en formato JSON estricto.
+
+      REGLAS DE ORO:
+      1. Responde ÚNICAMENTE con un objeto JSON válido (sin bloques markdown ni explicaciones adicionales).
+      2. UNIDADES Y BULTOS:
+         - Si la factura menciona "Bulto", "Caja", "Fardo", "Saco", "Paquete" o abreviaciones como "BTO", "CJ", "PQ", clasifícalo como 'Bulto'.
+         - Si es por peso o volumen: 'Kg' o 'Lt'.
+         - Para unidades sueltas: 'Und'.
+      3. MONEDA Y CONVERSIÓN:
+         - Tasa de cambio BCV oficial: ${safeRate} Bs/$.
+         - Si la factura o renglón está en Bolívares (Bs), conviértelo a USD dividiendo entre ${safeRate}.
+         - Si está en USD o dólares ($), mantén los montos en USD.
+         - "costo_unitario" y "costo_total" DEBEN ser números en USD mayores a 0.
+      4. EMPAREJAMIENTO CON CATÁLOGO EXISTENTE (Evitar duplicados):
+         - CATÁLOGO ACTUAL: ${safeNames.length > 0 ? safeNames.join(", ") : "Vacío"}.
+         - Si un ítem de la factura corresponde a un producto del catálogo (incluso con variaciones ortográficas, sinónimos o abreviaciones como 'Arroz Prim' -> 'Arroz Primo'), devuelve EXACTAMENTE el nombre que aparece en el catálogo.
+         - Si definitivamente es un producto nuevo que no está en el catálogo, devuelve su nombre comercial limpio en mayúsculas.
+
+      ESTRUCTURA JSON REQUERIDA:
+      {
+        "proveedor": { "nombre": "Nombre de la empresa o proveedor", "rif": "J-12345678" },
+        "factura": "Número de factura o control",
+        "fecha": "YYYY-MM-DD",
+        "moneda_detectada": "USD" | "BS",
+        "items": [
+          { "nombre": "Nombre Canónico o Nuevo", "cantidad": 0, "unidad": "Und" | "Kg" | "Lt" | "Bulto", "costo_unitario": 0, "costo_total": 0 }
+        ]
+      }
+    `;
+
+    const rawData = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
+    const rawResult = await generateGeminiContentServer({
+      prompt: promptText,
+      imageBase64: rawData,
+      mimeType: cleanMime,
+      responseJson: true,
+      temperature: 0.1
+    });
+
+    let cleanText = (rawResult || '').replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
+    const parsed = JSON.parse(cleanText || '{}');
+
+    if (parsed && parsed.items && Array.isArray(parsed.items)) {
+      parsed.items = parsed.items.map(it => ({
+        ...it,
+        cantidad: Math.max(0.01, Number(it.cantidad) || 1),
+        costo_unitario: Math.max(0, Number(it.costo_unitario) || 0),
+        costo_total: Math.max(0, Number(it.costo_total) || 0)
+      }));
+    }
+
+    res.json({
+      success: true,
+      data: parsed
+    });
+  } catch (error) {
+    console.error('[AI OCR Invoice Error]:', error.message || 'Error en OCR');
+    res.status(500).json({ success: false, error: 'No fue posible procesar la factura con la IA' });
+  }
+});
+
+// 5. Dictado de Compras (POST /api/ai/parse-dictation)
+// Accesible para administradores y cajeros.
+app.post('/api/ai/parse-dictation', requireAuth, requireRole('admin', 'accountant', 'cajero'), verifyCsrf, aiRateLimiter, async (req, res) => {
+  try {
+    const { text, bcvRate = 45, inventoryNames = [] } = req.body || {};
+
+    if (!text || typeof text !== 'string' || !text.trim()) {
+      return res.status(400).json({ success: false, error: 'El texto del dictado es requerido' });
+    }
+
+    if (text.length > 5000) {
+      return res.status(413).json({ success: false, error: 'El texto del dictado excede la longitud máxima permitida' });
+    }
+
+    if (!isGeminiConfigured()) {
+      return res.status(503).json({ success: false, error: 'El servicio de IA no está configurado en el servidor' });
+    }
+
+    const safeRate = Number(bcvRate) > 0 ? Number(bcvRate) : 45;
+    const safeNames = Array.isArray(inventoryNames) ? inventoryNames.slice(0, 500) : [];
+
+    const promptText = `
+      Eres un asistente contable y de compras de alta precisión.
+      Analiza esta orden o dictado de mercancía: "${text}".
+      Tasa BCV de referencia: ${safeRate} Bs/$.
+
+      CATÁLOGO ACTUAL DE PRODUCTOS:
+      ${safeNames.length > 0 ? safeNames.join(", ") : "Vacío"}
+
+      REGLAS DE EXTRACCIÓN:
+      1. Devuelve ÚNICAMENTE un JSON válido.
+      2. UNIDADES: Clasifica en 'Und', 'Kg', 'Lt' o 'Bulto' (si dice bultos, sacos, paquetes o cajas).
+      3. MONEDA: Si el dictado menciona precios en Bolívares o Bs, convierte a USD dividiendo entre ${safeRate}.
+      4. PRECIOS/COSTOS: Si solo se menciona el total del producto, calcula el costo unitario (total / cantidad).
+      5. EMPAREJAMIENTO: Empareja cada ítem con el nombre exacto del catálogo si existe, corrigiendo nombres hablados.
+
+      ESTRUCTURA JSON:
+      {
+        "items": [
+          { "nombre": "Nombre Exacto o Nuevo", "cantidad": 1, "unidad": "Und" | "Kg" | "Lt" | "Bulto", "costo_unitario": 0, "costo_total": 0 }
+        ]
+      }
+    `;
+
+    const rawResult = await generateGeminiContentServer({
+      prompt: promptText,
+      responseJson: true,
+      temperature: 0.1
+    });
+
+    let cleanText = (rawResult || '').replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
+    const parsed = JSON.parse(cleanText || '{}');
+
+    let items = [];
+    if (parsed.items && Array.isArray(parsed.items)) {
+      items = parsed.items.map(it => ({
+        ...it,
+        cantidad: Math.max(0.01, Number(it.cantidad) || 1),
+        costo_unitario: Math.max(0, Number(it.costo_unitario) || 0),
+        costo_total: Math.max(0, Number(it.costo_total) || 0)
+      }));
+    }
+
+    res.json({
+      success: true,
+      items
+    });
+  } catch (error) {
+    console.error('[AI Parse Dictation Error]:', error.message || 'Error interpretando dictado');
+    res.status(500).json({ success: false, error: 'Error procesando el dictado con la IA' });
+  }
+});
+
+// 6. Estructuración de Notas de Voz Contables (POST /api/ai/parse-voice-note)
+// Exclusivo para Administrador y Contador.
+app.post('/api/ai/parse-voice-note', requireAuth, requireRole('admin', 'accountant'), verifyCsrf, aiRateLimiter, async (req, res) => {
+  try {
+    const { text, bcvRate = 45 } = req.body || {};
+
+    if (!text || typeof text !== 'string' || !text.trim()) {
+      return res.status(400).json({ success: false, error: 'El texto de la nota de voz es requerido' });
+    }
+
+    if (text.length > 5000) {
+      return res.status(413).json({ success: false, error: 'El texto de la nota de voz excede la longitud máxima' });
+    }
+
+    if (!isGeminiConfigured()) {
+      return res.json({
+        success: true,
+        data: {
+          title: 'Nota de Voz',
+          category: 'nota_general',
+          summary: text,
+          suggestedAction: 'Revisar manualmente (IA no disponible)'
+        }
+      });
+    }
+
+    const safeRate = Number(bcvRate) > 0 ? Number(bcvRate) : 45;
+    const promptText = `
+      Analiza esta nota de voz contable de la Quesería Kalu: "${text}".
+      Tasa BCV de referencia: ${safeRate} Bs/$.
+
+      Tu tarea es estructurar y categorizar la nota en JSON estricto.
+
+      REGLAS:
+      1. Si menciona compras o gastos, extrae el monto. Si está en Bs, calcula el aproximado en USD.
+      2. Categorías permitidas: 'gasto', 'ingreso', 'compra', 'deuda', 'nota_general'.
+      3. Si menciona método de pago ('efectivo', 'pago móvil', 'transferencia', 'dólares'), identifícalo.
+      4. Genera un título corto y un resumen claro de 1 línea.
+
+      ESTRUCTURA JSON REQUERIDA:
+      {
+        "title": "Título corto y descriptivo",
+        "category": "gasto" | "ingreso" | "compra" | "deuda" | "nota_general",
+        "amountUsd": 0,
+        "amountBs": 0,
+        "paymentMethod": "Efectivo" | "Transferencia" | "Pago Móvil" | "Punto" | "Dólares",
+        "summary": "Resumen ejecutivo de la operación",
+        "suggestedAction": "Acción recomendada para el CRM"
+      }
+    `;
+
+    const rawResult = await generateGeminiContentServer({
+      prompt: promptText,
+      responseJson: true,
+      temperature: 0.1
+    });
+
+    let cleanText = (rawResult || '').replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
+    const parsed = JSON.parse(cleanText || '{}');
+
+    res.json({
+      success: true,
+      data: parsed
+    });
+  } catch (error) {
+    console.error('[AI Parse Voice Note Error]:', error.message || 'Error en nota de voz');
+    res.status(500).json({ success: false, error: 'Error al estructurar nota de voz con IA' });
+  }
+});
+
+// 7. Parseo de Giras y Despachos de Queso (POST /api/ai/parse-trip)
+// Exclusivo para Administrador y Contador.
+app.post('/api/ai/parse-trip', requireAuth, requireRole('admin', 'accountant'), verifyCsrf, aiRateLimiter, async (req, res) => {
+  try {
+    const { text, bcvRate = 813, productNames = [] } = req.body || {};
+
+    if (!text || typeof text !== 'string' || !text.trim()) {
+      return res.status(400).json({ success: false, error: 'El texto de la orden de viaje es requerido' });
+    }
+
+    if (text.length > 5000) {
+      return res.status(413).json({ success: false, error: 'El texto excede el límite permitido' });
+    }
+
+    if (!isGeminiConfigured()) {
+      return res.status(503).json({ success: false, error: 'El servicio de IA no está configurado en el servidor' });
+    }
+
+    const safeRate = Number(bcvRate) > 0 ? Number(bcvRate) : 813;
+    const safeProducts = Array.isArray(productNames) && productNames.length > 0
+      ? productNames.slice(0, 100).join(', ')
+      : 'QUESO DURO, QUESO SEMIDURO, QUESO BLANCO, QUESO PAISA';
+
+    const promptText = `
+      Eres el asistente operativo de la Quesería Kalu.
+      Analiza esta orden hablada de salida para una gira/viaje a San Juan: "${text}".
+      Tasa BCV actual: ${safeRate} Bs/$.
+
+      CATÁLOGO DISPONIBLE DE PRODUCTOS DE QUESO:
+      ${safeProducts}
+
+      RESPONSABLES POSIBLES:
+      - Daisy Corro
+      - Juan Carlos Domínguez
+
+      INSTRUCCIONES DE EXTRACCIÓN:
+      1. Devuelve ÚNICAMENTE un JSON válido sin markdown.
+      2. Identifica si menciona un responsable (Daisy o Juan Carlos). Si no menciona ninguno, omite el campo.
+      3. Extrae la cantidad en kilogramos (dispatchedKg) y el tipo de queso. Empareja con el catálogo más cercano.
+      4. Si menciona costo por kilo ($/Kg), extráelo en costPerKg.
+      5. Extrae el efectivo en dólares adelantado (cashTakenUsd).
+      6. Extrae el efectivo en bolívares adelantado (cashTakenBs).
+      7. Extrae fondos adelantados desde Banco / Pago Móvil / Transferencia en Bolívares (bankTakenBs) o en Dólares (bankTakenUsd).
+
+      ESTRUCTURA JSON:
+      {
+        "driver": "Daisy Corro" | "Juan Carlos Domínguez",
+        "cheeseProductName": "Nombre del Producto del Catálogo",
+        "dispatchedKg": 0,
+        "costPerKg": 0,
+        "cashTakenUsd": 0,
+        "cashTakenBs": 0,
+        "bankTakenUsd": 0,
+        "bankTakenBs": 0
+      }
+    `;
+
+    const rawResult = await generateGeminiContentServer({
+      prompt: promptText,
+      responseJson: true,
+      temperature: 0.1
+    });
+
+    let cleanText = (rawResult || '').replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
+    const parsed = JSON.parse(cleanText || '{}');
+
+    res.json({
+      success: true,
+      data: parsed
+    });
+  } catch (error) {
+    console.error('[AI Parse Trip Error]:', error.message || 'Error en parseo de gira');
+    res.status(500).json({ success: false, error: 'Error procesando salida de gira con IA' });
+  }
+});
+
 // --- GENERIC COLLECTIONS API WITH ASYNC MUTEX LOCK ---
 
 const getCollectionFilePath = (name) => path.join(uploadDir, `${name}_db.json`);
@@ -3751,5 +4292,9 @@ export {
   writeCollection,
   activeSessionSockets,
   invalidateSessionSockets,
-  purgePortalSocketPrivileges
+  purgePortalSocketPrivileges,
+  setGeminiClientForTest,
+  getGeminiClient,
+  isGeminiConfigured,
+  aiRateLimiter
 };
