@@ -1,4 +1,4 @@
-import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../services/localApi';
+import { submitPortalClientPaymentApi, reportPortalInstallmentPaymentApi } from '../services/localApi';
 import React, { useState, useEffect } from 'react';
 import { CreditCard, Check, Copy, ArrowRight, Banknote, X, CheckCircle, Clock, XCircle, Image as ImageIcon } from 'lucide-react';
 import { ClientProfile, DebtInstallment, Transaction } from '../types';
@@ -28,16 +28,16 @@ export default function PaymentsTab({
   
   const debtList = activeInstallments;
 
-  // Modal forms
-  const [paymentAmountBs, setPaymentAmountBs] = useState<string>('');
+  // Form states
+  const [paymentAmountBs, setPaymentAmountBs] = useState('');
   const [reference, setReference] = useState('');
+  const [notesText, setNotesText] = useState('');
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState<string>('');
-  
-  // Feedback
   const [copiedPhone, setCopiedPhone] = useState(false);
   const [copiedId, setCopiedId] = useState(false);
   const [copiedAmount, setCopiedAmount] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
   const phoneStr = '04243068286';
   const idStr = 'V-11120033';
@@ -56,13 +56,13 @@ export default function PaymentsTab({
     setPaymentType('cuota');
     setReference('');
     setImageFile(null);
-    setImagePreview('');
+    setImagePreview(null);
     setShowPaymentModal(true);
   };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
+    const file = e.target.files?.[0];
+    if (file) {
       setImageFile(file);
       const reader = new FileReader();
       reader.onloadend = () => {
@@ -72,30 +72,25 @@ export default function PaymentsTab({
     }
   };
 
-  const submitPayment = async () => {
-    if (!selectedDebt || !clientData?.id) return;
+  const handleSubmitPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reference || !paymentAmountBs) {
+       if (onAddNotification) onAddNotification('Por favor complete los campos requeridos', 'warning');
+       return;
+    }
 
-    const saleInstallments = debtList.filter(i => ((i as any).saleId === (selectedDebt as any).saleId || (i as any).transactionId === (selectedDebt as any).transactionId) && i.status !== 'paid');
-    const isFullSalePayment = paymentType === 'venta_completa';
-    
-    const installmentIds = isFullSalePayment ? saleInstallments.map(i => i.id) : [selectedDebt.id];
-    const notesText = isFullSalePayment 
-      ? `Liquidación de Venta Completa - Ref: ${reference}`
-      : `Abono a Cuota ${selectedDebt.id} - Ref: ${reference}`;
-    
+    const installmentIds = selectedDebt ? [selectedDebt.id] : [];
     const pwaPayload = {
-      id: `PWA-PAGO-${Date.now()}`,
-      type: 'cliente',
-      entityId: clientData.id,
-      entityName: clientData.name,
       amount: Number(paymentAmountBs || 0) / bcvRate,
       currency: 'USD',
       amountBs: Number(paymentAmountBs || 0),
       reference: reference,
       method: 'Pago Móvil',
+      bank: selectedBank === '0102' ? 'Banco de Venezuela (0102)' : 'Banesco (0134)',
       status: 'pending',
       date: new Date().toISOString(),
       timestamp: new Date().toISOString(),
+      installmentId: selectedDebt ? selectedDebt.id : undefined,
       installmentIds,
       notes: notesText,
       receiptImageUrl: imagePreview || undefined,
@@ -103,19 +98,20 @@ export default function PaymentsTab({
     };
     
     try {
-       await addLocalDoc('pwa_payments', pwaPayload);
+       await submitPortalClientPaymentApi(pwaPayload);
        
-       // Update installment status
-       const updatePromises = installmentIds.map(id => 
-          updateLocalDoc('installments', id, { status: 'in_review' })
-       );
-       await Promise.all(updatePromises);
+       if (installmentIds.length > 0) {
+         const updatePromises = installmentIds.map(id =>
+            reportPortalInstallmentPaymentApi(id).catch(() => {})
+         );
+         await Promise.all(updatePromises);
+       }
 
        if (onAddNotification) onAddNotification('Pago reportado y en revisión por el cajero.', 'success');
        setShowPaymentModal(false);
-    } catch (e) {
+    } catch (e: any) {
        console.error(e);
-       if (onAddNotification) onAddNotification('Error al reportar pago', 'warning');
+       if (onAddNotification) onAddNotification(e.message || 'Error al reportar pago', 'warning');
     }
   };
 
@@ -425,7 +421,7 @@ export default function PaymentsTab({
           <div className="fixed bottom-0 left-0 right-0 p-5 bg-gradient-to-t from-slate-950 via-slate-950 to-transparent">
             <button 
               disabled={!paymentAmountBs || !reference || Number(paymentAmountBs) <= 0 || reference.length < 4}
-              onClick={submitPayment}
+              onClick={handleSubmitPayment}
               className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-800 disabled:text-slate-600 text-slate-950 font-black uppercase rounded-2xl text-sm tracking-widest transition-all shadow-[0_0_20px_rgba(16,185,129,0.3)] disabled:shadow-none flex items-center justify-center gap-2"
             >
               Enviar Comprobante a Caja <ArrowRight className="w-4 h-4" />

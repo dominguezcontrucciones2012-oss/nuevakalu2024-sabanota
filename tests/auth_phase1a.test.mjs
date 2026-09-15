@@ -1297,8 +1297,474 @@ async function runTests() {
     assert.strictEqual(res.status, 401);
   });
 
-  // 80. Rate Limiter de Login de Portal (HTTP 429)
-  await test('80. 1D-A: Intentos fallidos repetidos en login de portal activan Rate Limiter (HTTP 429)', async () => {
+  // ============================================================
+  // PRUEBAS DE FASE 1D-B: SCOPED DATA, IDOR Y AISLAMIENTO DE PORTALES
+  // ============================================================
+
+  // Helper para login de cliente
+  async function loginClientA() {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '678000'
+      })
+    });
+    return {
+      cookie: res.setCookie.split(';')[0],
+      csrf: res.data.csrfToken,
+      user: res.data.portalUser
+    };
+  }
+
+  // Helper para login de productor
+  async function loginProducerA() {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: '04125550101',
+        pin: '321900'
+      })
+    });
+    return {
+      cookie: res.setCookie.split(';')[0],
+      csrf: res.data.csrfToken,
+      user: res.data.portalUser
+    };
+  }
+
+  // 82. Cliente A obtiene su propio perfil scoped (GET /api/portal/client/profile)
+  await test('82. 1D-B: Cliente A obtiene su propio perfil scoped (GET /api/portal/client/profile)', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/portal/client/profile', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.id, 'cli-demo-1');
+    assert.strictEqual(res.data.name, 'Cliente Demo Comercial S.A.');
+  });
+
+  // 83. Perfil de cliente no expone campos protegidos
+  await test('83. 1D-B: Perfil de cliente no expone pin, pinHash, password ni passwordHash', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/portal/client/profile', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.pin, undefined);
+    assert.strictEqual(res.data.pinHash, undefined);
+    assert.strictEqual(res.data.password, undefined);
+    assert.strictEqual(res.data.passwordHash, undefined);
+  });
+
+  // 84. Cliente A obtiene únicamente sus finances e installments
+  await test('84. 1D-B: Cliente A obtiene únicamente sus finances e installments', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/portal/client/finances', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(typeof res.data.outstandingDebt === 'number');
+    assert.ok(Array.isArray(res.data.installments));
+    for (const inst of res.data.installments) {
+      assert.strictEqual(String(inst.clientId), 'cli-demo-1');
+    }
+  });
+
+  // 85. Cliente A obtiene únicamente sus transactions
+  await test('85. 1D-B: Cliente A obtiene únicamente sus transactions', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/portal/client/transactions', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data));
+    for (const tx of res.data) {
+      assert.strictEqual(String(tx.clientId), 'cli-demo-1');
+    }
+  });
+
+  // 86. Cliente A obtiene únicamente sus pwa_payments
+  await test('86. 1D-B: Cliente A obtiene únicamente sus pwa_payments', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/portal/client/payments', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data));
+    for (const pay of res.data) {
+      assert.ok(String(pay.entityId) === 'cli-demo-1' || String(pay.clientId) === 'cli-demo-1');
+    }
+  });
+
+  // 87. Cliente A no puede alterar scope con clientId=cli-demo-2 en query
+  await test('87. 1D-B: Cliente A no puede alterar scope con clientId=cli-demo-2 en query', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/portal/client/transactions?clientId=cli-demo-2', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    for (const tx of res.data) {
+      assert.strictEqual(String(tx.clientId), 'cli-demo-1');
+    }
+  });
+
+  // 88. Cliente A no puede alterar scope con isolatedId o headers falsos
+  await test('88. 1D-B: Cliente A no puede alterar scope con isolatedId o headers falsos', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/portal/client/finances?isolatedId=cli-demo-2', {
+      headers: {
+        'Cookie': cookie,
+        'x-client-id': 'cli-demo-2',
+        'x-user-id': 'cli-demo-2'
+      }
+    });
+    assert.strictEqual(res.status, 200);
+    for (const inst of res.data.installments) {
+      assert.strictEqual(String(inst.clientId), 'cli-demo-1');
+    }
+  });
+
+  // 89. Cliente A creando payment con entityId=cli-demo-2 en body es forzado a entityId=cli-demo-1
+  await test('89. 1D-B: Cliente A creando payment con entityId=cli-demo-2 en body es forzado a entityId=cli-demo-1', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const res = await request('/api/portal/client/payments', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({
+        entityId: 'cli-demo-2',
+        clientId: 'cli-demo-2',
+        entityName: 'Tercero Manipulado',
+        amount: 35.5,
+        paymentMethod: 'Pago Móvil',
+        reference: '123456'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.payment.entityId, 'cli-demo-1');
+    assert.strictEqual(res.data.payment.clientId, 'cli-demo-1');
+    assert.strictEqual(res.data.payment.entityName, 'Cliente Demo Comercial S.A.');
+  });
+
+  // 90. Cliente A no puede reportar pago de installment inexistente o de otro cliente (404)
+  await test('90. 1D-B: Cliente A no puede reportar pago de installment ajena (404 Not Found)', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const res = await request('/api/portal/client/installments/inst-no-existente-de-otro/report-payment', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf
+      }
+    });
+    assert.strictEqual(res.status, 404);
+  });
+
+  // 91. Cliente A creando orden con clientId=cli-demo-2 es forzado a clientId=cli-demo-1
+  await test('91. 1D-B: Cliente A creando orden con clientId=cli-demo-2 es forzado a clientId=cli-demo-1', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const res = await request('/api/portal/client/orders', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({
+        clientId: 'cli-demo-2',
+        clientName: 'Hack Client',
+        items: [{ productId: 'p1', name: 'Harina', quantity: 2, price: 1.5, subtotal: 3.0 }]
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.order.clientId, 'cli-demo-1');
+    assert.strictEqual(res.data.order.clientName, 'Cliente Demo Comercial S.A.');
+  });
+
+  // 92. Productor A obtiene su propio perfil scoped (GET /api/portal/producer/profile)
+  await test('92. 1D-B: Productor A obtiene su propio perfil scoped (GET /api/portal/producer/profile)', async () => {
+    const { cookie } = await loginProducerA();
+    const res = await request('/api/portal/producer/profile', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.id, 'sup-demo-1');
+    assert.strictEqual(res.data.name, 'Hacienda El Roble (Productor Demo)');
+  });
+
+  // 93. Perfil de productor no expone secretos ni pin/pinHash
+  await test('93. 1D-B: Perfil de productor no expone secretos ni pin/pinHash', async () => {
+    const { cookie } = await loginProducerA();
+    const res = await request('/api/portal/producer/profile', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.pin, undefined);
+    assert.strictEqual(res.data.pinHash, undefined);
+    assert.strictEqual(res.data.password, undefined);
+    assert.strictEqual(res.data.passwordHash, undefined);
+  });
+
+  // 94. Productor A obtiene únicamente sus trips
+  await test('94. 1D-B: Productor A obtiene únicamente sus trips (GET /api/portal/producer/trips)', async () => {
+    const { cookie } = await loginProducerA();
+    const res = await request('/api/portal/producer/trips', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data));
+    for (const trip of res.data) {
+      assert.strictEqual(String(trip.supplierId), 'sup-demo-1');
+    }
+  });
+
+  // 95. Productor A obtiene únicamente sus transactions
+  await test('95. 1D-B: Productor A obtiene únicamente sus transactions (GET /api/portal/producer/transactions)', async () => {
+    const { cookie } = await loginProducerA();
+    const res = await request('/api/portal/producer/transactions', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data));
+    for (const tx of res.data) {
+      assert.strictEqual(String(tx.supplierId), 'sup-demo-1');
+    }
+  });
+
+  // 96. Productor A obtiene únicamente sus orders
+  await test('96. 1D-B: Productor A obtiene únicamente sus orders (GET /api/portal/producer/orders)', async () => {
+    const { cookie } = await loginProducerA();
+    const res = await request('/api/portal/producer/orders', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data));
+    for (const ord of res.data) {
+      assert.ok(String(ord.entityId) === 'sup-demo-1' || String(ord.supplierId) === 'sup-demo-1');
+    }
+  });
+
+  // 97. Productor A creando orden con entityId=sup-demo-2 es forzado a entityId=sup-demo-1
+  await test('97. 1D-B: Productor A creando orden con entityId=sup-demo-2 es forzado a entityId=sup-demo-1', async () => {
+    const { cookie, csrf } = await loginProducerA();
+    const res = await request('/api/portal/producer/orders', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({
+        entityId: 'sup-demo-2',
+        supplierId: 'sup-demo-2',
+        entityName: 'Hacker Supplier',
+        items: [{ productId: 'p2', name: 'Aceite', quantity: 1, price: 5.0, subtotal: 5.0 }]
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.order.entityId, 'sup-demo-1');
+    assert.strictEqual(res.data.order.supplierId, 'sup-demo-1');
+    assert.strictEqual(res.data.order.entityName, 'Hacienda El Roble (Productor Demo)');
+  });
+
+  // 98. Aislamiento: Cliente no puede acceder a endpoints de productor (403 Forbidden)
+  await test('98. 1D-B: Aislamiento: Cliente no puede acceder a endpoints de productor (403 Forbidden)', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/portal/producer/trips', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 403, 'Cliente debe recibir 403 al llamar endpoint de productor');
+  });
+
+  // 99. Aislamiento: Productor no puede acceder a endpoints de cliente (403 Forbidden)
+  await test('99. 1D-B: Aislamiento: Productor no puede acceder a endpoints de cliente (403 Forbidden)', async () => {
+    const { cookie } = await loginProducerA();
+    const res = await request('/api/portal/client/finances', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 403, 'Productor debe recibir 403 al llamar endpoint de cliente');
+  });
+
+  // 100. Portal no puede acceder a colecciones genéricas internas (401 Unauthorized)
+  await test('100. 1D-B: Portal no puede acceder a colecciones genéricas internas (401 Unauthorized)', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/collections/clients', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 401, 'Usuario portal no debe poder leer /api/collections/clients');
+  });
+
+  // 101. Portal no puede acceder a users internos (401 Unauthorized)
+  await test('101. 1D-B: Portal no puede acceder a users internos (401 Unauthorized)', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/collections/users', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 102. Portal no puede acceder a adminLedger (401 Unauthorized)
+  await test('102. 1D-B: Portal no puede acceder a adminLedger (401 Unauthorized)', async () => {
+    const { cookie } = await loginProducerA();
+    const res = await request('/api/collections/adminLedger', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 103. Configuración pública no expone centralVaultBalance ni secretos
+  await test('103. 1D-B: Configuración pública no expone centralVaultBalance ni secretos', async () => {
+    const res = await request('/api/portal/public-config');
+    assert.strictEqual(res.status, 200);
+    assert.ok(typeof res.data.exchangeRate === 'number');
+    assert.strictEqual(res.data.centralVaultBalance, undefined);
+    assert.strictEqual(res.data.SESSION_SECRET, undefined);
+  });
+
+  // 104. Catálogo público no expone wholesalePrice ni costos mayoristas
+  await test('104. 1D-B: Catálogo público no expone wholesalePrice ni costos mayoristas', async () => {
+    const res = await request('/api/portal/public-catalog');
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data));
+    for (const p of res.data) {
+      assert.strictEqual(p.wholesalePrice, undefined);
+      assert.ok(p.pricePerKg !== undefined || p.sellingPrice !== undefined);
+    }
+  });
+
+  // 105. CSRF obligatorio en POST /api/portal/client/payments (403 sin token)
+  await test('105. 1D-B: CSRF obligatorio en POST /api/portal/client/payments (403 sin token)', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/portal/client/payments', {
+      method: 'POST',
+      headers: { 'Cookie': cookie },
+      body: JSON.stringify({ amount: 10, reference: '123' })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 106. CSRF obligatorio en POST /api/portal/client/orders (403 sin token)
+  await test('106. 1D-B: CSRF obligatorio en POST /api/portal/client/orders (403 sin token)', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/portal/client/orders', {
+      method: 'POST',
+      headers: { 'Cookie': cookie },
+      body: JSON.stringify({ items: [{ productId: 'p1', quantity: 1, price: 1 }] })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 107. CSRF obligatorio en POST /api/portal/producer/orders (403 sin token)
+  await test('107. 1D-B: CSRF obligatorio en POST /api/portal/producer/orders (403 sin token)', async () => {
+    const { cookie } = await loginProducerA();
+    const res = await request('/api/portal/producer/orders', {
+      method: 'POST',
+      headers: { 'Cookie': cookie },
+      body: JSON.stringify({ items: [{ productId: 'p2', quantity: 1, price: 2 }] })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 108. CSRF obligatorio en POST /api/portal/client/installments/:id/report-payment (403 sin token)
+  await test('108. 1D-B: CSRF obligatorio en report-payment de cuotas (403 sin token)', async () => {
+    const { cookie } = await loginClientA();
+    const res = await request('/api/portal/client/installments/inst-1/report-payment', {
+      method: 'POST',
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 109. Regresión CRM: Admin conserva acceso global a colecciones (/api/collections/clients)
+  await test('109. 1D-B: Regresión CRM: Admin conserva acceso global a clients', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/collections/clients', {
+      headers: { 'Cookie': adminCookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data));
+  });
+
+  // 110. Regresión CRM: Admin conserva acceso global a transactions
+  await test('110. 1D-B: Regresión CRM: Admin conserva acceso global a transactions', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/collections/transactions', {
+      headers: { 'Cookie': adminCookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data));
+  });
+
+  // 111. Regresión CRM: Cajero conserva ejecución de venta atómica POS (/api/pos/process-sale)
+  await test('111. 1D-B: Regresión CRM: Cajero conserva ejecución de venta atómica POS', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const cashierCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: {
+        'Cookie': cashierCookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({
+        saleItems: [{ productId: 'test-p', quantityKg: 1, subtotal: 10 }],
+        paidAmount: 10,
+        paymentMethodType: 'Efectivo USD'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 112. Regresión CRM: Accountant / Admin conserva acceso a adminLedger
+  await test('112. 1D-B: Regresión CRM: Admin conserva acceso a adminLedger', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const accCookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/collections/adminLedger', {
+      headers: { 'Cookie': accCookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data));
+  });
+
+  // ============================================================
+  // PRUEBAS DE RATE LIMITER (SE EJECUTAN AL FINAL)
+  // ============================================================
+
+  // 80 (Ahora 113). Rate Limiter de Login de Portal (HTTP 429)
+  await test('113. 1D-A: Intentos fallidos repetidos en login de portal activan Rate Limiter (HTTP 429)', async () => {
     let got429 = false;
     for (let i = 0; i < 15; i++) {
       const res = await request('/api/portal/auth/login', {

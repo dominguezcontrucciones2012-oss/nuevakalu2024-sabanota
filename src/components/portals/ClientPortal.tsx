@@ -1,4 +1,15 @@
-import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc, portalLoginApi, portalLogoutApi, fetchCurrentPortalUserApi } from '../../services/localApi';
+import {
+  portalLoginApi,
+  portalLogoutApi,
+  fetchCurrentPortalUserApi,
+  fetchPortalPublicConfigApi,
+  fetchPortalPublicCatalogApi,
+  fetchPortalClientProfileApi,
+  fetchPortalClientFinancesApi,
+  fetchPortalClientTransactionsApi,
+  fetchPortalClientPaymentsApi,
+  submitPortalClientOrderApi
+} from '../../services/localApi';
 import React, { useState } from 'react';
 import { getUnitLabel } from '../../utils';
 
@@ -73,6 +84,7 @@ export default function ClientPortal({
   // Authentication & Session States for Each Phone Simulator (Server-Side Session with req.session.portalUser)
   const [loggedClient, setLoggedClient] = useState<ClientProfile | null>(null);
   const [loggedSupplier, setLoggedSupplier] = useState<SupplierProfile | null>(null);
+  const [isInitializing, setIsInitializing] = useState(true);
 
   // Login inputs
   const [clientPhoneInput, setClientPhoneInput] = useState<string>('');
@@ -160,60 +172,34 @@ export default function ClientPortal({
     }
   };
 
-  // Initialization splash and Server-Side Portal Session bootstrap
-  const [isInitializing, setIsInitializing] = useState(true);
-
   React.useEffect(() => {
     let mounted = true;
     fetchCurrentPortalUserApi()
       .then((portalUser) => {
         if (!mounted) return;
-        if (portalUser) {
-          if (portalUser.type === 'client') {
-            const client = clients.find(c => String(c.id) === String(portalUser.id)) || ({
-              id: portalUser.id,
-              name: portalUser.name,
-              phone: '',
-              email: '',
-              cedula: '',
-              address: '',
-              creditLimitUsd: 0,
-              currentDebtUsd: 0,
-              points: 0,
-              loyaltyPoints: 0,
-              outstandingDebt: 0,
-              status: 'active'
-            } as unknown as ClientProfile);
-            setLoggedClient(client);
-          } else if (portalUser.type === 'producer' || portalUser.type === 'supplier') {
-            const supplier = suppliers.find(s => String(s.id) === String(portalUser.id)) || ({
-              id: portalUser.id,
-              name: portalUser.name,
-              contact: '',
-              phone: '',
-              email: '',
-              rif: '',
-              type: 'producer',
-              balanceUsd: 0,
-              balanceOwed: 0,
-              status: 'active'
-            } as unknown as SupplierProfile);
-            setLoggedSupplier(supplier);
-          }
+        if (portalUser && portalUser.type === 'client') {
+          fetchPortalClientProfileApi()
+            .then((client) => {
+              if (mounted && client) {
+                setLoggedClient(client);
+              }
+              setIsInitializing(false);
+            })
+            .catch(() => {
+              if (mounted) setIsInitializing(false);
+            });
         } else {
           setLoggedClient(null);
           setLoggedSupplier(null);
+          setIsInitializing(false);
         }
-        setIsInitializing(false);
       })
       .catch(() => {
         if (mounted) setIsInitializing(false);
       });
 
     return () => { mounted = false; };
-  }, [clients, suppliers]);
-
-
+  }, []);
 
   // Shopping Catalog Local States (Separate for each portal)
   const [clientSearch, setClientSearch] = useState('');
@@ -245,21 +231,18 @@ export default function ClientPortal({
   const [clientMovements, setClientMovements] = useState<any[]>([]);
   const [clientAllTxs, setClientAllTxs] = useState<any[]>([]);
 
+  // Carga de configuración pública (tasa BCV)
   React.useEffect(() => {
-    const unsubSettings = onCollectionSnapshot('settings', (docs) => {
-      const general = docs.find((d: any) => d.id === 'general');
-      if (general && general.exchangeRate > 0) {
-        setPwaBcvRate(general.exchangeRate);
-      } else {
-        const cached = localStorage.getItem('kalu_bcv_rate');
-        if (cached && parseFloat(cached) > 0) {
-          setPwaBcvRate(parseFloat(cached));
-        }
+    let mounted = true;
+    fetchPortalPublicConfigApi().then((cfg) => {
+      if (mounted && cfg && cfg.exchangeRate > 0) {
+        setPwaBcvRate(cfg.exchangeRate);
       }
     });
-    return () => { unsubSettings(); };
+    return () => { mounted = false; };
   }, []);
 
+  // Carga de datos scoped del cliente autenticado (finanzas, cuotas, transacciones y pagos)
   React.useEffect(() => {
     if (!loggedClient) {
        setActiveInstallments([]);
@@ -269,62 +252,58 @@ export default function ClientPortal({
        return;
     }
 
-    // Listener de cuotas (deuda real y por pagar)
-    const unsubInst = onCollectionSnapshot('installments', (data) => {
-        const inst = data.filter((d: any) => d.clientId === loggedClient.id && (d.status === 'pending' || d.status === 'in_review'));
-        setActiveInstallments(inst);
+    let mounted = true;
+
+    // 1. Finanzas y Cuotas Scoped
+    fetchPortalClientFinancesApi().then((finances) => {
+      if (!mounted || !finances) return;
+      const inst = (finances.installments || []).filter((d: any) => d.status === 'pending' || d.status === 'in_review');
+      setActiveInstallments(inst);
     });
 
-    // Listener de historial de transacciones, compras y pagos
-    const unsubPayments = onCollectionSnapshot('transactions', (data) => {
-        const userTxs = data.filter((d: any) => d.clientId === loggedClient.id);
-        setClientAllTxs(userTxs);
-        
-        // Pagos aprobados o en revisión
-        const payments = userTxs.filter((d: any) => d.category === 'ingresos_cobranza' || d.category === 'pagos');
-        payments.sort((a: any, b: any) => new Date(b.date || b.timestamp || 0).getTime() - new Date(a.date || a.timestamp || 0).getTime());
-        
-        // Listener complementario de pagos reportados en PWA pendientes
-        const unsubPwaPay = onCollectionSnapshot('pwa_payments', (pwaData) => {
-          const clientPwa = pwaData.filter((p: any) => p.entityId === loggedClient.id);
-          const pendingPwaAsTxs = clientPwa.map((p: any) => ({
-            id: p.id,
-            clientId: p.entityId,
-            entity: p.entityName,
-            category: 'ingresos_cobranza',
-            date: p.date || p.timestamp,
-            amount: p.amount,
-            status: p.status === 'pending' ? 'pending_approval' : p.status,
-            reference: p.reference,
-            receiptImageUrl: p.receiptImageUrl || p.receiptImage,
-            isPwaReported: true
-          }));
+    // 2. Historial de Transacciones y Pagos Scoped
+    Promise.all([
+      fetchPortalClientTransactionsApi(),
+      fetchPortalClientPaymentsApi()
+    ]).then(([userTxs, clientPwa]) => {
+      if (!mounted) return;
+      setClientAllTxs(userTxs || []);
 
-          // Unir pagos reportados en revisión con pagos ya conciliados
-          const combinedPayments = [...pendingPwaAsTxs.filter((p: any) => p.status === 'pending_approval'), ...payments];
-          combinedPayments.sort((a: any, b: any) => new Date(b.date || b.timestamp || 0).getTime() - new Date(a.date || a.timestamp || 0).getTime());
-          setPaymentHistory(combinedPayments);
-        });
+      const payments = (userTxs || []).filter((d: any) => d.category === 'ingresos_cobranza' || d.category === 'pagos');
+      payments.sort((a: any, b: any) => new Date(b.date || b.timestamp || 0).getTime() - new Date(a.date || a.timestamp || 0).getTime());
 
-        // Movimientos generales (compras a crédito, iniciales y abonos)
-        const movements = userTxs.map((tx: any) => {
-          const isPayment = tx.category === 'ingresos_cobranza' || tx.category === 'pagos' || tx.isAbono;
-          return {
-            id: tx.id,
-            title: isPayment ? 'Abono a Cuenta' : 'Compra en Tienda',
-            date: tx.date || (tx.timestamp ? new Date(tx.timestamp).toLocaleDateString('es-ES') : 'Reciente'),
-            amount: Number(tx.amount || tx.totalUSD || tx.total || 0),
-            isPayment: isPayment
-          };
-        });
-        movements.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
-        setClientMovements(movements.slice(0, 10));
+      const pendingPwaAsTxs = (clientPwa || []).map((p: any) => ({
+        id: p.id,
+        clientId: p.entityId || p.clientId,
+        entity: p.entityName,
+        category: 'ingresos_cobranza',
+        date: p.date || p.timestamp,
+        amount: p.amount,
+        status: p.status === 'pending' ? 'pending_approval' : p.status,
+        reference: p.reference,
+        receiptImageUrl: p.receiptImageUrl || p.receiptImage,
+        isPwaReported: true
+      }));
+
+      const combinedPayments = [...pendingPwaAsTxs.filter((p: any) => p.status === 'pending_approval'), ...payments];
+      combinedPayments.sort((a: any, b: any) => new Date(b.date || b.timestamp || 0).getTime() - new Date(a.date || a.timestamp || 0).getTime());
+      setPaymentHistory(combinedPayments);
+
+      const movements = (userTxs || []).map((tx: any) => {
+        const isPayment = tx.category === 'ingresos_cobranza' || tx.category === 'pagos' || tx.isAbono;
+        return {
+          id: tx.id,
+          title: isPayment ? 'Abono a Cuenta' : 'Compra en Tienda',
+          date: tx.date || (tx.timestamp ? new Date(tx.timestamp).toLocaleDateString('es-ES') : 'Reciente'),
+          amount: Number(tx.amount || tx.totalUSD || tx.total || 0),
+          isPayment: isPayment
+        };
+      });
+      movements.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      setClientMovements(movements.slice(0, 10));
     });
 
-    return () => {
-       unsubInst();
-       unsubPayments();
-    };
+    return () => { mounted = false; };
   }, [loggedClient]);
 
   React.useEffect(() => {
@@ -559,7 +538,7 @@ export default function ClientPortal({
     };
 
     try {
-      await addLocalDoc('pwa_remote_orders', newOrder);
+      await submitPortalClientOrderApi(newOrder);
       setClientCart([]);
       setShowClientCartModal(false);
       onAddNotification('Pedido enviado al cajero con éxito', 'success');

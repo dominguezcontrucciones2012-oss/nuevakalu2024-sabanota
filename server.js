@@ -229,10 +229,26 @@ function requirePortalAuth(req, res, next) {
     };
   } else {
     delete req.session.portalUser;
-    return res.status(401).json({ error: 'Tipo de portal no reconocido' });
+    return res.status(401).json({ error: 'Tipo de portal inválido' });
   }
 
   next();
+}
+
+function requirePortalType(...allowedTypes) {
+  return (req, res, next) => {
+    if (!req.portalUser || !req.portalUser.type) {
+      return res.status(401).json({ error: 'Autenticación de portal requerida' });
+    }
+    const currentType = String(req.portalUser.type).toLowerCase();
+    const isAllowed = allowedTypes.some(t => String(t).toLowerCase() === currentType);
+    if (!isAllowed) {
+      return res.status(403).json({
+        error: `Acceso denegado: tipo de portal '${currentType}' no autorizado para este recurso`
+      });
+    }
+    next();
+  };
 }
 
 // Políticas de Acceso a Colecciones (Fase 1C)
@@ -602,6 +618,473 @@ app.post('/api/portal/auth/logout', verifyCsrf, (req, res) => {
     });
   } else {
     res.json({ success: true, message: 'Sesión de portal cerrada' });
+  }
+});
+
+// ============================================================
+// ENDPOINTS SCOPED Y PÚBLICOS DE PORTALES (FASE 1D-B)
+// ============================================================
+
+// 1. Configuración Pública de Portal (Solo tasa BCV y banners; sin bóveda ni credenciales)
+app.get('/api/portal/public-config', (req, res) => {
+  try {
+    const settings = readCollection('settings');
+    const general = Array.isArray(settings) ? (settings.find(s => s.id === 'general') || {}) : (settings || {});
+    const banners = readCollection('banners');
+    res.json({
+      exchangeRate: Number(general.exchangeRate || general.bcvRate || 807.38),
+      lastRateSync: general.lastRateSync || new Date().toISOString(),
+      banners: Array.isArray(banners) ? banners : []
+    });
+  } catch (err) {
+    console.error('[Portal Public Config Error]:', err);
+    res.status(500).json({ error: 'Error obteniendo configuración pública' });
+  }
+});
+
+// 2. Catálogo Público de Productos (Sanitizado; sin wholesalePrice ni costos)
+app.get('/api/portal/public-catalog', (req, res) => {
+  try {
+    const products = readCollection('products');
+    const sanitized = (Array.isArray(products) ? products : []).map(p => ({
+      id: p.id,
+      name: p.name,
+      category: p.category || 'Víveres',
+      pricePerKg: Number(p.pricePerKg || p.sellingPrice || p.price || 0),
+      sellingPrice: Number(p.sellingPrice || p.pricePerKg || p.price || 0),
+      stockKg: Number(p.stockKg ?? p.stock ?? 0),
+      stock: Number(p.stock ?? p.stockKg ?? 0),
+      unit: p.unit || 'Und',
+      imageUrl: p.imageUrl || p.image || '',
+      image: p.image || p.imageUrl || '',
+      description: p.description || ''
+    }));
+    res.json(sanitized);
+  } catch (err) {
+    console.error('[Portal Public Catalog Error]:', err);
+    res.status(500).json({ error: 'Error obteniendo catálogo público' });
+  }
+});
+
+// --- PORTAL CLIENTE: ENDPOINTS SCOPED (requirePortalAuth + requirePortalType('client')) ---
+
+// 3. Perfil del Cliente Autenticado (Scoped a req.portalUser.id)
+app.get('/api/portal/client/profile', requirePortalAuth, requirePortalType('client'), (req, res) => {
+  try {
+    const clients = readCollection('clients');
+    const client = clients.find(c => String(c.id) === String(req.portalUser.id));
+    if (!client || (client.status && client.status !== 'active')) {
+      return res.status(404).json({ error: 'Cliente no encontrado o inactivo' });
+    }
+    const safeProfile = {
+      id: client.id,
+      name: client.name,
+      phone: client.phone || client.telefono || '',
+      email: client.email || '',
+      cedula: client.cedula || client.ci || client.ciRif || client.idNumber || '',
+      address: client.address || client.direccion || '',
+      creditLimitUsd: Number(client.creditLimitUsd || client.creditLimit || 0),
+      currentDebtUsd: Number(client.currentDebtUsd || client.outstandingDebt || 0),
+      outstandingDebt: Number(client.outstandingDebt || client.currentDebtUsd || 0),
+      loyaltyPoints: Number(client.loyaltyPoints || client.points || 0),
+      points: Number(client.loyaltyPoints || client.points || 0),
+      tier: client.tier || 'K1',
+      status: client.status || 'active'
+    };
+    res.json(safeProfile);
+  } catch (err) {
+    console.error('[Portal Client Profile Error]:', err);
+    res.status(500).json({ error: 'Error obteniendo perfil del cliente' });
+  }
+});
+
+// 4. Finanzas y Cuotas del Cliente Autenticado (Scoped a req.portalUser.id)
+app.get('/api/portal/client/finances', requirePortalAuth, requirePortalType('client'), (req, res) => {
+  try {
+    const clients = readCollection('clients');
+    const client = clients.find(c => String(c.id) === String(req.portalUser.id));
+    if (!client) return res.status(404).json({ error: 'Cliente no encontrado' });
+
+    const allInstallments = readCollection('installments');
+    const myInstallments = allInstallments
+      .filter(i => String(i.clientId) === String(req.portalUser.id) || String(i.client_id) === String(req.portalUser.id))
+      .map(i => ({
+        id: i.id,
+        clientId: req.portalUser.id,
+        amount: Number(i.amount || i.amountUSD || 0),
+        amountUSD: Number(i.amountUSD || i.amount || 0),
+        dueDate: i.dueDate,
+        status: i.status || 'pending',
+        installmentNumber: i.installmentNumber || 1,
+        totalInstallments: i.totalInstallments || 1,
+        pointsEarned: i.pointsEarned || 0,
+        createdAt: i.createdAt,
+        type: i.type || 'cotidiano'
+      }));
+
+    res.json({
+      outstandingDebt: Number(client.outstandingDebt || client.currentDebtUsd || 0),
+      creditLimitUsd: Number(client.creditLimitUsd || client.creditLimit || 0),
+      loyaltyPoints: Number(client.loyaltyPoints || client.points || 0),
+      tier: client.tier || 'K1',
+      installments: myInstallments
+    });
+  } catch (err) {
+    console.error('[Portal Client Finances Error]:', err);
+    res.status(500).json({ error: 'Error obteniendo finanzas del cliente' });
+  }
+});
+
+// 5. Historial de Transacciones del Cliente Autenticado (Scoped a req.portalUser.id)
+app.get('/api/portal/client/transactions', requirePortalAuth, requirePortalType('client'), (req, res) => {
+  try {
+    const allTxs = readCollection('transactions');
+    const myTxs = allTxs
+      .filter(t => String(t.clientId) === String(req.portalUser.id))
+      .map(t => ({
+        id: t.id,
+        entity: t.entity || req.portalUser.name,
+        clientId: req.portalUser.id,
+        date: t.date,
+        createdAt: t.createdAt,
+        invoiceNumber: t.invoiceNumber,
+        amount: Number(t.amount || 0),
+        debtAmount: Number(t.debtAmount || 0),
+        isIncome: Boolean(t.isIncome),
+        status: t.status,
+        paymentMethod: t.paymentMethod,
+        category: t.category,
+        items: t.items || [],
+        addedPayments: t.addedPayments || [],
+        changeAmount: t.changeAmount,
+        changeCurrency: t.changeCurrency,
+        bcvRateAtSettlement: t.bcvRateAtSettlement
+      }));
+    res.json(myTxs);
+  } catch (err) {
+    console.error('[Portal Client Txs Error]:', err);
+    res.status(500).json({ error: 'Error obteniendo transacciones del cliente' });
+  }
+});
+
+// 6. Pagos Reportados por el Cliente Autenticado (Scoped a req.portalUser.id)
+app.get('/api/portal/client/payments', requirePortalAuth, requirePortalType('client'), (req, res) => {
+  try {
+    const allPayments = readCollection('pwa_payments');
+    const myPayments = allPayments.filter(p => String(p.entityId) === String(req.portalUser.id) || String(p.clientId) === String(req.portalUser.id));
+    res.json(myPayments);
+  } catch (err) {
+    console.error('[Portal Client Payments GET Error]:', err);
+    res.status(500).json({ error: 'Error obteniendo pagos del cliente' });
+  }
+});
+
+// 7. Reportar Pago PWA por el Cliente (Ownership forzado por req.portalUser.id + CSRF)
+app.post('/api/portal/client/payments', requirePortalAuth, requirePortalType('client'), verifyCsrf, async (req, res) => {
+  try {
+    const { amount, paymentMethod, reference, bank, receiptImageUrl, notes, installmentId, date } = req.body || {};
+    if (!amount || Number(amount) <= 0) {
+      return res.status(400).json({ error: 'Monto de pago requerido y debe ser mayor a cero' });
+    }
+
+    const newPayment = {
+      id: `pwa-pay-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      entityId: req.portalUser.id,
+      clientId: req.portalUser.id,
+      entityName: req.portalUser.name,
+      amount: Number(amount),
+      paymentMethod: String(paymentMethod || 'Pago Móvil'),
+      reference: String(reference || ''),
+      bank: String(bank || ''),
+      receiptImageUrl: receiptImageUrl || '',
+      receiptImage: receiptImageUrl || '',
+      notes: String(notes || ''),
+      installmentId: installmentId ? String(installmentId) : null,
+      date: date || new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+      status: 'pending',
+      createdAt: new Date().toISOString()
+    };
+
+    await withCollectionLock('pwa_payments', async () => {
+      const pwaPayments = readCollection('pwa_payments');
+      pwaPayments.push(newPayment);
+      writeCollection('pwa_payments', pwaPayments, { action: 'add', collection: 'pwa_payments', doc: newPayment });
+    });
+
+    if (installmentId) {
+      await withCollectionLock('installments', async () => {
+        const installments = readCollection('installments');
+        const inst = installments.find(i => String(i.id) === String(installmentId) && (String(i.clientId) === String(req.portalUser.id) || String(i.client_id) === String(req.portalUser.id)));
+        if (inst && inst.status === 'pending') {
+          inst.status = 'in_review';
+          writeCollection('installments', installments, { action: 'update', collection: 'installments', doc: inst });
+        }
+      });
+    }
+
+    res.json({ success: true, payment: newPayment });
+  } catch (err) {
+    console.error('[Portal Client Payment POST Error]:', err);
+    res.status(500).json({ error: 'Error registrando reporte de pago' });
+  }
+});
+
+// 8. Actualizar Estatus de Cuota por Reporte de Pago (Ownership verificado en backend)
+app.post('/api/portal/client/installments/:id/report-payment', requirePortalAuth, requirePortalType('client'), verifyCsrf, async (req, res) => {
+  try {
+    const installmentId = req.params.id;
+    let updatedDoc = null;
+    await withCollectionLock('installments', async () => {
+      const installments = readCollection('installments');
+      const inst = installments.find(i => String(i.id) === String(installmentId) && (String(i.clientId) === String(req.portalUser.id) || String(i.client_id) === String(req.portalUser.id)));
+      if (!inst) {
+        return;
+      }
+      inst.status = 'in_review';
+      writeCollection('installments', installments, { action: 'update', collection: 'installments', doc: inst });
+      updatedDoc = inst;
+    });
+
+    if (!updatedDoc) {
+      return res.status(404).json({ error: 'Cuota no encontrada o no pertenece al cliente' });
+    }
+    res.json({ success: true, installment: updatedDoc });
+  } catch (err) {
+    console.error('[Portal Report Installment Error]:', err);
+    res.status(500).json({ error: 'Error actualizando estatus de cuota' });
+  }
+});
+
+// 9. Pedidos Remotos del Cliente Autenticado (Scoped a req.portalUser.id)
+app.get('/api/portal/client/orders', requirePortalAuth, requirePortalType('client'), (req, res) => {
+  try {
+    const orders = readCollection('mobileOrders');
+    const myOrders = orders.filter(o => String(o.clientId) === String(req.portalUser.id) || String(o.entityId) === String(req.portalUser.id));
+    res.json(myOrders);
+  } catch (err) {
+    console.error('[Portal Client Orders GET Error]:', err);
+    res.status(500).json({ error: 'Error obteniendo pedidos del cliente' });
+  }
+});
+
+// 10. Crear Pedido Remoto de Cliente (Ownership forzado por req.portalUser.id + CSRF)
+app.post('/api/portal/client/orders', requirePortalAuth, requirePortalType('client'), verifyCsrf, async (req, res) => {
+  try {
+    const { items, totalAmount, total, paymentMethod, notes } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'El pedido debe contener al menos un producto (items)' });
+    }
+
+    const sanitizedItems = items.map(it => ({
+      productId: String(it.productId || it.id || ''),
+      name: String(it.name || it.productName || 'Producto'),
+      quantity: Number(it.quantity || it.quantityKg || 1),
+      price: Number(it.price || it.unitPrice || 0),
+      subtotal: Number(it.subtotal || (Number(it.price || 0) * Number(it.quantity || 1))),
+      unit: it.unit || 'Und'
+    }));
+
+    const finalTotal = Number(totalAmount ?? total ?? sanitizedItems.reduce((acc, it) => acc + it.subtotal, 0));
+
+    const newOrder = {
+      id: `ord-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      clientId: req.portalUser.id,
+      entityId: req.portalUser.id,
+      clientName: req.portalUser.name,
+      entityName: req.portalUser.name,
+      items: sanitizedItems,
+      totalAmount: finalTotal,
+      total: finalTotal,
+      paymentMethod: String(paymentMethod || 'contado'),
+      notes: String(notes || ''),
+      status: 'Pendiente',
+      createdAt: new Date().toISOString()
+    };
+
+    await withCollectionLock('mobileOrders', async () => {
+      const orders = readCollection('mobileOrders');
+      orders.push(newOrder);
+      writeCollection('mobileOrders', orders, { action: 'add', collection: 'mobileOrders', doc: newOrder });
+    });
+
+    res.json({ success: true, order: newOrder });
+  } catch (err) {
+    console.error('[Portal Client Order POST Error]:', err);
+    res.status(500).json({ error: 'Error registrando pedido del cliente' });
+  }
+});
+
+// 11. Aprobar Transacción con QR por el Cliente (Ownership verificado en backend)
+app.post('/api/portal/client/transactions/:id/approve', requirePortalAuth, requirePortalType('client'), verifyCsrf, async (req, res) => {
+  try {
+    const txId = req.params.id;
+    const { authNonce, authSignature } = req.body || {};
+    let updatedTx = null;
+
+    await withCollectionLock('transactions', async () => {
+      const txs = readCollection('transactions');
+      const tx = txs.find(t => String(t.id) === String(txId) && String(t.clientId) === String(req.portalUser.id));
+      if (!tx) return;
+
+      tx.status = 'approved';
+      tx.authNonce = authNonce || '';
+      tx.authSignature = authSignature || '';
+      tx.approvedByClientAt = Date.now();
+      writeCollection('transactions', txs, { action: 'update', collection: 'transactions', doc: tx });
+      updatedTx = tx;
+    });
+
+    if (!updatedTx) {
+      return res.status(404).json({ error: 'Transacción no encontrada o no pertenece al cliente' });
+    }
+    res.json({ success: true, transaction: updatedTx });
+  } catch (err) {
+    console.error('[Portal Client Tx Approve Error]:', err);
+    res.status(500).json({ error: 'Error aprobando transacción' });
+  }
+});
+
+// --- PORTAL PRODUCTOR: ENDPOINTS SCOPED (requirePortalAuth + requirePortalType('producer')) ---
+
+// 12. Perfil del Productor Autenticado (Scoped a req.portalUser.id)
+app.get('/api/portal/producer/profile', requirePortalAuth, requirePortalType('producer'), (req, res) => {
+  try {
+    const suppliers = readCollection('suppliers');
+    const supplier = suppliers.find(s => String(s.id) === String(req.portalUser.id));
+    if (!supplier || (supplier.status && supplier.status !== 'active')) {
+      return res.status(404).json({ error: 'Productor no encontrado o inactivo' });
+    }
+    const safeProfile = {
+      id: supplier.id,
+      name: supplier.name,
+      contact: supplier.contact || '',
+      phone: supplier.phone || supplier.telefono || '',
+      email: supplier.email || '',
+      rif: supplier.rif || supplier.cedula || supplier.ci || '',
+      type: supplier.type || 'producer',
+      balanceUsd: Number(supplier.balanceUsd || supplier.balanceOwed || 0),
+      balanceOwed: Number(supplier.balanceOwed || 0),
+      storeDebt: Number(supplier.storeDebt || 0),
+      status: supplier.status || 'active'
+    };
+    res.json(safeProfile);
+  } catch (err) {
+    console.error('[Portal Producer Profile Error]:', err);
+    res.status(500).json({ error: 'Error obteniendo perfil del productor' });
+  }
+});
+
+// 13. Viajes de Queso del Productor Autenticado (Scoped a req.portalUser.id)
+app.get('/api/portal/producer/trips', requirePortalAuth, requirePortalType('producer'), (req, res) => {
+  try {
+    const trips = readCollection('cheeseTrips');
+    const myTrips = trips
+      .filter(t => String(t.supplierId) === String(req.portalUser.id) || String(t.producerId) === String(req.portalUser.id))
+      .map(t => ({
+        id: t.id,
+        supplierId: req.portalUser.id,
+        supplierName: t.supplierName || req.portalUser.name,
+        date: t.date,
+        createdAt: t.createdAt,
+        kilos: Number(t.kilos || t.totalKg || 0),
+        pricePerKg: Number(t.pricePerKg || t.price || 0),
+        totalUsd: Number(t.totalUsd || t.total || 0),
+        status: t.status || 'Completado',
+        notes: t.notes || ''
+      }));
+    res.json(myTrips);
+  } catch (err) {
+    console.error('[Portal Producer Trips Error]:', err);
+    res.status(500).json({ error: 'Error obteniendo viajes del productor' });
+  }
+});
+
+// 14. Transacciones y Compras en Tienda del Productor Autenticado (Scoped a req.portalUser.id)
+app.get('/api/portal/producer/transactions', requirePortalAuth, requirePortalType('producer'), (req, res) => {
+  try {
+    const txs = readCollection('transactions');
+    const myTxs = txs
+      .filter(t => String(t.supplierId) === String(req.portalUser.id))
+      .map(t => ({
+        id: t.id,
+        entity: t.entity || req.portalUser.name,
+        supplierId: req.portalUser.id,
+        date: t.date,
+        createdAt: t.createdAt,
+        invoiceNumber: t.invoiceNumber,
+        amount: Number(t.amount || 0),
+        debtAmount: Number(t.debtAmount || 0),
+        isIncome: Boolean(t.isIncome),
+        status: t.status,
+        paymentMethod: t.paymentMethod,
+        category: t.category,
+        items: t.items || [],
+        bcvRateAtSettlement: t.bcvRateAtSettlement
+      }));
+    res.json(myTxs);
+  } catch (err) {
+    console.error('[Portal Producer Txs Error]:', err);
+    res.status(500).json({ error: 'Error obteniendo transacciones del productor' });
+  }
+});
+
+// 15. Pedidos de Insumos del Productor Autenticado (Scoped a req.portalUser.id)
+app.get('/api/portal/producer/orders', requirePortalAuth, requirePortalType('producer'), (req, res) => {
+  try {
+    const orders = readCollection('mobileOrders');
+    const myOrders = orders.filter(o => String(o.entityId) === String(req.portalUser.id) || String(o.supplierId) === String(req.portalUser.id));
+    res.json(myOrders);
+  } catch (err) {
+    console.error('[Portal Producer Orders GET Error]:', err);
+    res.status(500).json({ error: 'Error obteniendo pedidos del productor' });
+  }
+});
+
+// 16. Crear Pedido de Insumos de Productor (Ownership forzado por req.portalUser.id + CSRF)
+app.post('/api/portal/producer/orders', requirePortalAuth, requirePortalType('producer'), verifyCsrf, async (req, res) => {
+  try {
+    const { items, total, totalAmount, paymentMethod, notes } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'El pedido debe contener al menos un producto (items)' });
+    }
+
+    const sanitizedItems = items.map(it => ({
+      productId: String(it.productId || it.id || ''),
+      name: String(it.name || it.productName || 'Producto'),
+      quantity: Number(it.quantity || it.quantityKg || 1),
+      price: Number(it.price || it.unitPrice || 0),
+      subtotal: Number(it.subtotal || (Number(it.price || 0) * Number(it.quantity || 1))),
+      unit: it.unit || 'Und'
+    }));
+
+    const finalTotal = Number(total ?? totalAmount ?? sanitizedItems.reduce((acc, it) => acc + it.subtotal, 0));
+
+    const newOrder = {
+      id: `ord-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      entityId: req.portalUser.id,
+      supplierId: req.portalUser.id,
+      entityName: req.portalUser.name,
+      supplierName: req.portalUser.name,
+      items: sanitizedItems,
+      total: finalTotal,
+      totalAmount: finalTotal,
+      paymentMethod: String(paymentMethod || 'fiado'),
+      notes: String(notes || ''),
+      status: 'Pendiente',
+      date: new Date().toISOString(),
+      createdAt: new Date().toISOString()
+    };
+
+    await withCollectionLock('mobileOrders', async () => {
+      const orders = readCollection('mobileOrders');
+      orders.push(newOrder);
+      writeCollection('mobileOrders', orders, { action: 'add', collection: 'mobileOrders', doc: newOrder });
+    });
+
+    res.json({ success: true, order: newOrder });
+  } catch (err) {
+    console.error('[Portal Producer Order POST Error]:', err);
+    res.status(500).json({ error: 'Error registrando pedido del productor' });
   }
 });
 

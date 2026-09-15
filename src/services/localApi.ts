@@ -346,3 +346,186 @@ export const fetchCurrentPortalUserApi = async () => {
     return null;
   }
 };
+
+// --- PORTAL SCOPED & PUBLIC API HELPERS (FASE 1D-B) ---
+
+// 1. Configuración Pública de Portal
+export const fetchPortalPublicConfigApi = async () => {
+  try {
+    const res = await fetch(`${API_URL}/portal/public-config`, { credentials: 'include' });
+    if (!res.ok) throw new Error('Error al obtener configuración pública');
+    return await res.json();
+  } catch (e) {
+    console.error('fetchPortalPublicConfigApi error:', e);
+    return { exchangeRate: 807.38, banners: [] };
+  }
+};
+
+// 2. Catálogo Público de Productos
+export const fetchPortalPublicCatalogApi = async () => {
+  try {
+    const res = await fetch(`${API_URL}/portal/public-catalog`, { credentials: 'include' });
+    if (!res.ok) throw new Error('Error al obtener catálogo público');
+    return await res.json();
+  } catch (e) {
+    console.error('fetchPortalPublicCatalogApi error:', e);
+    return [];
+  }
+};
+
+// 3. Perfil del Cliente Autenticado
+export const fetchPortalClientProfileApi = async () => {
+  const res = await fetch(`${API_URL}/portal/client/profile`, { credentials: 'include' });
+  if (!res.ok) return null;
+  return await res.json();
+};
+
+// 4. Finanzas y Cuotas del Cliente Autenticado
+export const fetchPortalClientFinancesApi = async () => {
+  const res = await fetch(`${API_URL}/portal/client/finances`, { credentials: 'include' });
+  if (!res.ok) return null;
+  return await res.json();
+};
+
+// 5. Historial de Transacciones del Cliente
+export const fetchPortalClientTransactionsApi = async () => {
+  const res = await fetch(`${API_URL}/portal/client/transactions`, { credentials: 'include' });
+  if (!res.ok) return [];
+  return await res.json();
+};
+
+// 6. Pagos Reportados del Cliente
+export const fetchPortalClientPaymentsApi = async () => {
+  const res = await fetch(`${API_URL}/portal/client/payments`, { credentials: 'include' });
+  if (!res.ok) return [];
+  return await res.json();
+};
+
+// 7. Reportar Pago PWA de Cliente
+export const submitPortalClientPaymentApi = async (paymentPayload: any) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/portal/client/payments`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include',
+    body: JSON.stringify(paymentPayload)
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Error al reportar pago');
+  }
+  return await res.json();
+};
+
+// 8. Actualizar Estatus de Cuota por Reporte de Pago
+export const reportPortalInstallmentPaymentApi = async (installmentId: string) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/portal/client/installments/${installmentId}/report-payment`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include'
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Error al actualizar estatus de cuota');
+  }
+  return await res.json();
+};
+
+// 9. Pedidos de Cliente
+export const fetchPortalClientOrdersApi = async () => {
+  const res = await fetch(`${API_URL}/portal/client/orders`, { credentials: 'include' });
+  if (!res.ok) return [];
+  return await res.json();
+};
+
+// 10. Crear Pedido de Cliente
+export const submitPortalClientOrderApi = async (orderPayload: any) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/portal/client/orders`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include',
+    body: JSON.stringify(orderPayload)
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Error al enviar pedido');
+  }
+  return await res.json();
+};
+
+// 11. Aprobar Transacción QR por Cliente
+export const approvePortalClientTransactionApi = async (txId: string, approvalData: { authNonce: string; authSignature: string }) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/portal/client/transactions/${txId}/approve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include',
+    body: JSON.stringify(approvalData)
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Error al aprobar transacción');
+  }
+  return await res.json();
+};
+
+// 12. Perfil del Productor Autenticado
+export const fetchPortalProducerProfileApi = async () => {
+  const res = await fetch(`${API_URL}/portal/producer/profile`, { credentials: 'include' });
+  if (!res.ok) return null;
+  return await res.json();
+};
+
+// 13. Viajes de Queso del Productor Autenticado
+export const fetchPortalProducerTripsApi = async () => {
+  const res = await fetch(`${API_URL}/portal/producer/trips`, { credentials: 'include' });
+  if (!res.ok) return [];
+  return await res.json();
+};
+
+// 14. Transacciones del Productor Autenticado
+export const fetchPortalProducerTransactionsApi = async () => {
+  const res = await fetch(`${API_URL}/portal/producer/transactions`, { credentials: 'include' });
+  if (!res.ok) return [];
+  return await res.json();
+};
+
+// 15. Pedidos de Insumos del Productor
+export const fetchPortalProducerOrdersApi = async () => {
+  const res = await fetch(`${API_URL}/portal/producer/orders`, { credentials: 'include' });
+  if (!res.ok) return [];
+  return await res.json();
+};
+
+// 16. Crear Pedido de Insumos de Productor
+export const submitPortalProducerOrderApi = async (orderPayload: any) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/portal/producer/orders`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include',
+    body: JSON.stringify(orderPayload)
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Error al enviar pedido de insumos');
+  }
+  return await res.json();
+};

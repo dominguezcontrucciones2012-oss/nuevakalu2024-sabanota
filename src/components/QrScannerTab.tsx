@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { Camera, AlertCircle, ShieldCheck, Lock, RefreshCw, X } from 'lucide-react';
 import { signTransactionApproval } from '../utils/crypto';
-import { fetchCollection, updateLocalDoc } from '../services/localApi';
+import { fetchPortalClientTransactionsApi, approvePortalClientTransactionApi } from '../services/localApi';
 
 interface QrScannerTabProps {
   loggedClient: any;
@@ -40,20 +40,12 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
     setFetchedTx(null);
 
     try {
-      const transactions = await fetchCollection('transactions');
+      const transactions = await fetchPortalClientTransactionsApi();
       const clientList = Array.isArray(transactions) ? transactions : [];
       
       console.log(`[QR DIAGNOSTIC] Total de transacciones descargadas del servidor: ${clientList.length}`);
 
-      const pending = clientList.filter((tx: any) => 
-        (tx.status === 'pending_approval') &&
-        (
-          String(tx.clientId) === String(loggedClient?.id) ||
-          (tx.clientCi && (tx.clientCi === loggedClient?.cedula || tx.clientCi === loggedClient?.ciRif || tx.clientCi === loggedClient?.ci)) ||
-          (tx.clientCiRif && (tx.clientCiRif === loggedClient?.cedula || tx.clientCiRif === loggedClient?.ciRif)) ||
-          (tx.clientPhone && tx.clientPhone === loggedClient?.phone)
-        )
-      );
+      const pending = clientList.filter((tx: any) => tx.status === 'pending_approval');
       
       console.log(`[QR DIAGNOSTIC] Órdenes pendientes que coinciden con este cliente:`, pending);
 
@@ -317,16 +309,12 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
                         timestamp
                       });
 
-                      const payload = { 
-                        status: 'approved',
+                      console.log('[QR DIAGNOSTIC] 🚀 Enviando aprobación al servidor (approvePortalClientTransactionApi):', { nonce, signature });
+
+                      await approvePortalClientTransactionApi(fetchedTx.id, {
                         authNonce: nonce,
-                        authSignature: signature,
-                        approvedByClientAt: timestamp
-                      };
-
-                      console.log('[QR DIAGNOSTIC] 🚀 Enviando actualización al servidor (updateLocalDoc):', payload);
-
-                      await updateLocalDoc('transactions', fetchedTx.id, payload);
+                        authSignature: signature
+                      });
                       
                       onAddNotification('¡Compra Firmada Digitalmente y Aprobada!', 'success');
                       setShowQrPaymentModal(false);

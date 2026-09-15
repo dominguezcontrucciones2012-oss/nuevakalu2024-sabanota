@@ -6,7 +6,18 @@ import {
 } from 'lucide-react';
 import { MobilePortalsViewProps } from '../MobilePortalsView';
 import { SupplierProfile, Transaction, CheeseProduct, MobileOrder } from '../../types';
-import { addLocalDoc, onCollectionSnapshot, portalLoginApi, portalLogoutApi, fetchCurrentPortalUserApi } from '../../services/localApi';
+import {
+  portalLoginApi,
+  portalLogoutApi,
+  fetchCurrentPortalUserApi,
+  fetchPortalPublicConfigApi,
+  fetchPortalPublicCatalogApi,
+  fetchPortalProducerProfileApi,
+  fetchPortalProducerTripsApi,
+  fetchPortalProducerTransactionsApi,
+  fetchPortalProducerOrdersApi,
+  submitPortalProducerOrderApi
+} from '../../services/localApi';
 import KaluLoader from '../KaluLoader';
 import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
 
@@ -52,46 +63,61 @@ export default function ProducerPortal({
   const [loggedSupplier, setLoggedSupplier] = useState<SupplierProfile | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
 
+  const [producerTrips, setProducerTrips] = useState<any[]>([]);
+  const [producerTxs, setProducerTxs] = useState<any[]>([]);
+  const [producerMobileOrders, setProducerMobileOrders] = useState<any[]>([]);
+  const [publicRate, setPublicRate] = useState<number>(activeRate);
+  const [catalogProducts, setCatalogProducts] = useState<CheeseProduct[]>([]);
+
   useEffect(() => {
     let mounted = true;
     fetchCurrentPortalUserApi()
       .then((portalUser) => {
         if (!mounted) return;
         if (portalUser && (portalUser.type === 'producer' || portalUser.type === 'supplier')) {
-          const supplier = suppliers.find(s => String(s.id) === String(portalUser.id)) || ({
-            id: portalUser.id,
-            name: portalUser.name,
-            contact: '',
-            phone: '',
-            email: '',
-            rif: '',
-            type: 'producer',
-            balanceUsd: 0,
-            balanceOwed: 0,
-            status: 'active'
-          } as unknown as SupplierProfile);
-          setLoggedSupplier(supplier);
+          fetchPortalProducerProfileApi().then((profile) => {
+            if (mounted && profile) {
+              setLoggedSupplier(profile);
+            }
+            setIsInitializing(false);
+          }).catch(() => {
+            if (mounted) setIsInitializing(false);
+          });
         } else {
           setLoggedSupplier(null);
+          setIsInitializing(false);
         }
-        setIsInitializing(false);
       })
       .catch(() => {
         if (mounted) setIsInitializing(false);
       });
     return () => { mounted = false; };
-  }, [suppliers]);
+  }, []);
 
-  // Mantiene los datos del productor actualizados en tiempo real si hay cambios en Firebase/Backend
   useEffect(() => {
-    if (loggedSupplier && suppliers.length > 0) {
-      const fresh = suppliers.find(s => String(s.id) === String(loggedSupplier.id));
-      if (fresh && JSON.stringify(fresh) !== JSON.stringify(loggedSupplier)) {
-        setLoggedSupplier(fresh);
-        localStorage.setItem('kaluMobileSupplierData', JSON.stringify(fresh));
-      }
+    if (!loggedSupplier) {
+      setProducerTrips([]);
+      setProducerTxs([]);
+      setProducerMobileOrders([]);
+      return;
     }
-  }, [suppliers]);
+    let mounted = true;
+    Promise.all([
+      fetchPortalProducerTripsApi(),
+      fetchPortalProducerTransactionsApi(),
+      fetchPortalProducerOrdersApi(),
+      fetchPortalPublicConfigApi(),
+      fetchPortalPublicCatalogApi()
+    ]).then(([trips, txs, orders, cfg, prods]) => {
+      if (!mounted) return;
+      if (trips) setProducerTrips(trips);
+      if (txs) setProducerTxs(txs);
+      if (orders) setProducerMobileOrders(orders);
+      if (cfg && cfg.exchangeRate > 0) setPublicRate(cfg.exchangeRate);
+      if (prods && prods.length > 0) setCatalogProducts(prods);
+    });
+    return () => { mounted = false; };
+  }, [loggedSupplier]);
 
   useEffect(() => {
     const handleError = (e: ErrorEvent) => {
@@ -174,11 +200,13 @@ export default function ProducerPortal({
   const activeBanners = liveBanners.length > 0 ? liveBanners : STORE_BANNERS;
 
   useEffect(() => {
-    const unsub = onCollectionSnapshot('banners', snap => {
-      const arr = snap.filter((d: any) => d.active === true);
-      setLiveBanners(arr);
+    let mounted = true;
+    fetchPortalPublicConfigApi().then((cfg) => {
+      if (mounted && cfg && Array.isArray(cfg.banners)) {
+        setLiveBanners(cfg.banners.filter((d: any) => d.active === true));
+      }
     });
-    return () => unsub();
+    return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
@@ -393,7 +421,7 @@ export default function ProducerPortal({
         status: 'Pendiente'
       };
 
-      await addLocalDoc('mobileOrders', newOrder);
+      await submitPortalProducerOrderApi(newOrder);
       onAddNotification('Pedido enviado a caja exitosamente', 'success');
       setSupplierCart([]);
       setInputQuantities({});
@@ -405,14 +433,14 @@ export default function ProducerPortal({
     }
   };
 
-  const baseProducts = (products && products.length > 0) ? products : [
+  const baseProducts = (catalogProducts && catalogProducts.length > 0) ? catalogProducts : ((products && products.length > 0) ? products : [
     { id: 'm1', name: 'Harina PAN Blanca 1kg', category: 'Víveres', sellingPrice: 1.10, imageUrl: '' },
     { id: 'm2', name: 'Arroz Mary 1kg', category: 'Víveres', sellingPrice: 1.20, imageUrl: '' },
     { id: 'm3', name: 'Aceite Mazeite 1L', category: 'Víveres', sellingPrice: 3.50, imageUrl: '' },
     { id: 'm4', name: 'Tripa de Moto Rin 18', category: 'Insumos/Repuestos', sellingPrice: 5.00, imageUrl: '' },
     { id: 'm5', name: 'Aceite de Motor 4T', category: 'Insumos/Repuestos', sellingPrice: 6.50, imageUrl: '' },
     { id: 'm6', name: 'Queso Duro Llanero', category: 'Víveres', sellingPrice: 4.50, imageUrl: '' }
-  ] as CheeseProduct[];
+  ] as CheeseProduct[]);
 
   const filteredSupplierProducts = baseProducts.filter(p => {
     const matchesSearch = (p.name || '').toLowerCase().includes((supplierSearch || '').toLowerCase());
@@ -433,7 +461,8 @@ export default function ProducerPortal({
   });
 
   const supNameClean = (loggedSupplier?.name || '').trim().toLowerCase();
-  const producerTxs = (transactions || []).filter((t: any) => {
+  const allAvailableTxs = producerTxs.length > 0 ? producerTxs : (transactions || []);
+  const effectiveProducerTxs = allAvailableTxs.filter((t: any) => {
     if (!t || !loggedSupplier) return false;
     const entityMatch = t.entity && String(t.entity).trim().toLowerCase() === supNameClean;
     const supplierIdMatch = (t.supplierId && String(t.supplierId) === String(loggedSupplier.id)) ||
@@ -471,7 +500,7 @@ export default function ProducerPortal({
     return parseCustomDate(tx.date || '') || 0;
   };
 
-  const producerArrimes = (producerTxs || []).filter((t: any) => {
+  const producerArrimes = (effectiveProducerTxs || []).filter((t: any) => {
     const isCategory = t.category === 'compras';
     const hasKg = getTxKg(t) > 0;
     const notesLower = String(t.notes || '').toLowerCase();
@@ -480,7 +509,7 @@ export default function ProducerPortal({
     return (isCategory || hasKg || isArrimeNote) && notAdvance;
   });
 
-  const producerMobileOrders = (mobileOrders || []).filter(o => String(o.entityId) === String(loggedSupplier?.id));
+  const effectiveOrders = producerMobileOrders.length > 0 ? producerMobileOrders : (mobileOrders || []).filter(o => String(o.entityId) === String(loggedSupplier?.id));
 
   // Cálculo de Kilos Semanales (últimos 7 días)
   const nowMs = Date.now();
