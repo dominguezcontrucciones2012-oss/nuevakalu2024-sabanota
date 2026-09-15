@@ -57,7 +57,8 @@ import {
   atomicWriteJsonFile,
   withTransaction,
   readCollection,
-  withCollectionLock
+  withCollectionLock,
+  recordAuditLog
 } from '../server.js';
 import crypto from 'crypto';
 
@@ -8014,6 +8015,584 @@ async function runTests() {
     assert.strictEqual(createdTx.authNonce.length, 64, 'El authNonce backend debe tener 64 caracteres hex');
   });
 
+  // ============================================================
+  // FASE 1I — AUDIT LOGGING Y TRAZABILIDAD (TESTS 1I-01 A 1I-25)
+  // ============================================================
+
+  // 1I-01: Audit log generado en login exitoso
+  await test('1I-01: Audit log generado en login CRM exitoso', async () => {
+    const res = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+
+    const logs = readCollection('audit_logs');
+    const loginLog = logs.find(l => l.action === 'auth.login' && l.result === 'success');
+    assert.ok(loginLog, 'Debe existir un log de auditoría para auth.login exitoso');
+    assert.strictEqual(loginLog.actorType, 'crm');
+    assert.strictEqual(loginLog.resourceType, 'auth');
+    assert.ok(loginLog.id.startsWith('audit-'));
+    assert.ok(loginLog.timestamp);
+  });
+
+  // 1I-02: Login fallido no registra credenciales
+  await test('1I-02: Login fallido no registra credenciales en metadata ni en audit log', async () => {
+    const badPass = 'ExtremelySecretBadPassword999!';
+    const res = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: badPass
+      })
+    });
+    assert.strictEqual(res.status, 401);
+
+    const logs = readCollection('audit_logs');
+    const deniedLog = logs.find(l => l.action === 'auth.login' && l.result === 'denied');
+    assert.ok(deniedLog, 'Debe registrarse evento de acceso denegado');
+    const logStr = JSON.stringify(deniedLog);
+    assert.strictEqual(logStr.includes(badPass), false, 'El audit log JAMÁS debe contener la contraseña enviada');
+  });
+
+  // 1I-03: Logout auditado
+  await test('1I-03: Logout CRM auditado correctamente', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const logoutRes = await request('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf }
+    });
+    assert.strictEqual(logoutRes.status, 200);
+
+    const logs = readCollection('audit_logs');
+    const logoutLog = logs.find(l => l.action === 'auth.logout' && l.result === 'success');
+    assert.ok(logoutLog, 'Debe existir un log de auditoría para auth.logout');
+  });
+
+  // 1I-04: Actor CRM derivado de sesión
+  await test('1I-04: Actor CRM y rol derivados exclusivamente de req.session', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const prodId = `prod-audit-4-${Date.now()}`;
+    await request('/api/products', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ id: prodId, name: 'Producto Audit 1I-04', pricePerKg: 10, stockKg: 10 })
+    });
+
+    const res = await request(`/api/products/${prodId}`, {
+      method: 'PATCH',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ adjustStockKg: 2 })
+    });
+    assert.strictEqual(res.status, 200);
+
+    const logs = readCollection('audit_logs');
+    const stockLog = logs.filter(l => l.action === 'inventory.stock_adjust' && l.resourceId === prodId).pop();
+    assert.ok(stockLog);
+    assert.strictEqual(stockLog.actorType, 'crm');
+    assert.strictEqual(stockLog.actorRole, 'admin');
+    assert.strictEqual(stockLog.actorId, 'usr-admin-dev');
+  });
+
+  // 1I-05: Actor portal derivado de sesión portal
+  await test('1I-05: Actor portal derivado exclusivamente de req.session.portalUser', async () => {
+    const loginRes = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '678000'
+      })
+    });
+    assert.strictEqual(loginRes.status, 200);
+
+    const logs = readCollection('audit_logs');
+    const portalLog = logs.filter(l => l.action === 'portal.login' && l.result === 'success').pop();
+    assert.ok(portalLog);
+    assert.strictEqual(portalLog.actorType, 'portal');
+    assert.strictEqual(portalLog.actorRole, 'client');
+    assert.strictEqual(portalLog.actorId, 'cli-demo-1');
+  });
+
+  // 1I-06: Rol enviado por body no puede falsificar actorRole
+  await test('1I-06: Inyección de role en body no puede falsificar actorRole en auditoría', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const prodId = `prod-audit-6-${Date.now()}`;
+    await request('/api/products', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ id: prodId, name: 'Producto Audit 1I-06', pricePerKg: 10, stockKg: 10 })
+    });
+
+    const res = await request(`/api/products/${prodId}`, {
+      method: 'PATCH',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        adjustStockKg: 1,
+        role: 'super_root_god_mode',
+        userRole: 'owner',
+        actorRole: 'fake_role'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+
+    const logs = readCollection('audit_logs');
+    const stockLog = logs.filter(l => l.action === 'inventory.stock_adjust' && l.resourceId === prodId).pop();
+    assert.strictEqual(stockLog.actorRole, 'admin', 'El rol DEBE provenir de req.user.role en el servidor');
+  });
+
+  // 1I-07: userId enviado por body no puede falsificar actorId
+  await test('1I-07: Inyección de userId en body no puede falsificar actorId en auditoría', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const prodId = `prod-audit-7-${Date.now()}`;
+    await request('/api/products', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ id: prodId, name: 'Producto Audit 1I-07', pricePerKg: 10, stockKg: 10 })
+    });
+
+    const res = await request(`/api/products/${prodId}`, {
+      method: 'PATCH',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        adjustStockKg: 1,
+        userId: 'attacker-injected-id',
+        actorId: 'attacker-injected-id'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+
+    const logs = readCollection('audit_logs');
+    const stockLog = logs.filter(l => l.action === 'inventory.stock_adjust' && l.resourceId === prodId).pop();
+    assert.strictEqual(stockLog.actorId, 'usr-admin-dev', 'El actorId DEBE provenir de la sesión');
+  });
+
+  // 1I-08: Audit log no contiene passwords, PINs ni hashes
+  await test('1I-08: Sanitización automática: Audit log no almacena password/PIN/passwordHash/pinHash', async () => {
+    await recordAuditLog({
+      action: 'test.sanitization',
+      resourceType: 'test',
+      result: 'success',
+      metadata: {
+        safeField: 'ok',
+        password: 'mySecretPassword123',
+        passwordHash: '$2a$10$abcdef123456',
+        pin: '123456',
+        pinHash: '$2a$10$pinHashValue'
+      }
+    });
+
+    const logs = readCollection('audit_logs');
+    const testLog = logs.find(l => l.action === 'test.sanitization');
+    assert.ok(testLog);
+    assert.strictEqual(testLog.metadata.safeField, 'ok');
+    assert.strictEqual(testLog.metadata.password, undefined);
+    assert.strictEqual(testLog.metadata.passwordHash, undefined);
+    assert.strictEqual(testLog.metadata.pin, undefined);
+    assert.strictEqual(testLog.metadata.pinHash, undefined);
+  });
+
+  // 1I-09: Audit log no contiene tokens ni secretos
+  await test('1I-09: Sanitización automática: Audit log no almacena CSRF/session/recovery tokens ni secrets', async () => {
+    await recordAuditLog({
+      action: 'test.tokens_sanitization',
+      resourceType: 'test',
+      result: 'success',
+      metadata: {
+        token: 'secret_token_val',
+        csrfToken: 'csrf_secret_val',
+        resetToken: 'reset_token_val',
+        apiKey: 'gemini_api_key_val',
+        sessionSecret: 'super_secret'
+      }
+    });
+
+    const logs = readCollection('audit_logs');
+    const testLog = logs.find(l => l.action === 'test.tokens_sanitization');
+    assert.ok(testLog);
+    assert.strictEqual(Object.keys(testLog.metadata).length, 0, 'Todos los campos de tokens sensibles deben ser removidos');
+  });
+
+  // 1I-10: process-sale success auditado dentro de la transacción
+  await test('1I-10: POS process-sale exitoso persiste audit log con commit', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const prodId = `prod-pos-audit-${Date.now()}`;
+    await request('/api/products', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ id: prodId, name: 'Producto Audit POS', pricePerKg: 10, stockKg: 50 })
+    });
+
+    const saleRes = await request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        saleItems: [{ productId: prodId, quantityKg: 1, subtotal: 10 }],
+        paidAmount: 10,
+        customerName: 'Cliente Audit Test'
+      })
+    });
+    assert.strictEqual(saleRes.status, 200);
+
+    const logs = readCollection('audit_logs');
+    const saleLog = logs.filter(l => l.action === 'pos.process_sale' && l.result === 'success').pop();
+    assert.ok(saleLog, 'Debe existir audit log de pos.process_sale success');
+    assert.strictEqual(saleLog.metadata.itemCount, 1);
+    assert.strictEqual(saleLog.metadata.customerName, 'Cliente Audit Test');
+  });
+
+  // 1I-11: process-sale rollback no produce audit success
+  await test('1I-11: Rollback en process-sale no produce audit log de éxito', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const initialSuccessCount = readCollection('audit_logs').filter(l => l.action === 'pos.process_sale' && l.result === 'success').length;
+
+    // Intentar venta inválida (saleItems no array o vacío)
+    const saleRes = await request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        saleItems: []
+      })
+    });
+    assert.strictEqual(saleRes.status, 400);
+
+    const afterSuccessCount = readCollection('audit_logs').filter(l => l.action === 'pos.process_sale' && l.result === 'success').length;
+    assert.strictEqual(afterSuccessCount, initialSuccessCount, 'No debe emitirse log de éxito en venta abortada');
+  });
+
+  // 1I-12: reset-accounting auditado
+  await test('1I-12: reset-accounting auditado de forma transaccional', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    if (adminResetLimiter.store && adminResetLimiter.store.resetAll) {
+      adminResetLimiter.store.resetAll();
+    }
+    const res = await request('/api/admin/reset-accounting', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf }
+    });
+    assert.strictEqual(res.status, 200);
+
+    const logs = readCollection('audit_logs');
+    const resetLog = logs.filter(l => l.action === 'admin.reset_accounting' && l.result === 'success').pop();
+    assert.ok(resetLog, 'Debe existir audit log de reset_accounting');
+    assert.strictEqual(resetLog.actorRole, 'admin');
+  });
+
+  // 1I-13: restore-backup auditado
+  await test('1I-13: restore-backup auditado de forma transaccional', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    if (adminRestoreLimiter.store && adminRestoreLimiter.store.resetAll) {
+      adminRestoreLimiter.store.resetAll();
+    }
+    const res = await request('/api/restore-backup', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        collections: {
+          banners: []
+        }
+      })
+    });
+    assert.strictEqual(res.status, 200);
+
+    const logs = readCollection('audit_logs');
+    const restoreLog = logs.filter(l => l.action === 'admin.restore_backup' && l.result === 'success').pop();
+    assert.ok(restoreLog, 'Debe existir audit log de restore_backup');
+  });
+
+  // 1I-14: QR approval auditado
+  await test('1I-14: Aprobación QR de cliente auditada con éxito', async () => {
+    // 1. Crear transacción pending_approval
+    const txId = `tx-audit-qr-${Date.now()}`;
+    const testTx = {
+      id: txId,
+      clientId: 'cli-demo-1',
+      clientCi: 'V-12345678',
+      amount: 50,
+      status: 'pending_approval',
+      createdAt: Date.now(),
+      authNonce: '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff'
+    };
+    await withCollectionLock('transactions', async () => {
+      const txs = readCollection('transactions');
+      txs.push(testTx);
+      writeCollection('transactions', txs);
+    });
+
+    // 2. Login cliente
+    const portalAuth = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '678000'
+      })
+    });
+    assert.strictEqual(portalAuth.status, 200);
+
+    // 3. Aprobar QR
+    const appRes = await request(`/api/portal/client/transactions/${txId}/approve`, {
+      method: 'POST',
+      headers: {
+        'Cookie': portalAuth.setCookie,
+        'x-csrf-token': portalAuth.data.csrfToken
+      },
+      body: JSON.stringify({
+        authNonce: testTx.authNonce
+      })
+    });
+    assert.strictEqual(appRes.status, 200);
+
+    const logs = readCollection('audit_logs');
+    const qrLog = logs.filter(l => l.action === 'qr.approve' && l.resourceId === txId && l.result === 'success').pop();
+    assert.ok(qrLog, 'Debe existir audit log de qr.approve success');
+    assert.strictEqual(qrLog.actorId, 'cli-demo-1');
+  });
+
+  // 1I-15: QR replay rechazado y auditado de forma segura
+  await test('1I-15: Intento de re-aprobación QR rechazado y auditado como failure/denied', async () => {
+    const portalAuth = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '678000'
+      })
+    });
+
+    // Intentar aprobar transacción inexistente
+    const res = await request('/api/portal/client/transactions/tx-non-existent-999/approve', {
+      method: 'POST',
+      headers: {
+        'Cookie': portalAuth.setCookie,
+        'x-csrf-token': portalAuth.data.csrfToken
+      },
+      body: JSON.stringify({ authNonce: 'abc' })
+    });
+    assert.strictEqual(res.status, 404);
+
+    const logs = readCollection('audit_logs');
+    const deniedLog = logs.filter(l => l.action === 'qr.approve' && l.resourceId === 'tx-non-existent-999').pop();
+    assert.ok(deniedLog, 'Debe registrarse evento de auditoría para QR no encontrado');
+    assert.strictEqual(deniedLog.result, 'denied');
+  });
+
+  // 1I-16: Invalid WhatsApp signature auditada sin PII
+  await test('1I-16: Firma inválida en Webhook WhatsApp auditada sin registrar payload sensible', async () => {
+    const payload = JSON.stringify({ entry: [{ id: '123' }] });
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-hub-signature-256': 'sha256=0000000000000000000000000000000000000000000000000000000000000000'
+      },
+      body: payload
+    });
+    assert.strictEqual(res.status, 403);
+
+    const logs = readCollection('audit_logs');
+    const whLog = logs.filter(l => l.action === 'webhook.whatsapp' && l.result === 'denied').pop();
+    assert.ok(whLog, 'Debe auditarse la firma de webhook denegada');
+    assert.strictEqual(whLog.metadata.reason, 'invalid_signature');
+  });
+
+  // 1I-17: Webhook replay auditado
+  await test('1I-17: Webhook replay auditado de forma segura', async () => {
+    const appSecret = process.env.WHATSAPP_APP_SECRET || 'kalu_dev_app_secret_meta_hmac_2026';
+    const rawBody = JSON.stringify({
+      entry: [{
+        changes: [{
+          value: {
+            messages: [{ id: 'wamid.HBgLTestAuditReplay123' }]
+          }
+        }]
+      }]
+    });
+    const hmac = crypto.createHmac('sha256', appSecret).update(rawBody).digest('hex');
+
+    // Primera llamada (success)
+    const res1 = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-hub-signature-256': `sha256=${hmac}`
+      },
+      body: rawBody
+    });
+    assert.strictEqual(res1.status, 200);
+
+    // Segunda llamada (replay detectado)
+    const res2 = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-hub-signature-256': `sha256=${hmac}`
+      },
+      body: rawBody
+    });
+    assert.strictEqual(res2.status, 200);
+    assert.strictEqual(res2.data.status, 'EVENT_ALREADY_PROCESSED');
+
+    const logs = readCollection('audit_logs');
+    const replayLog = logs.filter(l => l.action === 'webhook.whatsapp_replay').pop();
+    assert.ok(replayLog, 'Debe registrarse audit log de webhook replay');
+  });
+
+  // 1I-18: RBAC denied auditado
+  await test('1I-18: Intento de acceso a recurso administrativo sin rol admin queda auditado como denied', async () => {
+    // Login como cajero
+    const cajeroAuth = await loginCashierD2();
+
+    // Intentar acceder a endpoint exclusivo de admin
+    const res = await request('/api/rbac/admin-only', {
+      headers: { 'Cookie': cajeroAuth.cookie }
+    });
+    assert.strictEqual(res.status, 403);
+
+    const logs = readCollection('audit_logs');
+    const rbacLog = logs.filter(l => l.action === 'security.rbac_denied').pop();
+    assert.ok(rbacLog, 'Debe auditarse security.rbac_denied');
+    assert.strictEqual(rbacLog.result, 'denied');
+    assert.strictEqual(rbacLog.actorRole, 'cajero');
+  });
+
+  // 1I-19: CSRF rejection auditada sin token
+  await test('1I-19: CSRF token inválido auditado sin exponer el token', async () => {
+    const { cookie } = await loginAdminD2();
+    const res = await request('/api/auth/logout', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': 'attacker_invalid_csrf_token_value_999'
+      }
+    });
+    assert.strictEqual(res.status, 403);
+
+    const logs = readCollection('audit_logs');
+    const csrfLog = logs.filter(l => l.action === 'security.csrf_denied').pop();
+    assert.ok(csrfLog, 'Debe registrarse security.csrf_denied');
+    assert.strictEqual(JSON.stringify(csrfLog).includes('attacker_invalid_csrf_token_value_999'), false, 'No debe filtrarse el token en logs');
+  });
+
+  // 1I-20: Audit endpoint solo admin
+  await test('1I-20: GET /api/admin/audit-logs exige autenticación de administrador (401 / 403)', async () => {
+    // 1. Sin auth -> 401
+    const anonRes = await request('/api/admin/audit-logs');
+    assert.strictEqual(anonRes.status, 401);
+
+    // 2. Cajero -> 403
+    const cajeroAuth = await loginCashierD2();
+    const cajeroRes = await request('/api/admin/audit-logs', {
+      headers: { 'Cookie': cajeroAuth.cookie }
+    });
+    assert.strictEqual(cajeroRes.status, 403);
+
+    // 3. Admin -> 200
+    const { cookie } = await loginAdminD2();
+    const adminRes = await request('/api/admin/audit-logs', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(adminRes.status, 200);
+    assert.ok(Array.isArray(adminRes.data.logs));
+  });
+
+  // 1I-21: Audit endpoint no permite mutación ni acceso genérico
+  await test('1I-21: audit_logs está bloqueada contra mutaciones y lecturas genéricas vía /api/collections', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+
+    // 1. GET /api/collections/audit_logs -> 403
+    const getRes = await request('/api/collections/audit_logs', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(getRes.status, 403);
+
+    // 2. POST /api/collections/audit_logs -> 403
+    const postRes = await request('/api/collections/audit_logs', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ fake: 'audit' })
+    });
+    assert.strictEqual(postRes.status, 403);
+
+    // 3. PATCH /api/collections/audit_logs/123 -> 403
+    const patchRes = await request('/api/collections/audit_logs/123', {
+      method: 'PATCH',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ fake: 'mod' })
+    });
+    assert.strictEqual(patchRes.status, 403);
+
+    // 4. DELETE /api/collections/audit_logs/123 -> 403
+    const delRes = await request('/api/collections/audit_logs/123', {
+      method: 'DELETE',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf }
+    });
+    assert.strictEqual(delRes.status, 403);
+  });
+
+  // 1I-22: Paginación y filtros en audit endpoint
+  await test('1I-22: Paginación y filtros funcionan correctamente en /api/admin/audit-logs', async () => {
+    const { cookie } = await loginAdminD2();
+    const page1Res = await request('/api/admin/audit-logs?page=1&limit=5', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(page1Res.status, 200);
+    assert.strictEqual(page1Res.data.page, 1);
+    assert.strictEqual(page1Res.data.limit, 5);
+    assert.ok(page1Res.data.logs.length <= 5);
+    assert.ok(page1Res.data.total >= page1Res.data.logs.length);
+    assert.ok(page1Res.data.totalPages >= 1);
+  });
+
+  // 1I-23: Audit log append-only a nivel de aplicación
+  await test('1I-23: Audit log es estrictamente append-only a nivel de aplicación', async () => {
+    const initialCount = readCollection('audit_logs').length;
+    await recordAuditLog({
+      action: 'test.append_only',
+      resourceType: 'system',
+      result: 'success'
+    });
+    const afterCount = readCollection('audit_logs').length;
+    assert.strictEqual(afterCount, initialCount + 1);
+  });
+
+  // 1I-24: Concurrencia de audit events no pierde eventos
+  await test('1I-24: Concurrencia: 10 escrituras simultáneas de audit logs persisten todos los eventos', async () => {
+    const uniqueConcurrencyAction = `test.concurrency_${Date.now()}`;
+    const promises = [];
+    for (let i = 0; i < 10; i++) {
+      promises.push(recordAuditLog({
+        action: uniqueConcurrencyAction,
+        resourceType: 'system',
+        result: 'success',
+        metadata: { index: i }
+      }));
+    }
+    await Promise.all(promises);
+
+    const logs = readCollection('audit_logs');
+    const concurrentLogs = logs.filter(l => l.action === uniqueConcurrencyAction);
+    assert.strictEqual(concurrentLogs.length, 10, 'Deben haberse persistido exactamente 10 eventos sin pérdida');
+  });
+
+  // 1I-25: Metadata no contiene secretos en ninguna circunstancia
+  await test('1I-25: Verificación global: ningun audit log registrado contiene secrets o hashes', async () => {
+    const allLogs = readCollection('audit_logs');
+    for (const log of allLogs) {
+      assert.ok(!log.metadata?.password, 'No password');
+      assert.ok(!log.metadata?.passwordHash, 'No passwordHash');
+      assert.ok(!log.metadata?.pin, 'No pin');
+      assert.ok(!log.metadata?.pinHash, 'No pinHash');
+      assert.ok(!log.metadata?.csrfToken, 'No csrfToken');
+      assert.ok(!log.metadata?.resetToken, 'No resetToken');
+    }
+  });
+
   // 80 (Ahora 113). Rate Limiter de Login de Portal (HTTP 429)
   await test('113. 1D-A: Intentos fallidos repetidos en login de portal activan Rate Limiter (HTTP 429)', async () => {
     let got429 = false;
@@ -8037,6 +8616,9 @@ async function runTests() {
   // 1G-B-09: Operaciones administrativas destructivas (/api/admin/reset-accounting) activan 429 ante flood
   await test('395. TEST 1G-B-09: POST /api/admin/reset-accounting activa HTTP 429 ante intentos repetitivos', async () => {
     const { cookie, csrf } = await loginAdminD2();
+    if (adminResetLimiter.store && adminResetLimiter.store.resetAll) {
+      adminResetLimiter.store.resetAll();
+    }
     let got429 = false;
     for (let i = 0; i < 6; i++) {
       const res = await request('/api/admin/reset-accounting', {

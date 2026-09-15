@@ -720,6 +720,13 @@ function requireRole(...allowedRoles) {
     const hasRole = allowedRoles.some(r => String(r).toLowerCase() === userRole);
 
     if (!hasRole) {
+      recordAuditLog({
+        req,
+        action: 'security.rbac_denied',
+        resourceType: 'security',
+        result: 'denied',
+        metadata: { path: req.path, userRole, requiredRoles: allowedRoles }
+      });
       return res.status(403).json({
         error: 'Acceso denegado: permisos insuficientes para esta operación',
         requiredRoles: allowedRoles
@@ -1137,14 +1144,21 @@ function requirePortalType(...allowedTypes) {
   };
 }
 
-// Políticas de Acceso a Colecciones (Fase 1C / 1D-D.2)
-const ADMIN_ONLY_COLLECTIONS = new Set(['adminLedger', 'business_debts', 'settings', 'vehicle_trips', 'users', 'accounting']);
-const SENSITIVE_CORE_COLLECTIONS = new Set(['users', 'clients', 'transactions', 'installments', 'bills', 'settings', 'adminLedger', 'business_debts', 'products', 'kardex', 'suppliers']);
+// Políticas de Acceso a Colecciones (Fase 1C / 1D-D.2 / 1I)
+const ADMIN_ONLY_COLLECTIONS = new Set(['adminLedger', 'business_debts', 'settings', 'vehicle_trips', 'users', 'accounting', 'audit_logs']);
+const SENSITIVE_CORE_COLLECTIONS = new Set(['users', 'clients', 'transactions', 'installments', 'bills', 'settings', 'adminLedger', 'business_debts', 'products', 'kardex', 'suppliers', 'audit_logs']);
 const ALLOWED_DELETION_COLLECTIONS = new Set(['banners', 'daily_drafts', 'photo_album', 'voice_notes', 'mobileOrders', 'admin_voice_pending']);
 
 function requireCollectionRead(req, res, next) {
   const collectionName = req.params.name;
   const userRole = String(req.user?.role || '').toLowerCase();
+
+  // Colección de auditoría: protegida contra lectura genérica directa
+  if (collectionName === 'audit_logs') {
+    return res.status(403).json({
+      error: 'Operación denegada: consulta de auditoría restringida al endpoint administrativo /api/admin/audit-logs.'
+    });
+  }
 
   // Colecciones estrictamente administrativas y financieras
   if (ADMIN_ONLY_COLLECTIONS.has(collectionName)) {
@@ -1161,6 +1175,13 @@ function requireCollectionRead(req, res, next) {
 function requireCollectionWrite(req, res, next) {
   const collectionName = req.params.name;
   const userRole = String(req.user?.role || '').toLowerCase();
+
+  // Colección de auditoría: append-only a nivel de aplicación (sin mutaciones vía API genérica)
+  if (collectionName === 'audit_logs') {
+    return res.status(403).json({
+      error: 'Operación denegada: audit_logs es append-only interno y no permite escritura vía API genérica.'
+    });
+  }
 
   // Colecciones estrictamente administrativas
   if (ADMIN_ONLY_COLLECTIONS.has(collectionName)) {
@@ -1196,6 +1217,98 @@ function requireCollectionWrite(req, res, next) {
   }
 
   next();
+}
+
+/**
+ * Helper centralizado para registrar eventos de auditoría (Fase 1I: Append-Only a nivel de aplicación)
+ * Identidad 100% server-side desde sesión. Nunca confía en headers/body para actorId o rol.
+ * Sanitiza automáticamente cualquier metadata para excluir secretos, tokens o credenciales.
+ */
+async function recordAuditLog({
+  req = null,
+  actorType = null,
+  actorId = null,
+  actorRole = null,
+  action,
+  resourceType,
+  resourceId = null,
+  result = 'success',
+  metadata = {},
+  ip = null,
+  userAgent = null,
+  tx = null
+}) {
+  try {
+    // 1. Resolver identidad del actor desde la sesión server-side
+    let resolvedActorType = actorType || 'system';
+    let resolvedActorId = actorId || null;
+    let resolvedActorRole = actorRole || null;
+
+    if (req) {
+      if (req.session?.userId) {
+        resolvedActorType = 'crm';
+        resolvedActorId = req.session.userId;
+        resolvedActorRole = req.user?.role || req.session.userRole || null;
+      } else if (req.session?.portalUser) {
+        resolvedActorType = 'portal';
+        resolvedActorId = req.session.portalUser.id;
+        resolvedActorRole = req.session.portalUser.type || req.session.portalType || null;
+      } else if (!actorType) {
+        resolvedActorType = 'anonymous';
+      }
+    }
+
+    // 2. Resolver IP y User-Agent de forma segura
+    const resolvedIp = ip || (req ? (req.ip || req.socket?.remoteAddress || 'unknown') : 'system');
+    const resolvedUserAgent = userAgent || (req ? (req.get('user-agent') || 'unknown') : 'system');
+
+    // 3. Sanitizar metadata: remover cualquier secreto, contraseña o token
+    const sanitizedMetadata = { ...metadata };
+    const FORBIDDEN_METADATA_KEYS = [
+      'password', 'passwordHash', 'pin', 'pinHash', 'secret',
+      'token', 'csrfToken', 'resetToken', 'authSignature', 'recoveryCode',
+      'apiKey', 'cookie', 'authorization', 'sessionSecret'
+    ];
+    for (const key of Object.keys(sanitizedMetadata)) {
+      if (FORBIDDEN_METADATA_KEYS.some(f => key.toLowerCase().includes(f.toLowerCase()))) {
+        delete sanitizedMetadata[key];
+      }
+    }
+
+    const event = {
+      id: `audit-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`,
+      timestamp: new Date().toISOString(),
+      actorType: resolvedActorType,
+      actorId: resolvedActorId,
+      actorRole: resolvedActorRole,
+      action: String(action),
+      resourceType: String(resourceType),
+      resourceId: resourceId ? String(resourceId) : null,
+      result: ['success', 'failure', 'denied'].includes(result) ? result : 'success',
+      ip: String(resolvedIp),
+      userAgent: String(resolvedUserAgent).substring(0, 255),
+      metadata: sanitizedMetadata
+    };
+
+    // 4. Si se provee un contexto transaccional tx, delegar escritura en tx
+    if (tx && typeof tx.write === 'function') {
+      const logs = tx.read('audit_logs');
+      logs.push(event);
+      tx.write('audit_logs', logs);
+    } else {
+      // Escritura atómica serializada fuera de transacción
+      await withCollectionLock('audit_logs', async () => {
+        const logs = readCollection('audit_logs');
+        logs.push(event);
+        writeCollection('audit_logs', logs);
+      });
+    }
+
+    return event;
+  } catch (err) {
+    console.error('[AuditLog Error] Fallo al registrar evento de auditoría:', err.message);
+    return null;
+  }
 }
 
 // ============================================================
@@ -1250,6 +1363,14 @@ app.post('/api/auth/login', loginLimiter, loginAccountLimiter, (req, res) => {
       );
 
       if (!matchedUser || !matchedUser.active || !verifyCredential(password, matchedUser.passwordHash)) {
+        recordAuditLog({
+          req,
+          actorType: 'crm',
+          action: 'auth.login',
+          resourceType: 'auth',
+          result: 'denied',
+          metadata: { loginMode, reason: 'invalid_credentials' }
+        });
         return res.status(401).json({ error: 'Credenciales inválidas o cuenta no autorizada' });
       }
     } else {
@@ -1264,6 +1385,14 @@ app.post('/api/auth/login', loginLimiter, loginAccountLimiter, (req, res) => {
       matchedUser = users.find(u => String(u.cedula).trim() === inputCedula);
 
       if (!matchedUser || !matchedUser.active || !verifyCredential(inputPin, matchedUser.pinHash)) {
+        recordAuditLog({
+          req,
+          actorType: 'crm',
+          action: 'auth.login',
+          resourceType: 'auth',
+          result: 'denied',
+          metadata: { loginMode, reason: 'invalid_credentials' }
+        });
         return res.status(401).json({ error: 'Credenciales inválidas o cuenta no autorizada' });
       }
     }
@@ -1278,6 +1407,18 @@ app.post('/api/auth/login', loginLimiter, loginAccountLimiter, (req, res) => {
       req.session.userId = matchedUser.id;
       req.session.userRole = matchedUser.role;
       req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+
+      recordAuditLog({
+        req,
+        actorType: 'crm',
+        actorId: matchedUser.id,
+        actorRole: matchedUser.role,
+        action: 'auth.login',
+        resourceType: 'auth',
+        resourceId: matchedUser.id,
+        result: 'success',
+        metadata: { loginMode, role: matchedUser.role }
+      });
 
       const safeUser = {
         id: matchedUser.id,
@@ -1345,6 +1486,13 @@ function verifyCsrf(req, res, next) {
   const sessionToken = req.session?.csrfToken;
 
   if (!clientToken || !sessionToken || clientToken !== sessionToken) {
+    recordAuditLog({
+      req,
+      action: 'security.csrf_denied',
+      resourceType: 'security',
+      result: 'denied',
+      metadata: { path: req.path, method: req.method }
+    });
     return res.status(403).json({ error: 'CSRF token inválido o ausente' });
   }
   next();
@@ -1352,6 +1500,12 @@ function verifyCsrf(req, res, next) {
 
 // 4. Logout e invalidación de sesión server-side (Protegido con verificación CSRF)
 app.post('/api/auth/logout', verifyCsrf, (req, res) => {
+  recordAuditLog({
+    req,
+    action: 'auth.logout',
+    resourceType: 'auth',
+    result: 'success'
+  });
   const sessionId = req.session?.id || req.sessionID;
   if (sessionId) {
     invalidateSessionSockets(sessionId);
@@ -1378,7 +1532,17 @@ app.post('/api/portal/auth/login', portalLoginLimiter, portalAccountLoginLimiter
       return res.status(400).json({ error: 'Debe ingresar identificador y PIN de acceso' });
     }
 
-    const genericAuthError = () => res.status(401).json({ error: 'Identificador o PIN incorrecto' });
+    const genericAuthError = () => {
+      recordAuditLog({
+        req,
+        actorType: 'portal',
+        action: 'portal.login',
+        resourceType: 'portal_auth',
+        result: 'denied',
+        metadata: { portalType, reason: 'invalid_credentials' }
+      });
+      return res.status(401).json({ error: 'Identificador o PIN incorrecto' });
+    };
     const cleanId = String(identifier).trim().toLowerCase();
     const cleanDigits = String(identifier).replace(/\D/g, '');
     const inputPin = String(pin).trim();
@@ -1479,6 +1643,18 @@ app.post('/api/portal/auth/login', portalLoginLimiter, portalAccountLoginLimiter
       req.session.portalUser = safePortalUser;
       req.session.csrfToken = crypto.randomBytes(32).toString('hex');
 
+      recordAuditLog({
+        req,
+        actorType: 'portal',
+        actorId: matchedEntity.id,
+        actorRole: portalType,
+        action: 'portal.login',
+        resourceType: 'portal_auth',
+        resourceId: matchedEntity.id,
+        result: 'success',
+        metadata: { portalType }
+      });
+
       req.session.save((saveErr) => {
         if (saveErr) {
           console.error('[Portal Auth Error] Error guardando sesión:', saveErr);
@@ -1509,6 +1685,13 @@ app.get('/api/portal/auth/me', requirePortalAuth, (req, res) => {
 
 // 3. Logout del portal (Protegido con verificación CSRF)
 app.post('/api/portal/auth/logout', verifyCsrf, (req, res) => {
+  recordAuditLog({
+    req,
+    actorType: 'portal',
+    action: 'portal.logout',
+    resourceType: 'portal_auth',
+    result: 'success'
+  });
   if (req.session) {
     const sessionId = req.session?.id || req.sessionID;
     const isCoexisting = Boolean(req.session.userId);
@@ -1834,6 +2017,18 @@ app.post('/api/portal/auth/recovery/reset-pin', recoveryResetPinLimiter, (req, r
         req.session.save(() => {});
       }
     }
+
+    recordAuditLog({
+      req,
+      actorType: 'portal',
+      actorId: matchedEntity.id,
+      actorRole: portalType,
+      action: 'portal.recovery.reset_pin',
+      resourceType: 'portal_auth',
+      resourceId: matchedEntity.id,
+      result: 'success',
+      metadata: { portalType }
+    });
 
     return res.json({
       success: true,
@@ -2312,12 +2507,33 @@ app.post('/api/portal/client/transactions/:id/approve', requirePortalAuth, requi
     });
 
     if (errorCode) {
+      recordAuditLog({
+        req,
+        actorType: 'portal',
+        action: 'qr.approve',
+        resourceType: 'transactions',
+        resourceId: txId,
+        result: errorCode === 404 ? 'denied' : 'failure',
+        metadata: { errorCode, errorMessage }
+      });
       return res.status(errorCode).json({ error: errorMessage });
     }
 
     if (!updatedTx) {
       return res.status(404).json({ error: 'Transacción no encontrada' });
     }
+
+    recordAuditLog({
+      req,
+      actorType: 'portal',
+      actorId: req.portalUser.id,
+      actorRole: 'client',
+      action: 'qr.approve',
+      resourceType: 'transactions',
+      resourceId: updatedTx.id,
+      result: 'success',
+      metadata: { amount: updatedTx.amount, status: 'approved' }
+    });
 
     res.json({
       success: true,
@@ -2737,6 +2953,19 @@ app.patch('/api/products/:id', requireAuth, requireRole('admin', 'cajero'), veri
     if (updatedProduct === null) {
       return res.status(404).json({ error: 'Producto no encontrado' });
     }
+
+    recordAuditLog({
+      req,
+      action: 'inventory.stock_adjust',
+      resourceType: 'products',
+      resourceId: updatedProduct.id,
+      result: 'success',
+      metadata: {
+        productName: updatedProduct.name,
+        newStockKg: updatedProduct.stockKg,
+        newStock: updatedProduct.stock
+      }
+    });
 
     res.json({ success: true, product: updatedProduct });
   } catch (error) {
@@ -4281,6 +4510,23 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
       txsData.push(newTx);
       tx.write('transactions', txsData, { action: 'add', collection: 'transactions', doc: newTx });
 
+      // Registro de Auditoría Transaccional (Fase 1I: Solo se persiste si el commit de la transacción tiene éxito)
+      await recordAuditLog({
+        req,
+        action: 'pos.process_sale',
+        resourceType: 'transactions',
+        resourceId: newTx.id,
+        result: 'success',
+        metadata: {
+          amount: newTx.amount,
+          itemCount: (saleItems || []).length,
+          paymentMethod: newTx.paymentMethod,
+          debtAmount: newTx.debtAmount,
+          customerName: finalCustomerName
+        },
+        tx
+      });
+
       return {
         transaction: newTx,
         client: updatedClient,
@@ -4292,6 +4538,13 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
 
     res.json({ success: true, ...result });
   } catch (error) {
+    recordAuditLog({
+      req,
+      action: 'pos.process_sale',
+      resourceType: 'transactions',
+      result: 'failure',
+      metadata: { error: error.message }
+    });
     console.error('[POST /api/pos/process-sale] Error procesando venta transaccional:', error);
     res.status(500).json({ error: 'Error procesando venta transaccional', details: error.message });
   }
@@ -4557,6 +4810,16 @@ app.post('/api/admin/reset-accounting', requireAuth, requireRole('admin'), verif
         }));
         tx.write('suppliers', updatedSuppliers, { action: 'update_all', collection: 'suppliers' });
       }
+
+      // 4. Audit Log Transaccional
+      await recordAuditLog({
+        req,
+        action: 'admin.reset_accounting',
+        resourceType: 'accounting',
+        result: 'success',
+        metadata: { collectionsReset: ACCOUNTING_COLLECTIONS },
+        tx
+      });
     });
 
     console.log('[Sistema Kalu] ✅ Restablecimiento contable administrativo ejecutado con éxito por admin.');
@@ -4564,6 +4827,13 @@ app.post('/api/admin/reset-accounting', requireAuth, requireRole('admin'), verif
 
     res.json({ success: true, message: 'Datos contables restablecidos exitosamente.' });
   } catch (error) {
+    recordAuditLog({
+      req,
+      action: 'admin.reset_accounting',
+      resourceType: 'accounting',
+      result: 'failure',
+      metadata: { error: error.message }
+    });
     console.error('Error en /api/admin/reset-accounting:', error);
     res.status(500).json({ error: 'Error durante el restablecimiento contable', details: error.message });
   }
@@ -4613,6 +4883,14 @@ app.get('/api/full-backup', requireAuth, requireRole('admin'), adminBackupLimite
       backup.collections[colName] = readCollection(colName);
     }
 
+    recordAuditLog({
+      req,
+      action: 'admin.full_backup_download',
+      resourceType: 'backup',
+      result: 'success',
+      metadata: { collectionCount: BACKUP_COLLECTIONS.length }
+    });
+
     res.json(backup);
   } catch (error) {
     console.error('Error generando copia de seguridad completa:', error);
@@ -4640,6 +4918,15 @@ app.post('/api/restore-backup', requireAuth, requireRole('admin'), verifyCsrf, a
       for (const [colName, docs] of Object.entries(collections)) {
         tx.write(colName, docs);
       }
+
+      await recordAuditLog({
+        req,
+        action: 'admin.restore_backup',
+        resourceType: 'backup',
+        result: 'success',
+        metadata: { restoredSummary },
+        tx
+      });
     });
 
     console.log('[Sistema Kalu] ✅ Restauración completa de base de datos realizada con éxito por admin:', restoredSummary);
@@ -4657,8 +4944,63 @@ app.post('/api/restore-backup', requireAuth, requireRole('admin'), verifyCsrf, a
       summary: restoredSummary
     });
   } catch (error) {
+    recordAuditLog({
+      req,
+      action: 'admin.restore_backup',
+      resourceType: 'backup',
+      result: 'failure',
+      metadata: { error: error.message }
+    });
     console.error('Error restaurando copia de seguridad:', error);
     res.status(500).json({ error: 'Error restaurando respaldo', details: error.message });
+  }
+});
+
+// Endpoint Administrativo de Consulta de Auditoría (Fase 1I: Admin-Only, Read-Only con Paginación)
+app.get('/api/admin/audit-logs', requireAuth, requireRole('admin'), (req, res) => {
+  try {
+    const rawPage = parseInt(req.query.page, 10);
+    const rawLimit = parseInt(req.query.limit, 10);
+
+    const page = !isNaN(rawPage) && rawPage > 0 ? rawPage : 1;
+    const limit = !isNaN(rawLimit) && rawLimit > 0 && rawLimit <= 100 ? rawLimit : 50;
+
+    const actionFilter = req.query.action ? String(req.query.action).trim() : null;
+    const resourceTypeFilter = req.query.resourceType ? String(req.query.resourceType).trim() : null;
+    const resultFilter = req.query.result ? String(req.query.result).trim() : null;
+
+    const allLogs = readCollection('audit_logs');
+    let filteredLogs = Array.isArray(allLogs) ? allLogs : [];
+
+    if (actionFilter) {
+      filteredLogs = filteredLogs.filter(l => l.action === actionFilter);
+    }
+    if (resourceTypeFilter) {
+      filteredLogs = filteredLogs.filter(l => l.resourceType === resourceTypeFilter);
+    }
+    if (resultFilter) {
+      filteredLogs = filteredLogs.filter(l => l.result === resultFilter);
+    }
+
+    // Orden descendente por timestamp (más recientes primero)
+    filteredLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    const total = filteredLogs.length;
+    const totalPages = Math.ceil(total / limit) || 1;
+    const startIndex = (page - 1) * limit;
+    const paginatedLogs = filteredLogs.slice(startIndex, startIndex + limit);
+
+    res.json({
+      success: true,
+      page,
+      limit,
+      total,
+      totalPages,
+      logs: paginatedLogs
+    });
+  } catch (error) {
+    console.error('[Audit Query Error]:', error);
+    res.status(500).json({ error: 'Error al consultar logs de auditoría' });
   }
 });
 
@@ -4938,12 +5280,26 @@ app.post('/api/webhook/whatsapp', whatsappWebhookLimiter, whatsappJsonParser, (r
 
     // 1. Validar presencia y validez criptográfica de la firma HMAC-SHA256
     if (!signature) {
+      recordAuditLog({
+        req,
+        action: 'webhook.whatsapp',
+        resourceType: 'webhook',
+        result: 'denied',
+        metadata: { reason: 'missing_signature' }
+      });
       console.warn('[WhatsApp Webhook] ❌ Petición rechazada: Cabecera X-Hub-Signature-256 ausente');
       return res.status(401).json({ error: 'Firma requerida' });
     }
 
     const isValidSig = verifyWhatsAppWebhookSignature(req.rawBody, signature, appSecret);
     if (!isValidSig) {
+      recordAuditLog({
+        req,
+        action: 'webhook.whatsapp',
+        resourceType: 'webhook',
+        result: 'denied',
+        metadata: { reason: 'invalid_signature' }
+      });
       console.warn('[WhatsApp Webhook] ❌ Petición rechazada: Firma X-Hub-Signature-256 inválida');
       return res.status(403).json({ error: 'Firma no autorizada' });
     }
@@ -4968,6 +5324,13 @@ app.post('/api/webhook/whatsapp', whatsappWebhookLimiter, whatsappJsonParser, (r
 
     // Si todos los eventos dentro del payload ya fueron procesados previamente (Replay total)
     if (eventIds.length > 0 && allDuplicated) {
+      recordAuditLog({
+        req,
+        action: 'webhook.whatsapp_replay',
+        resourceType: 'webhook',
+        result: 'denied',
+        metadata: { eventCount: eventIds.length }
+      });
       console.log(`[WhatsApp Webhook] ℹ️ Replay total detectado (${eventIds.length} eventos ya procesados), respondiendo 200 OK.`);
       return res.status(200).json({ status: 'EVENT_ALREADY_PROCESSED', processedCount: 0 });
     }
@@ -4976,6 +5339,14 @@ app.post('/api/webhook/whatsapp', whatsappWebhookLimiter, whatsappJsonParser, (r
     const entry = Array.isArray(payload.entry) ? payload.entry[0] : null;
     const changes = entry?.changes?.[0];
     const field = changes?.field || 'unknown';
+
+    recordAuditLog({
+      req,
+      action: 'webhook.whatsapp',
+      resourceType: 'webhook',
+      result: 'success',
+      metadata: { field, newEventsCount }
+    });
 
     console.log(`[WhatsApp Webhook] ✅ Evento verificado recibido. Campo: '${field}', Eventos nuevos: ${newEventsCount}`);
 
@@ -5064,5 +5435,6 @@ export {
   atomicWriteJsonFile,
   withTransaction,
   readCollection,
-  withCollectionLock
+  withCollectionLock,
+  recordAuditLog
 };
