@@ -54,18 +54,55 @@ console.log('📱 WhatsApp API:', waMode === 'simulation' ? 'MODO SIMULACIÓN (D
 console.log('📂 Directorio de Datos / DB:', process.env.UPLOAD_DIR || path.join(__dirname, 'uploads'));
 console.log('----------------------------------------------------');
 
+// --- CONFIGURACIÓN DE CORS Y ORIGINS PERMITIDOS (FASE 1D-D.2) ---
+const rawAllowedOrigins = process.env.SOCKET_ALLOWED_ORIGINS || process.env.ALLOWED_ORIGINS || '';
+const configuredOrigins = rawAllowedOrigins
+  ? rawAllowedOrigins.split(',').map(s => s.trim()).filter(Boolean)
+  : [];
+
+// Origins de desarrollo locales permitidos por defecto cuando !isProd
+const defaultDevOrigins = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3001',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173'
+];
+
+function isOriginAllowed(origin) {
+  // Peticiones locales o server-to-server sin cabecera origin (curl, apps móviles nativas, testing)
+  if (!origin) return true;
+  if (configuredOrigins.includes(origin)) return true;
+  if (!isProd && defaultDevOrigins.includes(origin)) return true;
+  return false;
+}
+
 const PORT = process.env.PORT || 3001;
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST', 'PATCH', 'DELETE'] }
+  cors: {
+    origin: function (origin, callback) {
+      if (isOriginAllowed(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Origin no permitido por política CORS'));
+      }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'DELETE']
+  }
 });
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Permitir solicitudes en localhost/127.0.0.1 y apps clientes
-    callback(null, true);
+    if (isOriginAllowed(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Origin no permitido por política CORS'));
+    }
   },
   credentials: true
 }));
@@ -74,7 +111,7 @@ app.use(express.json());
 const SESSION_SECRET = process.env.SESSION_SECRET || 'kalu_dev_session_secret_2026_super_safe_and_random';
 
 // Configuración de sesiones server-side (MemoryStore para DEV, modular para SQLite/Redis en producción)
-app.use(session({
+const sessionMiddleware = session({
   name: '__kalu_sid',
   secret: SESSION_SECRET,
   resave: false,
@@ -86,7 +123,80 @@ app.use(session({
     sameSite: 'lax',
     maxAge: 24 * 60 * 60 * 1000 // 24 horas de vigencia
   }
-}));
+});
+
+app.use(sessionMiddleware);
+
+// Compartir la sesión Express con Socket.IO para autenticación en handshake (Fase 1D-D.1)
+io.use((socket, next) => {
+  sessionMiddleware(socket.request, {}, (err) => {
+    if (err) return next(err);
+    next();
+  });
+});
+
+// Middleware de autenticación e identidad de Socket.IO (Fase 1D-D.1)
+io.use((socket, next) => {
+  const session = socket.request.session;
+  const identity = {
+    isAnonymous: true,
+    crm: null,
+    portal: null
+  };
+
+  if (!session) {
+    socket.data.identity = identity;
+    return next();
+  }
+
+  // 1. Validar identidad CRM si existe en sesión
+  if (session.userId) {
+    const users = readCollection('users');
+    const user = users.find(u => String(u.id) === String(session.userId));
+    if (user && user.active) {
+      identity.crm = {
+        userId: String(user.id),
+        role: String(user.role).toLowerCase(),
+        name: user.name || ''
+      };
+      identity.isAnonymous = false;
+    }
+  }
+
+  // 2. Validar identidad Portal si existe en sesión
+  if (session.portalUser && session.portalUser.id) {
+    const portalType = String(session.portalUser.type || '').toLowerCase();
+    const portalId = String(session.portalUser.id);
+
+    if (portalType === 'client') {
+      const clients = readCollection('clients');
+      const client = clients.find(c => String(c.id) === portalId);
+      if (client && (!client.status || client.status === 'active')) {
+        identity.portal = {
+          type: 'client',
+          id: String(client.id),
+          name: client.name || ''
+        };
+        identity.isAnonymous = false;
+      }
+    } else if (portalType === 'producer' || portalType === 'supplier') {
+      const suppliers = readCollection('suppliers');
+      const supplier = suppliers.find(s => String(s.id) === portalId);
+      if (supplier && (!supplier.status || supplier.status === 'active')) {
+        identity.portal = {
+          type: 'producer',
+          id: String(supplier.id),
+          name: supplier.name || ''
+        };
+        identity.isAnonymous = false;
+      }
+    }
+  }
+
+  // Guardar contexto sanitizado en socket.data.identity (Inmutable por el cliente)
+  socket.data.identity = identity;
+  next();
+});
 
 // Rate limiter específico para Login (10 intentos fallidos por cada ventana de 15 minutos)
 const loginLimiter = rateLimit({
@@ -558,8 +668,8 @@ function requirePortalType(...allowedTypes) {
   };
 }
 
-// Políticas de Acceso a Colecciones (Fase 1C)
-const ADMIN_ONLY_COLLECTIONS = new Set(['adminLedger', 'business_debts', 'settings', 'vehicle_trips']);
+// Políticas de Acceso a Colecciones (Fase 1C / 1D-D.2)
+const ADMIN_ONLY_COLLECTIONS = new Set(['adminLedger', 'business_debts', 'settings', 'vehicle_trips', 'users', 'accounting']);
 const SENSITIVE_CORE_COLLECTIONS = new Set(['users', 'clients', 'transactions', 'installments', 'bills', 'settings', 'adminLedger', 'business_debts', 'products', 'kardex', 'suppliers']);
 const ALLOWED_DELETION_COLLECTIONS = new Set(['banners', 'daily_drafts', 'photo_album', 'voice_notes', 'mobileOrders', 'admin_voice_pending']);
 
@@ -630,6 +740,25 @@ app.get('/api/auth/csrf-token', (req, res) => {
   }
   res.json({ csrfToken: req.session.csrfToken });
 });
+
+// Endpoint seguro de diagnóstico / test de rooms Socket.IO (Solo habilitado en desarrollo / pruebas)
+if (!isProd) {
+  app.get('/api/test-socket-info/:socketId', (req, res) => {
+    const targetSocket = io.sockets.sockets.get(req.params.socketId);
+    if (!targetSocket) {
+      return res.status(404).json({ error: 'Socket no encontrado' });
+    }
+    const rooms = Array.from(targetSocket.rooms || []);
+    const identity = targetSocket.data?.identity || { isAnonymous: true, crm: null, portal: null };
+    const sessionIdPresent = Boolean(targetSocket.request?.session?.id || targetSocket.request?.sessionID);
+    res.json({
+      socketId: targetSocket.id,
+      rooms,
+      identity,
+      sessionIdPresent
+    });
+  });
+}
 
 // 2. Login con verificación en backend y rotación de sesión
 app.post('/api/auth/login', loginLimiter, (req, res) => {
@@ -1708,9 +1837,32 @@ if (fs.existsSync(distDir)) {
 }
 
 io.on('connection', (socket) => {
-  console.log('A client connected via WebSocket:', socket.id);
+  const identity = socket.data.identity || { isAnonymous: true, crm: null, portal: null };
+
+  // 1. Toda conexión pertenece a la room pública
+  socket.join('room:public');
+
+  // 2. Asignar rooms de CRM si tiene sesión CRM activa y válida
+  if (identity.crm) {
+    socket.join('room:crm:staff');
+    if (identity.crm.role === 'admin') {
+      socket.join('room:crm:admin');
+    }
+  }
+
+  // 3. Asignar room de Portal si tiene sesión Portal activa y válida
+  if (identity.portal) {
+    if (identity.portal.type === 'client') {
+      socket.join(`room:portal:client:${identity.portal.id}`);
+    } else if (identity.portal.type === 'producer') {
+      socket.join(`room:portal:producer:${identity.portal.id}`);
+    }
+  }
+
+  console.log(`[Socket.IO] Client connected: ${socket.id} | Anonymous: ${identity.isAnonymous} | CRM: ${identity.crm ? identity.crm.role : 'none'} | Portal: ${identity.portal ? identity.portal.type : 'none'}`);
+
   socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
+    // Desconexión limpia
   });
 });
 
@@ -1773,6 +1925,7 @@ app.patch('/api/products/:id', requireAuth, requireRole('admin', 'cajero'), veri
     }
 
     const current = data[index];
+    const previousDoc = { ...data[index] };
     const updates = req.body || {};
     const userRole = String(req.user.role).toLowerCase();
 
@@ -1807,9 +1960,7 @@ app.patch('/api/products/:id', requireAuth, requireRole('admin', 'cajero'), veri
       data[index] = { ...current, ...updates };
     }
 
-    fs.writeFileSync(productsDbFile, JSON.stringify(data, null, 2));
-    io.emit('collection_delta', { action: 'update', collection: 'products', doc: data[index] });
-    io.emit('collection_updated', 'products');
+    writeCollection('products', data, { action: 'update', collection: 'products', doc: data[index] }, previousDoc);
     res.json({ success: true, product: data[index] });
   } catch (error) {
     console.error(error);
@@ -1831,9 +1982,7 @@ app.post('/api/products', requireAuth, requireRole('admin'), verifyCsrf, (req, r
     }
     const newProduct = { id: req.body.id || Date.now().toString(), ...req.body };
     data.push(newProduct);
-    fs.writeFileSync(productsDbFile, JSON.stringify(data, null, 2));
-    io.emit('collection_delta', { action: 'add', collection: 'products', doc: newProduct });
-    io.emit('collection_updated', 'products');
+    writeCollection('products', data, { action: 'add', collection: 'products', doc: newProduct });
     res.json({ success: true, product: newProduct });
   } catch (error) {
     console.error(error);
@@ -1848,10 +1997,9 @@ app.delete('/api/products/:id', requireAuth, requireRole('admin'), verifyCsrf, (
       return res.status(404).json({ error: 'DB no encontrada' });
     }
     const data = JSON.parse(fs.readFileSync(productsDbFile, 'utf8'));
+    const previousDoc = data.find(p => String(p.id) === String(req.params.id));
     const filtered = data.filter(p => String(p.id) !== String(req.params.id));
-    fs.writeFileSync(productsDbFile, JSON.stringify(filtered, null, 2));
-    io.emit('collection_delta', { action: 'delete', collection: 'products', doc: { id: req.params.id } });
-    io.emit('collection_updated', 'products');
+    writeCollection('products', filtered, { action: 'delete', collection: 'products', doc: { id: req.params.id } }, previousDoc);
     res.json({ success: true });
   } catch (error) {
     console.error(error);
@@ -2379,7 +2527,175 @@ const readCollection = (name) => {
   return [];
 };
 
-const writeCollection = (name, data, delta = null) => {
+// ============================================================
+// SISTEMA CENTRAL DE EMISIÓN SOCKET.IO DIRIGIDA (FASE 1D-D.2)
+// ============================================================
+
+/**
+ * Sanitizar documento para consumo público (Catálogo de productos / banners)
+ * Remueve campos confidenciales: costos, wholesalePrice, márgenes, notas internas.
+ */
+function sanitizePublicProduct(doc) {
+  if (!doc || typeof doc !== 'object') return null;
+  return {
+    id: doc.id,
+    name: doc.name,
+    category: doc.category || 'Víveres',
+    pricePerKg: Number(doc.pricePerKg || doc.sellingPrice || doc.price || 0),
+    sellingPrice: Number(doc.sellingPrice || doc.pricePerKg || doc.price || 0),
+    stockKg: Number(doc.stockKg ?? doc.stock ?? 0),
+    stock: Number(doc.stock ?? doc.stockKg ?? 0),
+    unit: doc.unit || 'Und',
+    imageUrl: doc.imageUrl || doc.image || '',
+    image: doc.image || doc.imageUrl || '',
+    description: doc.description || ''
+  };
+}
+
+/**
+ * Sanitizar payload de colección para Portal Cliente
+ * Remueve información sensible interna de otros usuarios/clientes y credenciales.
+ */
+function sanitizeClientPayload(collection, doc) {
+  if (!doc || typeof doc !== 'object') return null;
+  const { password, pin, passwordHash, pinHash, wholesalePrice, unitCost, totalCost, adminNotes, ...safe } = doc;
+  return safe;
+}
+
+/**
+ * Sanitizar payload de colección para Portal Productor
+ * Remueve información sensible interna, márgenes ajenos y credenciales.
+ */
+function sanitizeProducerPayload(collection, doc) {
+  if (!doc || typeof doc !== 'object') return null;
+  const { password, pin, passwordHash, pinHash, wholesalePrice, adminNotes, ...safe } = doc;
+  return safe;
+}
+
+/**
+ * Extraer ID de cliente propietario de un documento
+ */
+function extractClientId(doc) {
+  if (!doc || typeof doc !== 'object') return null;
+  if (doc.clientId) return String(doc.clientId);
+  if (doc.client_id) return String(doc.client_id);
+  if (doc.entityId && (doc.type === 'receivable' || doc.entityType === 'client' || doc.clientName)) {
+    return String(doc.entityId);
+  }
+  return null;
+}
+
+/**
+ * Extraer ID de proveedor/productor propietario de un documento
+ */
+function extractSupplierId(doc) {
+  if (!doc || typeof doc !== 'object') return null;
+  if (doc.supplierId) return String(doc.supplierId);
+  if (doc.supplier_id) return String(doc.supplier_id);
+  if (doc.producerId) return String(doc.producerId);
+  if (doc.entityId && (doc.type === 'payable' || doc.entityType === 'producer' || doc.supplierName)) {
+    return String(doc.entityId);
+  }
+  return null;
+}
+
+/**
+ * Función central y única de emisión segura para 'collection_delta'
+ * Aplica reglas estrictas de room scoping y DTOs sanitizados según el destinatario.
+ * @param {Object} delta - { action, collection, doc, id, count }
+ * @param {Object} [previousDoc=null] - Documento previo en updates/deletes para tracking de ownership
+ */
+function emitCollectionDeltaScoped(delta, previousDoc = null) {
+  if (!delta || !delta.collection) return;
+  const { collection, action } = delta;
+  const doc = delta.doc || (delta.id ? { id: delta.id } : null);
+
+  // 1. Destinatarios CRM (Staff / Admin)
+  if (ADMIN_ONLY_COLLECTIONS.has(collection)) {
+    // Colecciones estrictamente administrativas: ÚNICAMENTE room:crm:admin
+    io.to('room:crm:admin').emit('collection_delta', delta);
+  } else {
+    // Colecciones operativas generales del CRM: room:crm:staff (incluye a administradores y cajeros)
+    io.to('room:crm:staff').emit('collection_delta', delta);
+  }
+
+  // 2. Destinatarios Portal Cliente
+  const CLIENT_PORTAL_COLLECTIONS = new Set(['transactions', 'installments', 'pwa_payments', 'mobileOrders']);
+  if (CLIENT_PORTAL_COLLECTIONS.has(collection)) {
+    const currentClientId = extractClientId(doc);
+    const prevClientId = extractClientId(previousDoc);
+
+    if (currentClientId) {
+      const sanitizedDoc = sanitizeClientPayload(collection, doc);
+      const clientDelta = { ...delta, doc: sanitizedDoc };
+      io.to(`room:portal:client:${currentClientId}`).emit('collection_delta', clientDelta);
+    }
+
+    // Si hubo cambio de propietario (ej. clientId A -> clientId B), notificar al propietario anterior la remoción
+    if (prevClientId && prevClientId !== currentClientId) {
+      const removalDelta = {
+        action: 'delete',
+        collection,
+        doc: { id: doc?.id || delta.id || previousDoc.id }
+      };
+      io.to(`room:portal:client:${prevClientId}`).emit('collection_delta', removalDelta);
+    }
+  }
+
+  // 3. Destinatarios Portal Productor
+  const PRODUCER_PORTAL_COLLECTIONS = new Set(['cheeseTrips', 'transactions', 'mobileOrders']);
+  if (PRODUCER_PORTAL_COLLECTIONS.has(collection)) {
+    const currentSupplierId = extractSupplierId(doc);
+    const prevSupplierId = extractSupplierId(previousDoc);
+
+    if (currentSupplierId) {
+      const sanitizedDoc = sanitizeProducerPayload(collection, doc);
+      const producerDelta = { ...delta, doc: sanitizedDoc };
+      io.to(`room:portal:producer:${currentSupplierId}`).emit('collection_delta', producerDelta);
+    }
+
+    // Si hubo cambio de propietario (ej. supplierId A -> supplierId B), notificar al propietario anterior la remoción
+    if (prevSupplierId && prevSupplierId !== currentSupplierId) {
+      const removalDelta = {
+        action: 'delete',
+        collection,
+        doc: { id: doc?.id || delta.id || previousDoc.id }
+      };
+      io.to(`room:portal:producer:${prevSupplierId}`).emit('collection_delta', removalDelta);
+    }
+  }
+
+  // 4. Destinatarios Públicos (room:public)
+  if (collection === 'banners') {
+    io.to('room:public').emit('collection_delta', delta);
+  } else if (collection === 'products') {
+    const publicDoc = sanitizePublicProduct(doc);
+    const publicDelta = { ...delta, doc: publicDoc };
+    io.to('room:public').emit('collection_delta', publicDelta);
+  }
+}
+
+/**
+ * Función central de emisión segura para 'collection_updated'
+ * Emite la señal de recarga ÚNICAMENTE a las rooms autorizadas para esa colección.
+ */
+function emitCollectionUpdatedScoped(collectionName) {
+  if (!collectionName) return;
+
+  // CRM
+  if (ADMIN_ONLY_COLLECTIONS.has(collectionName)) {
+    io.to('room:crm:admin').emit('collection_updated', collectionName);
+  } else {
+    io.to('room:crm:staff').emit('collection_updated', collectionName);
+  }
+
+  // Público (solo banners)
+  if (collectionName === 'banners') {
+    io.to('room:public').emit('collection_updated', collectionName);
+  }
+}
+
+const writeCollection = (name, data, delta = null, previousDoc = null) => {
   const filePath = getCollectionFilePath(name);
   const tempPath = `${filePath}.tmp-${Date.now()}`;
   try {
@@ -2390,9 +2706,9 @@ const writeCollection = (name, data, delta = null) => {
   }
 
   if (delta) {
-    io.emit('collection_delta', delta);
+    emitCollectionDeltaScoped(delta, previousDoc);
   } else {
-    io.emit('collection_updated', name); // Fallback for full reload
+    emitCollectionUpdatedScoped(name); // Scoped signal for full reload
   }
 };
 
@@ -2458,11 +2774,17 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
             notes: 'Venta registrada desde el POS'
           };
           kardexData.push(kardexMovement);
-          io.emit('collection_delta', { action: 'add', collection: 'kardex', doc: kardexMovement });
+          emitCollectionDeltaScoped({ action: 'add', collection: 'kardex', doc: kardexMovement });
         }
       }
       writeCollection('products', productsData);
-      writeCollection('kardex', kardexData);
+      // writeCollection sin delta emitiría collection_updated; pasamos { action: 'batchAdd', collection: 'kardex' } o guardamos el archivo
+      const kardexPath = getCollectionFilePath('kardex');
+      try {
+        fs.writeFileSync(kardexPath, JSON.stringify(kardexData, null, 2), 'utf8');
+      } catch (err) {
+        fs.writeFileSync(kardexPath, JSON.stringify(kardexData, null, 2), 'utf8');
+      }
 
       // 2. CLIENT / SUPPLIER
       let updatedClient = null;
@@ -2571,10 +2893,15 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
               type: req.body.kaluCreditType || 'cotidiano'
             };
             installmentsData.push(installmentDoc);
-            io.emit('collection_delta', { action: 'add', collection: 'installments', doc: installmentDoc });
+            emitCollectionDeltaScoped({ action: 'add', collection: 'installments', doc: installmentDoc });
             nextDate.setDate(nextDate.getDate() + 15);
           }
-          writeCollection('installments', installmentsData);
+          const installmentsPath = getCollectionFilePath('installments');
+          try {
+            fs.writeFileSync(installmentsPath, JSON.stringify(installmentsData, null, 2), 'utf8');
+          } catch (err) {
+            fs.writeFileSync(installmentsPath, JSON.stringify(installmentsData, null, 2), 'utf8');
+          }
         }
       }
 
@@ -2793,8 +3120,9 @@ app.post('/api/collections/:name', requireAuth, requireCollectionWrite, verifyCs
 
     if (index !== -1) {
       // Overwrite if it already exists to prevent duplication
+      const previousDoc = { ...data[index] };
       data[index] = newDoc;
-      writeCollection(req.params.name, data, { action: 'update', collection: req.params.name, doc: newDoc });
+      writeCollection(req.params.name, data, { action: 'update', collection: req.params.name, doc: newDoc }, previousDoc);
     } else {
       data.push(newDoc);
       writeCollection(req.params.name, data, { action: 'add', collection: req.params.name, doc: newDoc });
@@ -2812,8 +3140,9 @@ app.patch('/api/collections/:name/:id', requireAuth, requireCollectionWrite, ver
     const data = readCollection(req.params.name);
     const index = data.findIndex(d => String(d.id) === String(req.params.id));
     if (index !== -1) {
+      const previousDoc = { ...data[index] };
       data[index] = { ...data[index], ...req.body };
-      writeCollection(req.params.name, data, { action: 'update', collection: req.params.name, doc: data[index] });
+      writeCollection(req.params.name, data, { action: 'update', collection: req.params.name, doc: data[index] }, previousDoc);
       res.json({ success: true, doc: data[index] });
     } else {
       // UPSERT: Create document if it does not exist
@@ -2862,8 +3191,9 @@ app.delete('/api/collections/:name/:id', requireAuth, requireRole('admin'), veri
     }
 
     const data = readCollection(collectionName);
+    const previousDoc = data.find(d => String(d.id) === String(req.params.id));
     const filtered = data.filter(d => String(d.id) !== String(req.params.id));
-    writeCollection(collectionName, filtered, { action: 'delete', collection: collectionName, doc: { id: req.params.id } });
+    writeCollection(collectionName, filtered, { action: 'delete', collection: collectionName, doc: { id: req.params.id } }, previousDoc);
     res.json({ success: true });
   } catch (error) {
     console.error(`Error deleting ${req.params.name}:`, error);
@@ -2996,11 +3326,12 @@ app.post('/api/restore-backup', requireAuth, requireRole('admin'), verifyCsrf, (
     }
 
     console.log('[Sistema Kalu] ✅ Restauración completa de base de datos realizada con éxito por admin:', restoredSummary);
-    io.emit('database_restored', { timestamp: new Date().toISOString(), summary: restoredSummary });
+    io.to('room:crm:admin').emit('database_restored', { timestamp: new Date().toISOString(), summary: restoredSummary });
+    io.to('room:crm:staff').emit('database_restored', { timestamp: new Date().toISOString() });
 
-    // Emitir eventos para que todas las vistas reactivas se actualicen
+    // Emitir eventos dirigidos para que las vistas reactivas autorizadas se actualicen
     for (const colName of Object.keys(collections)) {
-      io.emit('collection_updated', colName);
+      emitCollectionUpdatedScoped(colName);
     }
 
     res.json({
@@ -3264,7 +3595,7 @@ server.listen(PORT, () => {
   }, CHECK_INTERVAL_MS);
 });
 
-// Exportaciones del Recovery Core para pruebas y consumo interno seguro
+// Exportaciones del Recovery Core y Socket.IO para pruebas y consumo interno seguro
 export {
   createRecoveryChallenge,
   verifyRecoveryCode,
@@ -3276,5 +3607,14 @@ export {
   recoveryRequestLimiter,
   recoveryVerifyLimiter,
   hashEphemeralSecret,
-  maskRecipient
+  maskRecipient,
+  io,
+  sessionMiddleware,
+  emitCollectionDeltaScoped,
+  emitCollectionUpdatedScoped,
+  sanitizeClientPayload,
+  sanitizeProducerPayload,
+  sanitizePublicProduct,
+  isOriginAllowed,
+  writeCollection
 };

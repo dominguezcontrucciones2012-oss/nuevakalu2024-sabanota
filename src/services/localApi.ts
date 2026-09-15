@@ -13,7 +13,9 @@ let socket: Socket | null = null;
 
 export const initSocket = () => {
   if (!socket) {
-    socket = io(SOCKET_URL);
+    socket = io(SOCKET_URL, {
+      withCredentials: true
+    });
     socket.on('connect', () => {
       console.log('Connected to local WebSocket server', socket?.id);
     });

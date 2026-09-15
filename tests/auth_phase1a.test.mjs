@@ -3,6 +3,7 @@
 // ============================================================
 import assert from 'assert';
 import http from 'http';
+import { io as ioClient } from 'socket.io-client';
 import {
   createRecoveryChallenge,
   verifyRecoveryCode,
@@ -12,7 +13,14 @@ import {
   recoveryChallengeStore,
   recoveryResetTokenStore,
   hashEphemeralSecret,
-  maskRecipient
+  maskRecipient,
+  emitCollectionDeltaScoped,
+  emitCollectionUpdatedScoped,
+  sanitizeClientPayload,
+  sanitizeProducerPayload,
+  sanitizePublicProduct,
+  isOriginAllowed,
+  writeCollection
 } from '../server.js';
 
 const BASE_URL = 'http://localhost:3001';
@@ -2854,7 +2862,7 @@ async function runTests() {
       targetId: 'cli-demo-2',
       targetName: 'María Rodríguez',
       channel: 'whatsapp',
-      recipient: '04147654321'
+      recipient: '04249876543'
     });
     const verRes = verifyRecoveryCode({
       challengeId: otpTest.challengeId,
@@ -2867,9 +2875,9 @@ async function runTests() {
       method: 'POST',
       body: JSON.stringify({
         portalType: 'client',
-        identifier: '04147654321',
+        identifier: '04249876543',
         resetToken: verRes.resetToken,
-        newPin: '334455'
+        newPin: '112233'
       })
     });
 
@@ -3009,6 +3017,1002 @@ async function runTests() {
     });
     assert.strictEqual(resetRes.status, 200);
     assert.strictEqual(resetRes.data.success, true);
+  });
+
+  // ============================================================
+  // PRUEBAS DE FASE 1D-D.1: SOCKET.IO HANDSHAKE AUTH + ROOMS
+  // ============================================================
+
+  // Helper para conectar cliente Socket.IO de prueba con cookie opcional
+  function connectTestSocket(cookie = null, extraOptions = {}) {
+    return new Promise((resolve, reject) => {
+      const headers = cookie ? { 'Cookie': cookie } : {};
+      const socket = ioClient(BASE_URL, {
+        withCredentials: true,
+        transports: ['polling', 'websocket'],
+        forceNew: true,
+        extraHeaders: headers,
+        transportOptions: {
+          polling: {
+            extraHeaders: headers
+          }
+        },
+        ...extraOptions
+      });
+
+      const timer = setTimeout(() => {
+        socket.disconnect();
+        reject(new Error('Socket.IO connection timeout'));
+      }, 5000);
+
+      socket.on('connect', () => {
+        clearTimeout(timer);
+        resolve(socket);
+      });
+
+      socket.on('connect_error', (err) => {
+        clearTimeout(timer);
+        resolve({ error: err, socket });
+      });
+    });
+  }
+
+  // TEST D1-01: Socket anónimo
+  await test('170. TEST D1-01: Socket anónimo puede conectarse y obtiene únicamente room:public (NO rooms privadas)', async () => {
+    const socket = await connectTestSocket(null);
+    assert.ok(socket && socket.id, 'Socket anónimo debe poder conectarse');
+
+    // Verificar que pertenece a room:public
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.status, 200);
+    assert.strictEqual(resRooms.data.identity.isAnonymous, true);
+    assert.strictEqual(resRooms.data.identity.crm, null);
+    assert.strictEqual(resRooms.data.identity.portal, null);
+    assert.ok(resRooms.data.rooms.includes('room:public'), 'Debe estar en room:public');
+    assert.ok(!resRooms.data.rooms.includes('room:crm:staff'), 'NO debe estar en room:crm:staff');
+    assert.ok(!resRooms.data.rooms.includes('room:crm:admin'), 'NO debe estar en room:crm:admin');
+    const hasPortalRoom = resRooms.data.rooms.some(r => r.startsWith('room:portal:'));
+    assert.strictEqual(hasPortalRoom, false, 'NO debe tener ninguna room:portal:*');
+    socket.disconnect();
+  });
+
+  // TEST D1-02: CRM admin
+  await test('171. TEST D1-02: CRM admin válido obtiene room:crm:staff y room:crm:admin', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const cookie = resLogin.setCookie.split(';')[0];
+    const socket = await connectTestSocket(cookie);
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.status, 200);
+    assert.strictEqual(resRooms.data.identity.isAnonymous, false);
+    assert.strictEqual(resRooms.data.identity.crm.role, 'admin');
+    assert.strictEqual(resRooms.data.identity.crm.userId, 'usr-admin-dev');
+    assert.ok(resRooms.data.rooms.includes('room:public'), 'Debe estar en room:public');
+    assert.ok(resRooms.data.rooms.includes('room:crm:staff'), 'Debe estar en room:crm:staff');
+    assert.ok(resRooms.data.rooms.includes('room:crm:admin'), 'Debe estar en room:crm:admin');
+    const hasPortalRoom = resRooms.data.rooms.some(r => r.startsWith('room:portal:'));
+    assert.strictEqual(hasPortalRoom, false, 'Admin CRM no debe tener portal rooms asignadas');
+    socket.disconnect();
+  });
+
+  // TEST D1-03: CRM cajero
+  await test('172. TEST D1-03: CRM cajero válido obtiene room:crm:staff pero NO room:crm:admin', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const cookie = resLogin.setCookie.split(';')[0];
+    const socket = await connectTestSocket(cookie);
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.status, 200);
+    assert.strictEqual(resRooms.data.identity.isAnonymous, false);
+    assert.strictEqual(resRooms.data.identity.crm.role, 'cajero');
+    assert.ok(resRooms.data.rooms.includes('room:crm:staff'), 'Cajero debe estar en room:crm:staff');
+    assert.ok(!resRooms.data.rooms.includes('room:crm:admin'), 'Cajero NO debe estar en room:crm:admin');
+    socket.disconnect();
+  });
+
+  // TEST D1-04: CRM accountant (o staff no-admin)
+  await test('173. TEST D1-04: CRM staff con rol no-admin obtiene room:crm:staff y NO room:crm:admin', async () => {
+    // usr-producer-dev en users_db tiene role 'producer' (no-admin CRM staff)
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '87654321',
+        pin: '4321'
+      })
+    });
+    const cookie = resLogin.setCookie.split(';')[0];
+    const socket = await connectTestSocket(cookie);
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.status, 200);
+    assert.strictEqual(resRooms.data.identity.isAnonymous, false);
+    assert.ok(resRooms.data.rooms.includes('room:crm:staff'), 'Debe estar en room:crm:staff');
+    assert.ok(!resRooms.data.rooms.includes('room:crm:admin'), 'NO debe estar en room:crm:admin');
+    socket.disconnect();
+  });
+
+  // TEST D1-05: Portal client
+  await test('174. TEST D1-05: Portal client obtiene únicamente su room:portal:client:<id> (NO CRM rooms)', async () => {
+    const resLogin = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '778899'
+      })
+    });
+    assert.strictEqual(resLogin.status, 200);
+    const cookie = resLogin.setCookie.split(';')[0];
+    const socket = await connectTestSocket(cookie);
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.status, 200);
+    assert.strictEqual(resRooms.data.identity.portal.type, 'client');
+    assert.strictEqual(resRooms.data.identity.portal.id, 'cli-demo-1');
+    assert.ok(resRooms.data.rooms.includes('room:public'));
+    assert.ok(resRooms.data.rooms.includes('room:portal:client:cli-demo-1'), 'Debe estar en su propia room de cliente');
+    assert.ok(!resRooms.data.rooms.includes('room:crm:staff'), 'Cliente NO debe estar en room:crm:staff');
+    assert.ok(!resRooms.data.rooms.includes('room:crm:admin'), 'Cliente NO debe estar en room:crm:admin');
+    socket.disconnect();
+  });
+
+  // TEST D1-06: Portal producer
+  await test('175. TEST D1-06: Portal producer obtiene únicamente su room:portal:producer:<id> (NO CRM rooms)', async () => {
+    const resLogin = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: '04125550101',
+        pin: '445566'
+      })
+    });
+    assert.strictEqual(resLogin.status, 200);
+    const cookie = resLogin.setCookie.split(';')[0];
+    const socket = await connectTestSocket(cookie);
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.status, 200);
+    assert.strictEqual(resRooms.data.identity.portal.type, 'producer');
+    assert.strictEqual(resRooms.data.identity.portal.id, 'sup-demo-1');
+    assert.ok(resRooms.data.rooms.includes('room:public'));
+    assert.ok(resRooms.data.rooms.includes('room:portal:producer:sup-demo-1'), 'Debe estar en su propia room de productor');
+    assert.ok(!resRooms.data.rooms.includes('room:crm:staff'), 'Productor NO debe estar en room:crm:staff');
+    assert.ok(!resRooms.data.rooms.includes('room:crm:admin'), 'Productor NO debe estar en room:crm:admin');
+    socket.disconnect();
+  });
+
+  // TEST D1-07: Client A NO portal room de Client B
+  await test('176. TEST D1-07: Client A no obtiene la room de Client B', async () => {
+    const resLogin = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '778899'
+      })
+    });
+    assert.strictEqual(resLogin.status, 200);
+    const cookie = resLogin.setCookie.split(';')[0];
+    const socket = await connectTestSocket(cookie);
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.ok(resRooms.data.rooms.includes('room:portal:client:cli-demo-1'));
+    assert.ok(!resRooms.data.rooms.includes('room:portal:client:cli-demo-2'), 'Client A NO debe estar en room de Client B');
+    socket.disconnect();
+  });
+
+  // TEST D1-08: Producer A NO portal room de Producer B
+  await test('177. TEST D1-08: Producer A no obtiene la room de Producer B', async () => {
+    const resLogin = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: '04125550101',
+        pin: '445566'
+      })
+    });
+    assert.strictEqual(resLogin.status, 200);
+    const cookie = resLogin.setCookie.split(';')[0];
+    const socket = await connectTestSocket(cookie);
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.ok(resRooms.data.rooms.includes('room:portal:producer:sup-demo-1'));
+    assert.ok(!resRooms.data.rooms.includes('room:portal:producer:sup-demo-2'), 'Producer A NO debe estar en room de Producer B');
+    socket.disconnect();
+  });
+
+  // TEST D1-09: Forged handshake identity en query/auth/headers NO modifica la identidad
+  await test('178. TEST D1-09: Forged handshake identity (query/auth/headers/body) no altera la identidad', async () => {
+    // Conexión anónima pero intentando suplantar a admin y client mediante query y auth payload
+    const socket = await connectTestSocket(null, {
+      query: { clientId: 'cli-demo-1', role: 'admin', userId: 'usr-admin-dev', room: 'room:crm:admin' },
+      auth: { clientId: 'cli-demo-1', role: 'admin', userId: 'usr-admin-dev' }
+    });
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.data.identity.isAnonymous, true, 'Debe permanecer estrictamente anónimo');
+    assert.strictEqual(resRooms.data.identity.crm, null);
+    assert.strictEqual(resRooms.data.identity.portal, null);
+    assert.ok(!resRooms.data.rooms.includes('room:crm:staff'));
+    assert.ok(!resRooms.data.rooms.includes('room:crm:admin'));
+    assert.ok(!resRooms.data.rooms.includes('room:portal:client:cli-demo-1'));
+    socket.disconnect();
+  });
+
+  // TEST D1-10: Inactive CRM user
+  await test('179. TEST D1-10: Usuario CRM inactivo o inexistente no recibe rooms privadas', async () => {
+    // Sesión con userId inexistente
+    const fakeCookie = '__kalu_sid=s%3Afake_invalid_session_crm.xyz123';
+    const socket = await connectTestSocket(fakeCookie);
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.data.identity.isAnonymous, true);
+    assert.strictEqual(resRooms.data.identity.crm, null);
+    assert.ok(!resRooms.data.rooms.includes('room:crm:staff'));
+    assert.ok(!resRooms.data.rooms.includes('room:crm:admin'));
+    socket.disconnect();
+  });
+
+  // TEST D1-11: Inactive client
+  await test('180. TEST D1-11: Cliente inexistente o inactivo en sesión no recibe portal room', async () => {
+    const fakeCookie = '__kalu_sid=s%3Afake_invalid_session_client.xyz123';
+    const socket = await connectTestSocket(fakeCookie);
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.data.identity.isAnonymous, true);
+    assert.strictEqual(resRooms.data.identity.portal, null);
+    assert.ok(!resRooms.data.rooms.includes('room:portal:client:cli-fake'));
+    socket.disconnect();
+  });
+
+  // TEST D1-12: Inactive producer
+  await test('181. TEST D1-12: Productor inexistente o inactivo en sesión no recibe portal room', async () => {
+    const fakeCookie = '__kalu_sid=s%3Afake_invalid_session_producer.xyz123';
+    const socket = await connectTestSocket(fakeCookie);
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.data.identity.isAnonymous, true);
+    assert.strictEqual(resRooms.data.identity.portal, null);
+    assert.ok(!resRooms.data.rooms.includes('room:portal:producer:sup-fake'));
+    socket.disconnect();
+  });
+
+  // TEST D1-13: CRM + Portal coexist
+  await test('182. TEST D1-13: Coexistencia CRM + Portal en la misma sesión asigna ambas rooms sin sobrescribir', async () => {
+    // 1. Iniciar sesión como CRM admin
+    const resLoginCRM = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    assert.strictEqual(resLoginCRM.status, 200);
+    const crmCookie = resLoginCRM.setCookie.split(';')[0];
+
+    // 2. En la misma sesión (mismo cookie), autenticar portal client
+    const resLoginPortal = await request('/api/portal/auth/login', {
+      method: 'POST',
+      headers: { 'Cookie': crmCookie },
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '778899'
+      })
+    });
+    assert.strictEqual(resLoginPortal.status, 200);
+    const combinedCookie = resLoginPortal.setCookie ? resLoginPortal.setCookie.split(';')[0] : crmCookie;
+
+    // 3. Conectar socket con la cookie combinada
+    const socket = await connectTestSocket(combinedCookie);
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.data.identity.isAnonymous, false);
+    assert.ok(resRooms.data.identity.crm, 'Debe contener identidad CRM');
+    assert.strictEqual(resRooms.data.identity.crm.role, 'admin');
+    assert.ok(resRooms.data.identity.portal, 'Debe contener identidad Portal');
+    assert.strictEqual(resRooms.data.identity.portal.type, 'client');
+    assert.strictEqual(resRooms.data.identity.portal.id, 'cli-demo-1');
+
+    // Rooms
+    assert.ok(resRooms.data.rooms.includes('room:crm:staff'), 'Debe pertenecer a room:crm:staff');
+    assert.ok(resRooms.data.rooms.includes('room:crm:admin'), 'Debe pertenecer a room:crm:admin');
+    assert.ok(resRooms.data.rooms.includes('room:portal:client:cli-demo-1'), 'Debe pertenecer a room:portal:client:cli-demo-1');
+    socket.disconnect();
+  });
+
+  // TEST D1-14: No socket mutator
+  await test('183. TEST D1-14: Socket.IO no expone listeners mutadores entrantes (update, delete, process-sale, join-room)', async () => {
+    const socket = await connectTestSocket(null);
+    assert.ok(socket && socket.id);
+
+    // Intentar emitir mutación simulada por socket
+    let mutationAckReceived = false;
+    socket.emit('process-sale', { test: true }, () => {
+      mutationAckReceived = true;
+    });
+    socket.emit('join', 'room:crm:admin');
+    socket.emit('join-room', 'room:crm:admin');
+
+    await new Promise(r => setTimeout(r, 300));
+    assert.strictEqual(mutationAckReceived, false, 'No deben existir listeners mutadores entrantes');
+
+    // Verificar que un socket anónimo no pudo unirse a room:crm:admin vía emit
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.ok(!resRooms.data.rooms.includes('room:crm:admin'), 'Cliente no puede solicitar unirse a rooms');
+    socket.disconnect();
+  });
+
+  // TEST D1-15: Cookie/session handshake
+  await test('184. TEST D1-15: Socket.IO handshake comparte la misma sesión Express (sin segundo auth)', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const cookie = resLogin.setCookie.split(';')[0];
+    const socket = await connectTestSocket(cookie);
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.data.sessionIdPresent, true, 'Socket debe compartir el session ID de Express');
+    assert.strictEqual(resRooms.data.identity.crm.userId, 'usr-admin-dev');
+    socket.disconnect();
+  });
+
+  // TEST D1-16: Existing HTTP auth regression
+  await test('185. TEST D1-16: Regresión HTTP: Endpoints HTTP de 1A/1B/1C/1D-A/B/C operan con normalidad', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const cookie = resLogin.setCookie.split(';')[0];
+    const resMe = await request('/api/auth/me', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(resMe.status, 200);
+    assert.strictEqual(resMe.data.user.role, 'admin');
+
+    const resCollections = await request('/api/collections/settings', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(resCollections.status, 200);
+  });
+
+  // ============================================================
+  // PRUEBAS DE FASE 1D-D.2: EMISIÓN SOCKET.IO DIRIGIDA + AISLAMIENTO DE PAYLOADS
+  // ============================================================
+
+  // Helpers específicos de autenticación para pruebas D2
+  async function loginAdminD2() {
+    const res = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    return {
+      cookie: res.setCookie.split(';')[0],
+      csrf: res.data.csrfToken,
+      user: res.data.user
+    };
+  }
+
+  async function loginCashierD2() {
+    const res = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    return {
+      cookie: res.setCookie.split(';')[0],
+      csrf: res.data.csrfToken,
+      user: res.data.user
+    };
+  }
+
+  async function loginClientAD2() {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '778899'
+      })
+    });
+    return {
+      cookie: res.setCookie.split(';')[0],
+      csrf: res.data.csrfToken,
+      user: res.data.portalUser
+    };
+  }
+
+  async function loginClientBD2() {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04249876543',
+        pin: '112233'
+      })
+    });
+    return {
+      cookie: res.setCookie.split(';')[0],
+      csrf: res.data.csrfToken,
+      user: res.data.portalUser
+    };
+  }
+
+  async function loginProducerAD2() {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: '04125550101',
+        pin: '445566'
+      })
+    });
+    return {
+      cookie: res.setCookie.split(';')[0],
+      csrf: res.data.csrfToken,
+      user: res.data.portalUser
+    };
+  }
+
+  async function loginProducerBD2() {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: '04169998877',
+        pin: '998877'
+      })
+    });
+    return {
+      cookie: res.setCookie.split(';')[0],
+      csrf: res.data.csrfToken,
+      user: res.data.portalUser
+    };
+  }
+
+  // Helper para esperar eventos socket específicos con timeout
+  function waitForSocketEvent(socket, eventName, timeoutMs = 1500) {
+    return new Promise((resolve) => {
+      let resolved = false;
+      const handler = (data) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          socket.off(eventName, handler);
+          resolve({ received: true, data });
+        }
+      };
+      socket.on(eventName, handler);
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          socket.off(eventName, handler);
+          resolve({ received: false, data: null });
+        }
+      }, timeoutMs);
+    });
+  }
+
+  // D2-01: anonymous NO recibe collection_delta privado
+  await test('186. TEST D2-01: Conexión anónima NO recibe collection_delta de colecciones privadas', async () => {
+    const anonSocket = await connectTestSocket(null);
+    assert.ok(anonSocket && anonSocket.id);
+
+    const eventPromise = waitForSocketEvent(anonSocket, 'collection_delta', 800);
+    emitCollectionDeltaScoped({
+      action: 'add',
+      collection: 'transactions',
+      doc: { id: 'tx-test-anon', clientId: 'cli-demo-1', amount: 50 }
+    });
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, false, 'Socket anónimo no debe recibir deltas de transactions');
+    anonSocket.disconnect();
+  });
+
+  // D2-02: anonymous NO recibe collection_updated privado
+  await test('187. TEST D2-02: Conexión anónima NO recibe collection_updated de colecciones privadas', async () => {
+    const anonSocket = await connectTestSocket(null);
+    assert.ok(anonSocket && anonSocket.id);
+
+    const eventPromise = waitForSocketEvent(anonSocket, 'collection_updated', 800);
+    emitCollectionUpdatedScoped('transactions');
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, false, 'Socket anónimo no debe recibir collection_updated de transactions');
+    anonSocket.disconnect();
+  });
+
+  // D2-03: admin recibe evento interno autorizado
+  await test('188. TEST D2-03: Admin CRM recibe eventos internos de colecciones administrativas (adminLedger, settings)', async () => {
+    const { cookie: adminCookie } = await loginAdminD2();
+    const adminSocket = await connectTestSocket(adminCookie);
+    assert.ok(adminSocket && adminSocket.id);
+
+    const eventPromise = waitForSocketEvent(adminSocket, 'collection_delta', 1200);
+    emitCollectionDeltaScoped({
+      action: 'add',
+      collection: 'adminLedger',
+      doc: { id: 'ledger-test-1', amount: 500, type: 'capital_injection' }
+    });
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, true, 'Admin CRM debe recibir delta de adminLedger');
+    assert.strictEqual(result.data.doc.id, 'ledger-test-1');
+    adminSocket.disconnect();
+  });
+
+  // D2-04: cajero recibe únicamente eventos CRM que su matriz actual permite (NO adminLedger)
+  await test('189. TEST D2-04: Cajero recibe eventos operativos CRM pero NO eventos administrativos exclusivos (adminLedger)', async () => {
+    const { cookie: cashierCookie } = await loginCashierD2();
+    const cashierSocket = await connectTestSocket(cashierCookie);
+    assert.ok(cashierSocket && cashierSocket.id);
+
+    // 1. Debe recibir evento operativo (bills / transactions / kardex)
+    const billPromise = waitForSocketEvent(cashierSocket, 'collection_delta', 1200);
+    emitCollectionDeltaScoped({
+      action: 'add',
+      collection: 'bills',
+      doc: { id: 'bill-test-cashier', amount: 20 }
+    });
+    const billResult = await billPromise;
+    assert.strictEqual(billResult.received, true, 'Cajero debe recibir delta operativo de bills');
+
+    // 2. NO debe recibir evento de adminLedger
+    const ledgerPromise = waitForSocketEvent(cashierSocket, 'collection_delta', 800);
+    emitCollectionDeltaScoped({
+      action: 'add',
+      collection: 'adminLedger',
+      doc: { id: 'ledger-secret-test', amount: 9999 }
+    });
+    const ledgerResult = await ledgerPromise;
+    assert.strictEqual(ledgerResult.received, false, 'Cajero NO debe recibir deltas de adminLedger');
+
+    cashierSocket.disconnect();
+  });
+
+  // D2-05: client A recibe transaction de A
+  await test('190. TEST D2-05: Portal Client A recibe únicamente transactions pertenecientes a Client A', async () => {
+    const { cookie: clientACookie } = await loginClientAD2();
+    const clientASocket = await connectTestSocket(clientACookie);
+    assert.ok(clientASocket && clientASocket.id);
+
+    const eventPromise = waitForSocketEvent(clientASocket, 'collection_delta', 1200);
+    emitCollectionDeltaScoped({
+      action: 'add',
+      collection: 'transactions',
+      doc: { id: 'tx-client-a-test', clientId: 'cli-demo-1', amount: 45.5, status: 'Completado' }
+    });
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, true, 'Cliente A debe recibir su propia transacción');
+    assert.strictEqual(result.data.doc.id, 'tx-client-a-test');
+    assert.strictEqual(result.data.doc.clientId, 'cli-demo-1');
+    clientASocket.disconnect();
+  });
+
+  // D2-06: client A NO recibe transaction de B
+  await test('191. TEST D2-06: Portal Client A NO recibe transactions pertenecientes a Client B', async () => {
+    const { cookie: clientACookie } = await loginClientAD2();
+    const clientASocket = await connectTestSocket(clientACookie);
+    assert.ok(clientASocket && clientASocket.id);
+
+    const eventPromise = waitForSocketEvent(clientASocket, 'collection_delta', 800);
+    emitCollectionDeltaScoped({
+      action: 'add',
+      collection: 'transactions',
+      doc: { id: 'tx-client-b-test', clientId: 'cli-demo-2', amount: 150.0, status: 'Completado' }
+    });
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, false, 'Cliente A jamás debe recibir transacciones de Cliente B');
+    clientASocket.disconnect();
+  });
+
+  // D2-07: producer A recibe cheeseTrip de A
+  await test('192. TEST D2-07: Portal Producer A recibe cheeseTrips pertenecientes a Producer A', async () => {
+    const { cookie: producerACookie } = await loginProducerAD2();
+    const producerASocket = await connectTestSocket(producerACookie);
+    assert.ok(producerASocket && producerASocket.id);
+
+    const eventPromise = waitForSocketEvent(producerASocket, 'collection_delta', 1200);
+    emitCollectionDeltaScoped({
+      action: 'add',
+      collection: 'cheeseTrips',
+      doc: { id: 'trip-producer-a-test', supplierId: 'sup-demo-1', totalKg: 200, status: 'Completado' }
+    });
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, true, 'Productor A debe recibir su propio viaje de queso');
+    assert.strictEqual(result.data.doc.id, 'trip-producer-a-test');
+    producerASocket.disconnect();
+  });
+
+  // D2-08: producer A NO recibe cheeseTrip de B
+  await test('193. TEST D2-08: Portal Producer A NO recibe cheeseTrips de Producer B', async () => {
+    const { cookie: producerACookie } = await loginProducerAD2();
+    const producerASocket = await connectTestSocket(producerACookie);
+    assert.ok(producerASocket && producerASocket.id);
+
+    const eventPromise = waitForSocketEvent(producerASocket, 'collection_delta', 800);
+    emitCollectionDeltaScoped({
+      action: 'add',
+      collection: 'cheeseTrips',
+      doc: { id: 'trip-producer-b-test', supplierId: 'sup-demo-2', totalKg: 450, status: 'Completado' }
+    });
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, false, 'Productor A jamás debe recibir viajes de Productor B');
+    producerASocket.disconnect();
+  });
+
+  // D2-09: client A NO recibe kardex
+  await test('194. TEST D2-09: Portal Client NO recibe eventos de la colección kardex', async () => {
+    const { cookie: clientACookie } = await loginClientAD2();
+    const clientASocket = await connectTestSocket(clientACookie);
+    assert.ok(clientASocket && clientASocket.id);
+
+    const eventPromise = waitForSocketEvent(clientASocket, 'collection_delta', 800);
+    emitCollectionDeltaScoped({
+      action: 'add',
+      collection: 'kardex',
+      doc: { id: 'kardex-internal-1', productId: 'p1', quantity: 10, unitCost: 4.5 }
+    });
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, false, 'Portal Client no debe recibir deltas de kardex');
+    clientASocket.disconnect();
+  });
+
+  // D2-10: client A NO recibe adminLedger
+  await test('195. TEST D2-10: Portal Client NO recibe eventos de adminLedger', async () => {
+    const { cookie: clientACookie } = await loginClientAD2();
+    const clientASocket = await connectTestSocket(clientACookie);
+    assert.ok(clientASocket && clientASocket.id);
+
+    const eventPromise = waitForSocketEvent(clientASocket, 'collection_delta', 800);
+    emitCollectionDeltaScoped({
+      action: 'add',
+      collection: 'adminLedger',
+      doc: { id: 'ledger-secret', amount: 50000 }
+    });
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, false, 'Portal Client no debe recibir adminLedger');
+    clientASocket.disconnect();
+  });
+
+  // D2-11: producer A NO recibe business_debts
+  await test('196. TEST D2-11: Portal Producer NO recibe eventos de business_debts ni deudas internas', async () => {
+    const { cookie: producerACookie } = await loginProducerAD2();
+    const producerASocket = await connectTestSocket(producerACookie);
+    assert.ok(producerASocket && producerASocket.id);
+
+    const eventPromise = waitForSocketEvent(producerASocket, 'collection_delta', 800);
+    emitCollectionDeltaScoped({
+      action: 'add',
+      collection: 'business_debts',
+      doc: { id: 'debt-internal-1', amount: 12000, creditor: 'Banco' }
+    });
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, false, 'Portal Producer no debe recibir business_debts');
+    producerASocket.disconnect();
+  });
+
+  // D2-12: portal NO recibe users/settings internos
+  await test('197. TEST D2-12: Usuarios del portal NO reciben eventos de users ni settings confidenciales', async () => {
+    const { cookie: clientACookie } = await loginClientAD2();
+    const clientASocket = await connectTestSocket(clientACookie);
+    assert.ok(clientASocket && clientASocket.id);
+
+    const eventPromise = waitForSocketEvent(clientASocket, 'collection_delta', 800);
+    emitCollectionDeltaScoped({
+      action: 'update',
+      collection: 'users',
+      doc: { id: 'usr-admin-dev', name: 'Admin', role: 'admin' }
+    });
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, false, 'Portal no debe recibir eventos de users');
+    clientASocket.disconnect();
+  });
+
+  // D2-13: public product event no contiene wholesalePrice/cost/supplier/internal fields
+  await test('198. TEST D2-13: Evento público de products es sanitizado y no contiene wholesalePrice, cost ni notas internas', async () => {
+    const anonSocket = await connectTestSocket(null);
+    assert.ok(anonSocket && anonSocket.id);
+
+    const eventPromise = waitForSocketEvent(anonSocket, 'collection_delta', 1200);
+    emitCollectionDeltaScoped({
+      action: 'update',
+      collection: 'products',
+      doc: {
+        id: 'p-test-sanitized',
+        name: 'Queso Duro Santa Bárbara',
+        pricePerKg: 6.5,
+        wholesalePrice: 4.2,
+        cost: 3.8,
+        margin: 0.35,
+        adminNotes: 'Confidencial margen Sabanota'
+      }
+    });
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, true, 'Socket público debe recibir el evento de producto');
+    assert.strictEqual(result.data.doc.name, 'Queso Duro Santa Bárbara');
+    assert.strictEqual(result.data.doc.pricePerKg, 6.5);
+    assert.strictEqual(result.data.doc.wholesalePrice, undefined, 'wholesalePrice debe estar sanitizado');
+    assert.strictEqual(result.data.doc.cost, undefined, 'cost debe estar sanitizado');
+    assert.strictEqual(result.data.doc.adminNotes, undefined, 'adminNotes debe estar sanitizado');
+    anonSocket.disconnect();
+  });
+
+  // D2-14: collection_updated respeta exactamente el mismo scoping
+  await test('199. TEST D2-14: collection_updated respeta scoping estricto (no llega a portales para colecciones privadas)', async () => {
+    const { cookie: clientACookie } = await loginClientAD2();
+    const clientASocket = await connectTestSocket(clientACookie);
+    assert.ok(clientASocket && clientASocket.id);
+
+    const eventPromise = waitForSocketEvent(clientASocket, 'collection_updated', 800);
+    emitCollectionUpdatedScoped('kardex');
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, false, 'Portal no debe recibir collection_updated de kardex');
+    clientASocket.disconnect();
+  });
+
+  // D2-15: DELETE de recurso de client A no llega a client B
+  await test('200. TEST D2-15: DELETE de recurso perteneciente a Client A se notifica a A pero NO a Client B', async () => {
+    const { cookie: clientACookie } = await loginClientAD2();
+    const { cookie: clientBCookie } = await loginClientBD2();
+
+    const socketA = await connectTestSocket(clientACookie);
+    const socketB = await connectTestSocket(clientBCookie);
+
+    const promiseA = waitForSocketEvent(socketA, 'collection_delta', 1200);
+    const promiseB = waitForSocketEvent(socketB, 'collection_delta', 800);
+
+    const previousDoc = { id: 'ord-client-a-del', clientId: 'cli-demo-1', total: 30 };
+    emitCollectionDeltaScoped(
+      { action: 'delete', collection: 'mobileOrders', doc: { id: 'ord-client-a-del' } },
+      previousDoc
+    );
+
+    const [resA, resB] = await Promise.all([promiseA, promiseB]);
+    assert.strictEqual(resA.received, true, 'Client A debe recibir el delete de su pedido');
+    assert.strictEqual(resB.received, false, 'Client B NO debe recibir el delete del pedido de A');
+
+    socketA.disconnect();
+    socketB.disconnect();
+  });
+
+  // D2-16: DELETE de recurso de producer A no llega a producer B
+  await test('201. TEST D2-16: DELETE de recurso perteneciente a Producer A se notifica a A pero NO a Producer B', async () => {
+    const { cookie: producerACookie } = await loginProducerAD2();
+    const { cookie: producerBCookie } = await loginProducerBD2();
+
+    const socketA = await connectTestSocket(producerACookie);
+    const socketB = await connectTestSocket(producerBCookie);
+
+    const promiseA = waitForSocketEvent(socketA, 'collection_delta', 1200);
+    const promiseB = waitForSocketEvent(socketB, 'collection_delta', 800);
+
+    const previousDoc = { id: 'trip-producer-a-del', supplierId: 'sup-demo-1', totalKg: 300 };
+    emitCollectionDeltaScoped(
+      { action: 'delete', collection: 'cheeseTrips', doc: { id: 'trip-producer-a-del' } },
+      previousDoc
+    );
+
+    const [resA, resB] = await Promise.all([promiseA, promiseB]);
+    assert.strictEqual(resA.received, true, 'Producer A debe recibir delete de su viaje');
+    assert.strictEqual(resB.received, false, 'Producer B NO debe recibir delete de A');
+
+    socketA.disconnect();
+    socketB.disconnect();
+  });
+
+  // D2-17: ownership change A -> B notifica eliminación al propietario anterior y alta al nuevo
+  await test('202. TEST D2-17: Cambio de propietario A -> B emite remoción al owner anterior y actualización al nuevo', async () => {
+    const { cookie: clientACookie } = await loginClientAD2();
+    const { cookie: clientBCookie } = await loginClientBD2();
+
+    const socketA = await connectTestSocket(clientACookie);
+    const socketB = await connectTestSocket(clientBCookie);
+
+    const promiseA = waitForSocketEvent(socketA, 'collection_delta', 1200);
+    const promiseB = waitForSocketEvent(socketB, 'collection_delta', 1200);
+
+    const previousDoc = { id: 'tx-reassigned', clientId: 'cli-demo-1', amount: 100 };
+    const updatedDoc = { id: 'tx-reassigned', clientId: 'cli-demo-2', amount: 100 };
+
+    emitCollectionDeltaScoped(
+      { action: 'update', collection: 'transactions', doc: updatedDoc },
+      previousDoc
+    );
+
+    const [resA, resB] = await Promise.all([promiseA, promiseB]);
+    assert.strictEqual(resA.received, true, 'Client A debe recibir delta para remover la transacción reasignada');
+    assert.strictEqual(resA.data.action, 'delete', 'Client A debe recibir acción delete');
+    assert.strictEqual(resB.received, true, 'Client B debe recibir delta con la nueva transacción asignada');
+    assert.strictEqual(resB.data.action, 'update', 'Client B debe recibir acción update');
+
+    socketA.disconnect();
+    socketB.disconnect();
+  });
+
+  // D2-18: process-sale no genera eventos duplicados para una misma escritura
+  await test('203. TEST D2-18: POST /api/pos/process-sale genera exactamente 1 emisión por movimiento y no eventos duplicados', async () => {
+    const { cookie: adminCookie, csrf } = await loginAdminD2();
+    const adminSocket = await connectTestSocket(adminCookie);
+    assert.ok(adminSocket && adminSocket.id);
+
+    const receivedDeltas = [];
+    adminSocket.on('collection_delta', (d) => {
+      receivedDeltas.push(d);
+    });
+
+    const resSale = await request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: { 'Cookie': adminCookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        saleItems: [{ productId: 'prod-demo-1', quantityKg: 1, subtotal: 4.5 }],
+        clientId: 'cli-demo-1',
+        customerName: 'Cliente Demo Comercial S.A.',
+        paidAmount: 4.5,
+        saleTotalAmount: 4.5,
+        paymentMethodType: 'Efectivo'
+      })
+    });
+    assert.strictEqual(resSale.status, 200);
+
+    await new Promise(r => setTimeout(r, 600));
+
+    // Contar emisiones de kardex
+    const kardexEmissions = receivedDeltas.filter(d => d.collection === 'kardex');
+    assert.strictEqual(kardexEmissions.length, 1, 'Debe haber exactamente 1 emisión de kardex para la venta');
+
+    adminSocket.disconnect();
+  });
+
+  // D2-19: database_restored no expone payload sensible a portal
+  await test('204. TEST D2-19: database_restored NO llega a usuarios de portal ni expone resumen sensible', async () => {
+    const { cookie: clientACookie } = await loginClientAD2();
+    const clientASocket = await connectTestSocket(clientACookie);
+    assert.ok(clientASocket && clientASocket.id);
+
+    const eventPromise = waitForSocketEvent(clientASocket, 'database_restored', 800);
+
+    const { cookie: adminCookie, csrf } = await loginAdminD2();
+    const resRestore = await request('/api/restore-backup', {
+      method: 'POST',
+      headers: { 'Cookie': adminCookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        collections: {
+          banners: []
+        }
+      })
+    });
+    assert.strictEqual(resRestore.status, 200);
+
+    const result = await eventPromise;
+    assert.strictEqual(result.received, false, 'Portal Client jamás debe recibir evento database_restored');
+    clientASocket.disconnect();
+  });
+
+  // D2-20: Socket.IO CORS rechaza origin no permitido
+  await test('205. TEST D2-20: isOriginAllowed rechaza orígenes no permitidos y valida allowlist', () => {
+    assert.strictEqual(isOriginAllowed('http://evil-hacker.com'), false, 'Origin desconocido debe ser rechazado');
+    assert.strictEqual(isOriginAllowed('https://malicious-site.xyz'), false, 'Sitio malicioso debe ser rechazado');
+  });
+
+  // D2-21: Socket.IO permite origins DEV explícitamente autorizados
+  await test('206. TEST D2-21: isOriginAllowed permite orígenes de desarrollo locales autorizados', () => {
+    assert.strictEqual(isOriginAllowed('http://localhost:3000'), true, 'localhost:3000 debe estar permitido');
+    assert.strictEqual(isOriginAllowed('http://127.0.0.1:3000'), true, '127.0.0.1:3000 debe estar permitido');
+    assert.strictEqual(isOriginAllowed('http://localhost:5173'), true, 'localhost:5173 debe estar permitido');
+    assert.strictEqual(isOriginAllowed(''), true, 'Petición local sin Origin debe estar permitida');
+  });
+
+  // D2-22: payload de portal no contiene passwordHash/pinHash/tokens/secrets
+  await test('207. TEST D2-22: sanitizeClientPayload y sanitizeProducerPayload eliminan hashes, pines y secretos', () => {
+    const rawDoc = {
+      id: 'doc-sensitive-1',
+      name: 'Cliente Demo',
+      password: 'PlainPassword123',
+      pin: '1234',
+      passwordHash: '$2a$10$abcdef1234567890',
+      pinHash: '$2a$10$0987654321fedcba',
+      wholesalePrice: 3.5,
+      unitCost: 3.0,
+      adminNotes: 'Nota confidencial',
+      balance: 100
+    };
+
+    const sanitizedClient = sanitizeClientPayload('transactions', rawDoc);
+    assert.strictEqual(sanitizedClient.password, undefined);
+    assert.strictEqual(sanitizedClient.pin, undefined);
+    assert.strictEqual(sanitizedClient.passwordHash, undefined);
+    assert.strictEqual(sanitizedClient.pinHash, undefined);
+    assert.strictEqual(sanitizedClient.wholesalePrice, undefined);
+    assert.strictEqual(sanitizedClient.unitCost, undefined);
+    assert.strictEqual(sanitizedClient.adminNotes, undefined);
+    assert.strictEqual(sanitizedClient.balance, 100);
+
+    const sanitizedProducer = sanitizeProducerPayload('cheeseTrips', rawDoc);
+    assert.strictEqual(sanitizedProducer.passwordHash, undefined);
+    assert.strictEqual(sanitizedProducer.pinHash, undefined);
+    assert.strictEqual(sanitizedProducer.wholesalePrice, undefined);
+    assert.strictEqual(sanitizedProducer.balance, 100);
+  });
+
+  // D2-23: forged clientId/supplierId no altera el destinatario
+  await test('208. TEST D2-23: Socket.IO asignación de rooms no confía en parámetros alterados por el frontend', async () => {
+    // Cliente intenta conectarse enviando auth custom o query params falsificados
+    const socket = await connectTestSocket(null, {
+      auth: { clientId: 'cli-victim-99', role: 'admin' },
+      query: { clientId: 'cli-victim-99', supplierId: 'sup-victim-99' }
+    });
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resRooms.data.identity.isAnonymous, true, 'Debe permanecer anónimo a pesar de auth/query params falsos');
+    assert.ok(!resRooms.data.rooms.includes('room:crm:admin'), 'No debe obtener room admin');
+    assert.ok(!resRooms.data.rooms.includes('room:portal:client:cli-victim-99'), 'No debe obtener room cliente falsa');
+    socket.disconnect();
+  });
+
+  // D2-24: Regresión general y persistencia de 1D-D.2
+  await test('209. TEST D2-24: Verificación de estabilidad general: funciones de emisión operan limpiamente', () => {
+    assert.doesNotThrow(() => {
+      emitCollectionDeltaScoped({ action: 'add', collection: 'banners', doc: { id: 'b1', title: 'Banner' } });
+      emitCollectionUpdatedScoped('banners');
+    });
   });
 
   // ============================================================
