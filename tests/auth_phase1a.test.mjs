@@ -33,7 +33,13 @@ import {
   uploadDir,
   getCollectionFilePath,
   parseAllowedOrigins,
-  normalizeOrigin
+  normalizeOrigin,
+  verifyWhatsAppWebhookSignature,
+  whatsappWebhookLimiter,
+  isWebhookEventProcessed,
+  markWebhookEventProcessed,
+  extractWebhookEventIds,
+  resetProcessedWebhookEventsForTest
 } from '../server.js';
 import crypto from 'crypto';
 
@@ -6163,7 +6169,546 @@ async function runTests() {
 
   // ============================================================
   // FASE 1G-A: ENDURECIMIENTO DEL WEBHOOK DE WHATSAPP (TESTS 1G-A-01 A 1G-A-20)
-  // ===============================
+  // ============================================================
+
+  const TEST_WHATSAPP_SECRET = process.env.WHATSAPP_APP_SECRET || 'kalu_dev_app_secret_meta_hmac_2026';
+  const TEST_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'kalu_dev_verification_token';
+
+  // 1G-A-01: GET verification exitoso con modo y verify_token correcto
+  await test('358. TEST 1G-A-01: GET verification con hub.mode=subscribe y verify_token correcto devuelve 200 y challenge', async () => {
+    const challengeStr = 'challenge_test_12345';
+    const res = await request(`/api/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(TEST_VERIFY_TOKEN)}&hub.challenge=${challengeStr}`);
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data, challengeStr);
+  });
+
+  // 1G-A-02: GET verification con token incorrecto devuelve 403
+  await test('359. TEST 1G-A-02: GET verification con verify_token incorrecto devuelve 403 Forbidden', async () => {
+    const res = await request('/api/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=token_falso&hub.challenge=12345');
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(res.data.error, 'Verificación de webhook no autorizada');
+  });
+
+  // 1G-A-03: GET verification con hub.mode incorrecto devuelve 403
+  await test('360. TEST 1G-A-03: GET verification con hub.mode distinto a subscribe devuelve 403', async () => {
+    const res = await request(`/api/webhook/whatsapp?hub.mode=unsubscribe&hub.verify_token=${encodeURIComponent(TEST_VERIFY_TOKEN)}&hub.challenge=12345`);
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 1G-A-04: POST webhook sin cabecera X-Hub-Signature-256 devuelve 401
+  await test('361. TEST 1G-A-04: POST webhook sin firma X-Hub-Signature-256 es rechazado con 401', async () => {
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      body: JSON.stringify({ object: 'whatsapp_business_account', entry: [] })
+    });
+    assert.strictEqual(res.status, 401);
+    assert.strictEqual(res.data.error, 'Firma requerida');
+  });
+
+  // 1G-A-05: POST webhook con firma inválida devuelve 403
+  await test('362. TEST 1G-A-05: POST webhook con firma X-Hub-Signature-256 incorrecta devuelve 403', async () => {
+    const fakeSig = 'sha256=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': fakeSig },
+      body: JSON.stringify({ object: 'whatsapp_business_account', entry: [] })
+    });
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(res.data.error, 'Firma no autorizada');
+  });
+
+  // 1G-A-06: POST webhook con firma HMAC-SHA256 válida devuelve 200
+  await test('363. TEST 1G-A-06: POST webhook con firma HMAC-SHA256 válida sobre rawBody devuelve 200 OK', async () => {
+    const rawPayload = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: `evt-valid-${Date.now()}`,
+        changes: [{ value: { messaging_product: 'whatsapp' }, field: 'messages' }]
+      }]
+    });
+
+    const signature = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET)
+      .update(Buffer.from(rawPayload, 'utf8'))
+      .digest('hex');
+
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': signature },
+      body: rawPayload
+    });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.status, 'EVENT_RECEIVED');
+  });
+
+  // 1G-A-07: POST con body modificado tras calcular firma devuelve 403
+  await test('364. TEST 1G-A-07: Modificación del payload tras calcular la firma provoca fallo de verificación (403)', async () => {
+    const originalPayload = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'evt-1' }] });
+    const signature = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET)
+      .update(Buffer.from(originalPayload, 'utf8'))
+      .digest('hex');
+
+    // Se envía payload alterado (tampered)
+    const tamperedPayload = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'evt-tampered' }] });
+
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': signature },
+      body: tamperedPayload
+    });
+
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 1G-A-08: POST con JSON equivalente pero espacios/bytes distintos invalida la firma
+  await test('365. TEST 1G-A-08: JSON equivalente con espaciado distinto invalida la firma calculada sobre raw bytes', async () => {
+    const rawA = '{"object":"whatsapp_business_account"}';
+    const rawB = '{ "object" : "whatsapp_business_account" }'; // Mismo JSON semántico, diferentes bytes
+
+    const signatureA = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET)
+      .update(Buffer.from(rawA, 'utf8'))
+      .digest('hex');
+
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': signatureA },
+      body: rawB
+    });
+
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 1G-A-09: Algoritmo de firma no soportado (sha1 o md5) es rechazado
+  await test('366. TEST 1G-A-09: Algoritmo inesperado (sha1=... en lugar de sha256=...) es rechazado', async () => {
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': 'sha1=abcdef1234567890abcdef1234567890abcdef12' },
+      body: JSON.stringify({ test: true })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 1G-A-10: Firma con longitud hexadecimal truncada/incorrecta es rechazada
+  await test('367. TEST 1G-A-10: Firma con longitud truncada (menos de 64 hex chars) es rechazada', async () => {
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': 'sha256=deadbeef' },
+      body: JSON.stringify({ test: true })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 1G-A-11: App Secret y Verify Token nunca son devueltos en las respuestas HTTP de error
+  await test('368. TEST 1G-A-11: Respuestas de error del webhook no exponen secretos en el cuerpo', async () => {
+    const res = await request('/api/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=bad_token');
+    const bodyStr = JSON.stringify(res.data);
+    assert.ok(!bodyStr.includes(TEST_WHATSAPP_SECRET));
+    assert.ok(!bodyStr.includes(TEST_VERIFY_TOKEN));
+  });
+
+  // 1G-A-12: verifyWhatsAppWebhookSignature valida correctamente Buffers
+  await test('369. TEST 1G-A-12: verifyWhatsAppWebhookSignature evalúa estrictamente y rechaza inputs inválidos', async () => {
+    assert.strictEqual(verifyWhatsAppWebhookSignature(null, 'sha256=xxx', 'secret'), false);
+    assert.strictEqual(verifyWhatsAppWebhookSignature(Buffer.from('test'), null, 'secret'), false);
+    assert.strictEqual(verifyWhatsAppWebhookSignature(Buffer.from('test'), 'sha256=xxx', null), false);
+  });
+
+  // 1G-A-13: Webhook válido no se ve bloqueado por CORS
+  await test('370. TEST 1G-A-13: Webhook puede recibir peticiones cross-origin de servidores Meta sin bloqueo', async () => {
+    const rawPayload = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{ id: `evt-meta-cors-${Date.now()}` }]
+    });
+    const sig = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET)
+      .update(Buffer.from(rawPayload, 'utf8'))
+      .digest('hex');
+
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: {
+        'Origin': 'https://graph.facebook.com',
+        'X-Hub-Signature-256': sig
+      },
+      body: rawPayload
+    });
+
+    assert.strictEqual(res.status, 200);
+  });
+
+  // 1G-A-14: Webhook válido puede ser invocado sin cabecera Origin (petición directa server-to-server)
+  await test('371. TEST 1G-A-14: Webhook procesa solicitudes server-to-server legítimas sin cabecera Origin', async () => {
+    const rawPayload = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{ id: `evt-direct-${Date.now()}` }]
+    });
+    const sig = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET)
+      .update(Buffer.from(rawPayload, 'utf8'))
+      .digest('hex');
+
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sig },
+      body: rawPayload
+    });
+
+    assert.strictEqual(res.status, 200);
+  });
+
+  // 1G-A-15: Evento duplicado es detectado por deduplicación e idempotencia granular
+  await test('372. TEST 1G-A-15: Evento con message.id duplicado devuelve EVENT_ALREADY_PROCESSED con 200 OK', async () => {
+    const fixedMsgId = `wamid.dedup_msg_${Date.now()}`;
+    const rawPayload = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: '104857602938475',
+        changes: [{ value: { messages: [{ id: fixedMsgId }] }, field: 'messages' }]
+      }]
+    });
+    const sig = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET)
+      .update(Buffer.from(rawPayload, 'utf8'))
+      .digest('hex');
+
+    // Primera entrega
+    const res1 = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sig },
+      body: rawPayload
+    });
+    assert.strictEqual(res1.status, 200);
+    assert.strictEqual(res1.data.status, 'EVENT_RECEIVED');
+
+    // Segunda entrega (Replay / Retransmisión de Meta)
+    const res2 = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sig },
+      body: rawPayload
+    });
+    assert.strictEqual(res2.status, 200);
+    assert.strictEqual(res2.data.status, 'EVENT_ALREADY_PROCESSED');
+  });
+
+  // 1G-A-16: Payload malformado con firma correcta devuelve 400
+  await test('373. TEST 1G-A-16: Payload no JSON con firma HMAC devuelve 400 Bad Request', async () => {
+    const invalidJson = 'NOT_A_VALID_JSON{{{';
+    const sig = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET)
+      .update(Buffer.from(invalidJson, 'utf8'))
+      .digest('hex');
+
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Hub-Signature-256': sig
+      },
+      body: invalidJson
+    });
+
+    assert.strictEqual(res.status, 400);
+  });
+
+  // 1G-A-17: Intentos de path traversal en propiedades del payload no afectan filesystem
+  await test('374. TEST 1G-A-17: Payload con campos maliciosos (../../etc/passwd) no ejecuta traversal', async () => {
+    const payload = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: '../../traversal_test',
+        changes: [{ field: '../../escape' }]
+      }]
+    });
+    const sig = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET)
+      .update(Buffer.from(payload, 'utf8'))
+      .digest('hex');
+
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sig },
+      body: payload
+    });
+
+    assert.strictEqual(res.status, 200);
+    // Verificar que no se creó ningún archivo espurio
+    assert.strictEqual(fs.existsSync(path.resolve('data-dev/../../escape')), false);
+  });
+
+  // 1G-A-18: Formato de firma insensible a mayúsculas en el prefijo (SHA256=)
+  await test('375. TEST 1G-A-18: Prefijo de firma SHA256= en mayúsculas es normalizado y aceptado', async () => {
+    const payload = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: `evt-case-${Date.now()}` }] });
+    const hex = crypto.createHmac('sha256', TEST_WHATSAPP_SECRET).update(Buffer.from(payload, 'utf8')).digest('hex');
+
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': `SHA256=${hex}` },
+      body: payload
+    });
+
+    assert.strictEqual(res.status, 200);
+  });
+
+  // 1G-A-19: Endpoint /api/privacidad y /privacidad activo y público
+  await test('376. TEST 1G-A-19: Endpoint de Política de Privacidad responde 200 para validación de Meta App', async () => {
+    const res = await request('/api/privacidad');
+    assert.strictEqual(res.status, 200);
+    assert.ok(typeof res.data === 'string' && res.data.includes('Política de Privacidad'));
+  });
+
+  // 1G-A-20: Rate limiter whatsappWebhookLimiter configurado y exportado
+  await test('377. TEST 1G-A-20: whatsappWebhookLimiter está correctamente inicializado', async () => {
+    assert.ok(whatsappWebhookLimiter);
+    assert.strictEqual(typeof whatsappWebhookLimiter, 'function');
+  });
+
+  // ============================================================
+  // FASE 1G-A: IDEMPOTENCIA Y PREVENCIÓN DE REPLAY (TESTS 1G-A-IDEMP-01 A 07)
+  // ============================================================
+
+  const SAME_ACCOUNT_WABA_ID = '104857602938475';
+
+  // 1G-A-IDEMP-01: Dos mensajes distintos de la misma cuenta son procesados independientemente
+  await test('378. TEST 1G-A-IDEMP-01: Dos mensajes con IDs distintos bajo la misma cuenta WABA se procesan independientemente', async () => {
+    const msgA_id = `wamid.msgA_${Date.now()}_1`;
+    const msgB_id = `wamid.msgB_${Date.now()}_2`;
+
+    const payloadA = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: SAME_ACCOUNT_WABA_ID,
+        changes: [{ value: { messages: [{ id: msgA_id }] }, field: 'messages' }]
+      }]
+    });
+    const sigA = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET).update(Buffer.from(payloadA, 'utf8')).digest('hex');
+
+    const resA = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sigA },
+      body: payloadA
+    });
+    assert.strictEqual(resA.status, 200);
+    assert.strictEqual(resA.data.status, 'EVENT_RECEIVED');
+    assert.strictEqual(resA.data.newEvents, 1);
+
+    const payloadB = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: SAME_ACCOUNT_WABA_ID, // Misma cuenta WABA
+        changes: [{ value: { messages: [{ id: msgB_id }] }, field: 'messages' }]
+      }]
+    });
+    const sigB = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET).update(Buffer.from(payloadB, 'utf8')).digest('hex');
+
+    const resB = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sigB },
+      body: payloadB
+    });
+    assert.strictEqual(resB.status, 200);
+    assert.strictEqual(resB.data.status, 'EVENT_RECEIVED');
+    assert.strictEqual(resB.data.newEvents, 1);
+  });
+
+  // 1G-A-IDEMP-02: El mismo mensaje enviado dos veces se deduplica
+  await test('379. TEST 1G-A-IDEMP-02: El mismo mensaje enviado repetidamente se detecta como EVENT_ALREADY_PROCESSED', async () => {
+    const fixedMsgId = `wamid.fixedMsg_${Date.now()}`;
+    const payload = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: SAME_ACCOUNT_WABA_ID,
+        changes: [{ value: { messages: [{ id: fixedMsgId }] }, field: 'messages' }]
+      }]
+    });
+    const sig = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET).update(Buffer.from(payload, 'utf8')).digest('hex');
+
+    // Envío 1
+    const res1 = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sig },
+      body: payload
+    });
+    assert.strictEqual(res1.status, 200);
+    assert.strictEqual(res1.data.status, 'EVENT_RECEIVED');
+
+    // Envío 2 (Replay de Meta)
+    const res2 = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sig },
+      body: payload
+    });
+    assert.strictEqual(res2.status, 200);
+    assert.strictEqual(res2.data.status, 'EVENT_ALREADY_PROCESSED');
+  });
+
+  // 1G-A-IDEMP-03: Dos mensajes distintos dentro del mismo payload son independientes
+  await test('380. TEST 1G-A-IDEMP-03: Un payload con múltiples mensajes procesa cada uno de forma granular', async () => {
+    const multiMsg1 = `wamid.multi1_${Date.now()}`;
+    const multiMsg2 = `wamid.multi2_${Date.now()}`;
+
+    const multiPayload = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: SAME_ACCOUNT_WABA_ID,
+        changes: [{
+          value: {
+            messages: [{ id: multiMsg1 }, { id: multiMsg2 }]
+          },
+          field: 'messages'
+        }]
+      }]
+    });
+    const sig = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET).update(Buffer.from(multiPayload, 'utf8')).digest('hex');
+
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sig },
+      body: multiPayload
+    });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.status, 'EVENT_RECEIVED');
+    assert.strictEqual(res.data.newEvents, 2);
+  });
+
+  // 1G-A-IDEMP-04: Replay exacto del payload con múltiples eventos se deduplica completamente
+  await test('381. TEST 1G-A-IDEMP-04: Replay de un payload multi-evento devuelve EVENT_ALREADY_PROCESSED', async () => {
+    const replayMsg1 = `wamid.replay1_${Date.now()}`;
+    const replayMsg2 = `wamid.replay2_${Date.now()}`;
+
+    const multiPayload = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: SAME_ACCOUNT_WABA_ID,
+        changes: [{
+          value: {
+            messages: [{ id: replayMsg1 }, { id: replayMsg2 }]
+          },
+          field: 'messages'
+        }]
+      }]
+    });
+    const sig = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET).update(Buffer.from(multiPayload, 'utf8')).digest('hex');
+
+    // Primera vez -> Procesa 2
+    const res1 = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sig },
+      body: multiPayload
+    });
+    assert.strictEqual(res1.data.newEvents, 2);
+
+    // Segunda vez -> Detecta replay total
+    const res2 = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sig },
+      body: multiPayload
+    });
+    assert.strictEqual(res2.data.status, 'EVENT_ALREADY_PROCESSED');
+  });
+
+  // 1G-A-IDEMP-05: Eventos sin ID no colisionan artificialmente
+  await test('382. TEST 1G-A-IDEMP-05: extractWebhookEventIds devuelve array vacío ante objetos sin IDs y no genera colisiones falsas', async () => {
+    const emptyPayload = { object: 'whatsapp_business_account', entry: [{ id: SAME_ACCOUNT_WABA_ID, changes: [{ field: 'unknown', value: {} }] }] };
+    const ids = extractWebhookEventIds(emptyPayload);
+    assert.deepStrictEqual(ids, []);
+  });
+
+  // 1G-A-IDEMP-06: entry[0].id NO se utiliza como event ID único de deduplicación
+  await test('383. TEST 1G-A-IDEMP-06: extractWebhookEventIds nunca incluye la clave de cuenta entry[0].id en la lista de deduplicación', async () => {
+    const payload = {
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: 'ACCOUNT_WABA_ID_9999',
+        changes: [{ field: 'messages', value: { messages: [{ id: 'wamid.SPECIFIC_MSG_ID' }] } }]
+      }]
+    };
+    const ids = extractWebhookEventIds(payload);
+    assert.ok(ids.includes('msg:wamid.SPECIFIC_MSG_ID'));
+    assert.ok(!ids.includes('ACCOUNT_WABA_ID_9999'));
+    assert.ok(!ids.includes('msg:ACCOUNT_WABA_ID_9999'));
+  });
+
+  // 1G-A-IDEMP-07: Dos status updates del mismo mensaje con timestamps o estados distintos se procesan
+  await test('384. TEST 1G-A-IDEMP-07: Dos actualizaciones de status (sent -> delivered) se procesan independientemente', async () => {
+    const statusMsgId = `wamid.statusCheck_${Date.now()}`;
+
+    // 1. Status 'sent'
+    const payloadSent = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: SAME_ACCOUNT_WABA_ID,
+        changes: [{
+          value: { statuses: [{ id: statusMsgId, status: 'sent', timestamp: '1789481001' }] },
+          field: 'messages'
+        }]
+      }]
+    });
+    const sigSent = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET).update(Buffer.from(payloadSent, 'utf8')).digest('hex');
+
+    const resSent = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sigSent },
+      body: payloadSent
+    });
+    assert.strictEqual(resSent.status, 200);
+    assert.strictEqual(resSent.data.newEvents, 1);
+
+    // 2. Status 'delivered'
+    const payloadDelivered = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: SAME_ACCOUNT_WABA_ID,
+        changes: [{
+          value: { statuses: [{ id: statusMsgId, status: 'delivered', timestamp: '1789481005' }] },
+          field: 'messages'
+        }]
+      }]
+    });
+    const sigDelivered = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET).update(Buffer.from(payloadDelivered, 'utf8')).digest('hex');
+
+    const resDelivered = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sigDelivered },
+      body: payloadDelivered
+    });
+    assert.strictEqual(resDelivered.status, 200);
+    assert.strictEqual(resDelivered.data.status, 'EVENT_RECEIVED');
+    assert.strictEqual(resDelivered.data.newEvents, 1);
+  });
+
+  // 1G-A-LIMIT-01: WhatsApp Webhook rechaza payloads > 2MB con HTTP 413
+  await test('385. TEST 1G-A-LIMIT-01: WhatsApp Webhook rechaza payloads superiores a 2MB con HTTP 413', async () => {
+    // Generar buffer sintético de 2.2MB
+    const largeDummyText = 'X'.repeat(2.2 * 1024 * 1024);
+    const largePayload = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{ id: SAME_ACCOUNT_WABA_ID, changes: [{ field: 'messages', value: { text: largeDummyText } }] }]
+    });
+    const sig = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET).update(Buffer.from(largePayload, 'utf8')).digest('hex');
+
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sig },
+      body: largePayload
+    });
+
+    assert.strictEqual(res.status, 413, 'Debe devolver HTTP 413 Payload Too Large');
+  });
+
+  // 1G-A-LIMIT-02: Endpoints globales del CRM (e.g. /api/ai/ocr-invoice) aceptan payloads > 2MB (hasta 50MB)
+  await test('386. TEST 1G-A-LIMIT-02: Endpoints globales del CRM/AI aceptan payloads superiores a 2MB sin ser afectados por el límite de 2MB del webhook', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    // Payload JSON de 2.5MB simulando imagen escaneada en Base64 para OCR
+    const largeBase64Image = 'data:image/jpeg;base64,' + 'A'.repeat(2.5 * 1024 * 1024);
+    const res = await request('/api/ai/ocr-invoice', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ imageBase64: largeBase64Image })
+    });
+
+    // No debe ser rechazado con 413 (responderá 200 o 400 por formato, pero nunca 413)
+    assert.notStrictEqual(res.status, 413, 'El endpoint global no debe verse limitado a 2MB');
+  });
+
+  // ============================================================
+  // PRUEBAS DE RATE LIMITER (SE EJECUTAN AL FINAL)
+  // ============================================================
 
   // 1E-A-20: Rate limiter específico de IA se activa ante peticiones excesivas
   await test('249. TEST 1E-A-20: aiRateLimiter retorna HTTP 429 tras superar el umbral de peticiones', async () => {

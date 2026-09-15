@@ -270,7 +270,139 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-app.use(express.json({ limit: '50mb' }));
+// Parser JSON específico para el Webhook de WhatsApp con límite estricto de 2MB y captura de rawBody para HMAC
+const whatsappJsonParser = express.json({
+  limit: '2mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+});
+
+// Parser JSON global para el CRM y endpoints de IA/Uploads con límite de 50MB
+// Excluye /api/webhook/whatsapp para que sea procesado exclusivamente por whatsappJsonParser
+app.use((req, res, next) => {
+  if (req.originalUrl && req.originalUrl.startsWith('/api/webhook/whatsapp')) {
+    return next();
+  }
+  express.json({ limit: '50mb' })(req, res, next);
+});
+
+/**
+ * Validador criptográfico de firma X-Hub-Signature-256 para Webhooks de Meta/WhatsApp (Fase 1G-A)
+ * Utiliza HMAC-SHA256(rawBytes, APP_SECRET) y crypto.timingSafeEqual en tiempo constante.
+ */
+function verifyWhatsAppWebhookSignature(rawBody, signatureHeader, appSecret) {
+  if (!signatureHeader || typeof signatureHeader !== 'string') return false;
+  if (!appSecret || typeof appSecret !== 'string') return false;
+  if (!rawBody || !Buffer.isBuffer(rawBody)) return false;
+
+  const parts = signatureHeader.split('=');
+  if (parts.length !== 2 || parts[0].toLowerCase() !== 'sha256') {
+    return false;
+  }
+
+  const providedHex = parts[1].trim();
+  if (providedHex.length !== 64) {
+    return false;
+  }
+
+  const expectedHmac = crypto.createHmac('sha256', appSecret)
+    .update(rawBody)
+    .digest('hex');
+
+  const bufProvided = Buffer.from(providedHex, 'hex');
+  const bufExpected = Buffer.from(expectedHmac, 'hex');
+
+  if (bufProvided.length !== bufExpected.length) return false;
+  return crypto.timingSafeEqual(bufProvided, bufExpected);
+}
+
+// Rate limiter específico para Webhook de WhatsApp (Prevención de DoS / Flood de peticiones maliciosas)
+const whatsappWebhookLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minuto
+  max: 120, // 120 peticiones por minuto (suficiente para ráfagas Meta sin permitir flood masivo)
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'Demasiadas peticiones al webhook. Rate limit excedido.'
+  }
+});
+
+// Cache efímero de event IDs para deduplicación e idempotencia de Webhook (DEV/TEST In-Memory)
+// NOTA: Para clusters o producción multiserver, se requiere un store distribuido (Redis).
+const processedWebhookEventIds = new Set();
+
+/**
+ * Extrae los IDs de eventos únicos (mensajes, statuses o items) dentro de la estructura estándar de Meta/WhatsApp.
+ * NUNCA utiliza entry[].id (que representa el WABA / Phone Number ID de la cuenta) como ID de evento único.
+ *
+ * Jerarquía de extracción:
+ * 1. entry[].changes[].value.messages[].id (Identificador único de mensaje entrante, e.g. wamid.HBgL...)
+ * 2. entry[].changes[].value.statuses[].id + status (Identificador único de actualización de estado de mensaje)
+ * 3. payload.eventId / payload.id (Solo si es provisto como ID técnico explícito de evento)
+ */
+function extractWebhookEventIds(payload) {
+  if (!payload || typeof payload !== 'object') return [];
+
+  const eventIds = [];
+
+  if (Array.isArray(payload.entry)) {
+    for (const entry of payload.entry) {
+      if (Array.isArray(entry.changes)) {
+        for (const change of entry.changes) {
+          const value = change?.value;
+          if (!value || typeof value !== 'object') continue;
+
+          // 1. Mensajes entrantes individuales
+          if (Array.isArray(value.messages)) {
+            for (const msg of value.messages) {
+              if (msg && msg.id && typeof msg.id === 'string') {
+                eventIds.push(`msg:${msg.id.trim()}`);
+              }
+            }
+          }
+
+          // 2. Actualizaciones de estado de mensajes individuales
+          if (Array.isArray(value.statuses)) {
+            for (const st of value.statuses) {
+              if (st && st.id && typeof st.id === 'string') {
+                const statusType = st.status || st.type || 'update';
+                const statusTs = st.timestamp || '';
+                eventIds.push(`status:${st.id.trim()}:${statusType}:${statusTs}`);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback explícito: si el payload trae un eventId técnico directo (no cuenta WABA)
+  if (eventIds.length === 0 && payload.eventId && typeof payload.eventId === 'string') {
+    eventIds.push(`evt:${payload.eventId.trim()}`);
+  }
+
+  return eventIds;
+}
+
+function isWebhookEventProcessed(eventId) {
+  if (!eventId) return false;
+  return processedWebhookEventIds.has(eventId);
+}
+
+function markWebhookEventProcessed(eventId) {
+  if (!eventId) return;
+  processedWebhookEventIds.add(eventId);
+  // Limitar tamaño del set en memoria para evitar leaks
+  if (processedWebhookEventIds.size > 5000) {
+    const oldest = Array.from(processedWebhookEventIds).slice(0, 1000);
+    for (const id of oldest) processedWebhookEventIds.delete(id);
+  }
+}
+
+function resetProcessedWebhookEventsForTest() {
+  processedWebhookEventIds.clear();
+}
 
 const SESSION_SECRET = process.env.SESSION_SECRET || 'kalu_dev_session_secret_2026_super_safe_and_random';
 
@@ -4571,6 +4703,97 @@ app.get(['/privacidad', '/api/privacidad'], (req, res) => {
   `);
 });
 
+// ============================================================
+// ENDPOINTS DE WEBHOOK DE WHATSAPP / META CLOUD API (FASE 1G-A)
+// ============================================================
+
+/**
+ * 1. GET /api/webhook/whatsapp: Verificación de suscripción del Webhook (Handshake de Meta)
+ * Valida hub.mode === 'subscribe' y hub.verify_token contra process.env.WHATSAPP_VERIFY_TOKEN
+ * con comparación segura en tiempo constante. Devuelve hub.challenge si es válido.
+ */
+app.get('/api/webhook/whatsapp', (req, res) => {
+  try {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN || 'kalu_dev_verification_token';
+
+    if (mode === 'subscribe' && token && safeTimingCompare(String(token), String(expectedToken))) {
+      console.log('[WhatsApp Webhook] ✅ Verificación de suscripción exitosa (Handshake)');
+      return res.status(200).send(String(challenge || ''));
+    }
+
+    console.warn('[WhatsApp Webhook] ❌ Verificación de suscripción fallida: token o modo inválido');
+    return res.status(403).json({ error: 'Verificación de webhook no autorizada' });
+  } catch (err) {
+    console.error('[WhatsApp Webhook] ❌ Error en verificación GET:', err.message);
+    return res.status(500).json({ error: 'Error interno en verificación' });
+  }
+});
+
+/**
+ * 2. POST /api/webhook/whatsapp: Recepción y procesamiento de eventos de WhatsApp
+ * Exige cabecera X-Hub-Signature-256 válida, verificada sobre los bytes exactos de req.rawBody.
+ * Protegido contra PII leaks, flood de peticiones (rate limiting) y ataques de replay.
+ */
+app.post('/api/webhook/whatsapp', whatsappWebhookLimiter, whatsappJsonParser, (req, res) => {
+  try {
+    const signature = req.headers['x-hub-signature-256'] || req.headers['X-Hub-Signature-256'];
+    const appSecret = process.env.WHATSAPP_APP_SECRET || 'kalu_dev_app_secret_meta_hmac_2026';
+
+    // 1. Validar presencia y validez criptográfica de la firma HMAC-SHA256
+    if (!signature) {
+      console.warn('[WhatsApp Webhook] ❌ Petición rechazada: Cabecera X-Hub-Signature-256 ausente');
+      return res.status(401).json({ error: 'Firma requerida' });
+    }
+
+    const isValidSig = verifyWhatsAppWebhookSignature(req.rawBody, signature, appSecret);
+    if (!isValidSig) {
+      console.warn('[WhatsApp Webhook] ❌ Petición rechazada: Firma X-Hub-Signature-256 inválida');
+      return res.status(403).json({ error: 'Firma no autorizada' });
+    }
+
+    const payload = req.body;
+    if (!payload || typeof payload !== 'object') {
+      return res.status(400).json({ error: 'Payload JSON inválido' });
+    }
+
+    // 2. Extraer event IDs técnicos granulares (messages / statuses) para idempotencia
+    const eventIds = extractWebhookEventIds(payload);
+    let allDuplicated = eventIds.length > 0;
+    let newEventsCount = 0;
+
+    for (const evId of eventIds) {
+      if (!isWebhookEventProcessed(evId)) {
+        allDuplicated = false;
+        newEventsCount++;
+        markWebhookEventProcessed(evId);
+      }
+    }
+
+    // Si todos los eventos dentro del payload ya fueron procesados previamente (Replay total)
+    if (eventIds.length > 0 && allDuplicated) {
+      console.log(`[WhatsApp Webhook] ℹ️ Replay total detectado (${eventIds.length} eventos ya procesados), respondiendo 200 OK.`);
+      return res.status(200).json({ status: 'EVENT_ALREADY_PROCESSED', processedCount: 0 });
+    }
+
+    // 3. Procesamiento mínimo y seguro del evento
+    const entry = Array.isArray(payload.entry) ? payload.entry[0] : null;
+    const changes = entry?.changes?.[0];
+    const field = changes?.field || 'unknown';
+
+    console.log(`[WhatsApp Webhook] ✅ Evento verificado recibido. Campo: '${field}', Eventos nuevos: ${newEventsCount}`);
+
+    // Responder HTTP 200 rápido a Meta para cumplir con el SLA de entrega
+    return res.status(200).json({ status: 'EVENT_RECEIVED', newEvents: newEventsCount });
+  } catch (err) {
+    console.error('[WhatsApp Webhook] ❌ Error procesando evento POST:', err.message);
+    return res.status(500).json({ error: 'Error interno procesando webhook' });
+  }
+});
+
 server.listen(PORT, () => {
   console.log(`Backend server (Uploader & WS) running on port ${PORT}`);
   console.log(`Saving databases and files to: ${uploadDir}`);
@@ -4623,5 +4846,11 @@ export {
   ALLOWED_STATIC_EXTENSIONS,
   parseAllowedOrigins,
   normalizeOrigin,
-  getAllowedOrigins
+  getAllowedOrigins,
+  verifyWhatsAppWebhookSignature,
+  whatsappWebhookLimiter,
+  isWebhookEventProcessed,
+  markWebhookEventProcessed,
+  extractWebhookEventIds,
+  resetProcessedWebhookEventsForTest
 };
