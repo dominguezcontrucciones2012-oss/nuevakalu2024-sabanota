@@ -28,7 +28,12 @@ import {
   setGeminiClientForTest,
   getGeminiClient,
   isGeminiConfigured,
-  aiRateLimiter
+  aiRateLimiter,
+  dataDir,
+  uploadDir,
+  backupsDir,
+  getCollectionFilePath,
+  ALLOWED_STATIC_EXTENSIONS
 } from '../server.js';
 
 const BASE_URL = 'http://localhost:3001';
@@ -5547,6 +5552,362 @@ async function runTests() {
     assert.strictEqual(res.status, 200);
     assert.strictEqual(res.data.success, true);
     assert.ok(res.data.urls[0].startsWith('/uploads/upload-'));
+  });
+
+  // ============================================================
+  // PRUEBAS DE FASE 1F-B: SEPARACIÓN DATA_DIR/UPLOAD_DIR & BLINDAJE DE /uploads
+  // ============================================================
+
+  // 1F-B-01: users_db.json NO es accesible vía /uploads
+  await test('290. TEST 1F-B-01: GET /uploads/users_db.json devuelve HTTP 404 Not Found', async () => {
+    const res = await request('/uploads/users_db.json');
+    assert.strictEqual(res.status, 404);
+  });
+
+  // 1F-B-02: clients_db.json NO es accesible vía /uploads
+  await test('291. TEST 1F-B-02: GET /uploads/clients_db.json devuelve HTTP 404 Not Found', async () => {
+    const res = await request('/uploads/clients_db.json');
+    assert.strictEqual(res.status, 404);
+  });
+
+  // 1F-B-03: adminLedger_db.json NO es accesible vía /uploads
+  await test('292. TEST 1F-B-03: GET /uploads/adminLedger_db.json devuelve HTTP 404 Not Found', async () => {
+    const res = await request('/uploads/adminLedger_db.json');
+    assert.strictEqual(res.status, 404);
+  });
+
+  // 1F-B-04: transactions_db.json NO es accesible vía /uploads
+  await test('293. TEST 1F-B-04: GET /uploads/transactions_db.json devuelve HTTP 404 Not Found', async () => {
+    const res = await request('/uploads/transactions_db.json');
+    assert.strictEqual(res.status, 404);
+  });
+
+  // 1F-B-05: Archivo JPEG permitido en uploadDir es servido con 200 y Content-Type image/jpeg
+  await test('294. TEST 1F-B-05: GET /uploads/<archivo.jpg> devuelve 200 con Content-Type image/jpeg', async () => {
+    const testFile = path.join(uploadDir, 'test-asset-valid.jpg');
+    fs.writeFileSync(testFile, Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]));
+    const res = await request('/uploads/test-asset-valid.jpg');
+    assert.strictEqual(res.status, 200);
+    assert.ok((res.headers.get('content-type') || '').includes('image/jpeg'));
+  });
+
+  // 1F-B-06: Archivo PNG permitido en uploadDir es servido con 200 y Content-Type image/png
+  await test('295. TEST 1F-B-06: GET /uploads/<archivo.png> devuelve 200 con Content-Type image/png', async () => {
+    const testFile = path.join(uploadDir, 'test-asset-valid.png');
+    fs.writeFileSync(testFile, Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
+    const res = await request('/uploads/test-asset-valid.png');
+    assert.strictEqual(res.status, 200);
+    assert.ok((res.headers.get('content-type') || '').includes('image/png'));
+  });
+
+  // 1F-B-07: Archivo WEBP permitido en uploadDir es servido con 200 y Content-Type image/webp
+  await test('296. TEST 1F-B-07: GET /uploads/<archivo.webp> devuelve 200 con Content-Type image/webp', async () => {
+    const testFile = path.join(uploadDir, 'test-asset-valid.webp');
+    fs.writeFileSync(testFile, Buffer.from('RIFF....WEBPVP8 ', 'ascii'));
+    const res = await request('/uploads/test-asset-valid.webp');
+    assert.strictEqual(res.status, 200);
+    assert.ok((res.headers.get('content-type') || '').includes('image/webp'));
+  });
+
+  // 1F-B-08: Archivo MP4 permitido en uploadDir es servido con 200 y Content-Type video/mp4
+  await test('297. TEST 1F-B-08: GET /uploads/<archivo.mp4> devuelve 200 con Content-Type video/mp4', async () => {
+    const testFile = path.join(uploadDir, 'test-asset-valid.mp4');
+    fs.writeFileSync(testFile, Buffer.from('....ftypisom....', 'ascii'));
+    const res = await request('/uploads/test-asset-valid.mp4');
+    assert.strictEqual(res.status, 200);
+    assert.ok((res.headers.get('content-type') || '').includes('video/mp4'));
+  });
+
+  // 1F-B-09: Archivo PDF permitido en uploadDir es servido con 200 y Content-Type application/pdf
+  await test('298. TEST 1F-B-09: GET /uploads/<archivo.pdf> devuelve 200 con Content-Type application/pdf', async () => {
+    const testFile = path.join(uploadDir, 'test-asset-valid.pdf');
+    fs.writeFileSync(testFile, Buffer.from('%PDF-1.4 test content', 'ascii'));
+    const res = await request('/uploads/test-asset-valid.pdf');
+    assert.strictEqual(res.status, 200);
+    assert.ok((res.headers.get('content-type') || '').includes('application/pdf'));
+  });
+
+  // 1F-B-10: Archivos SVG legacy son bloqueados del servicio estático (404)
+  await test('299. TEST 1F-B-10: GET /uploads/<archivo.svg> devuelve 404 Not Found (Stored XSS bloqueado)', async () => {
+    const testFile = path.join(uploadDir, 'product-legacy-test.svg');
+    fs.writeFileSync(testFile, '<svg><script>alert(1)</script></svg>');
+    const res = await request('/uploads/product-legacy-test.svg');
+    assert.strictEqual(res.status, 404);
+  });
+
+  // 1F-B-11: Extensiones ejecutables o no autorizadas (.exe, .php, .js, .html) son bloqueadas con 404
+  await test('300. TEST 1F-B-11: GET /uploads con extensiones no permitidas (.php, .exe, .js, .html) devuelve 404', async () => {
+    const phpRes = await request('/uploads/shell.php');
+    const exeRes = await request('/uploads/virus.exe');
+    const jsRes = await request('/uploads/payload.js');
+    const htmlRes = await request('/uploads/page.html');
+    assert.strictEqual(phpRes.status, 404);
+    assert.strictEqual(exeRes.status, 404);
+    assert.strictEqual(jsRes.status, 404);
+    assert.strictEqual(htmlRes.status, 404);
+  });
+
+  // 1F-B-12: Respaldos y dumps de bases de datos son bloqueados de /uploads con 404
+  await test('301. TEST 1F-B-12: GET /uploads/<backup.json> devuelve 404 Not Found', async () => {
+    const res = await request('/uploads/products_db_backup_1789424316312.json');
+    assert.strictEqual(res.status, 404);
+  });
+
+  // 1F-B-13: getCollectionFilePath apunta estrictamente a dataDir y NO a uploadDir
+  await test('302. TEST 1F-B-13: getCollectionFilePath apunta estrictamente a dataDir', async () => {
+    const clientsFile = path.resolve(getCollectionFilePath('clients'));
+    assert.ok(clientsFile.startsWith(path.resolve(dataDir)));
+    assert.ok(!clientsFile.startsWith(path.resolve(uploadDir)));
+  });
+
+  // 1F-B-14: DATA_DIR y UPLOAD_DIR son físicamente distintos
+  await test('303. TEST 1F-B-14: DATA_DIR y UPLOAD_DIR son directorios físicamente independientes', async () => {
+    assert.notStrictEqual(path.resolve(dataDir), path.resolve(uploadDir));
+  });
+
+  // 1F-B-15: Operaciones de lectura y escritura en colecciones funcionan normalmente en dataDir
+  await test('304. TEST 1F-B-15: Lectura y escritura de colecciones JSON opera con normalidad en dataDir', async () => {
+    const { cookie } = await loginAdminD2();
+    const res = await request('/api/collections/settings', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data));
+  });
+
+  // 1F-B-16: POST /api/upload persiste archivos físicamente en uploadDir
+  await test('305. TEST 1F-B-16: POST /api/upload persiste archivos en uploadDir', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+    const { contentType, body } = createMultipartPayload({ filename: 'photo_test.jpg', contentType: 'image/jpeg', contentBuffer: jpegBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf, 'Content-Type': contentType },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+    const uploadedUrl = res.data.urls[0];
+    const filename = uploadedUrl.replace('/uploads/', '');
+    const physicalPath = path.join(uploadDir, filename);
+    assert.ok(fs.existsSync(physicalPath), 'El archivo debe existir en uploadDir');
+  });
+
+  // 1F-B-17: URLs devueltas por /api/upload son inmediatamente servidas por GET /uploads/*
+  await test('306. TEST 1F-B-17: URLs devueltas por /api/upload son servidas con HTTP 200 por GET /uploads/*', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const pngBuffer = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    const { contentType, body } = createMultipartPayload({ filename: 'product_icon.png', contentType: 'image/png', contentBuffer: pngBuffer });
+
+    const uploadRes = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf, 'Content-Type': contentType },
+      body
+    });
+    assert.strictEqual(uploadRes.status, 200);
+    const downloadUrl = uploadRes.data.urls[0];
+
+    const getRes = await request(downloadUrl);
+    assert.strictEqual(getRes.status, 200);
+    assert.ok((getRes.headers.get('content-type') || '').includes('image/png'));
+  });
+
+  // 1F-B-18: Consumidores frontend conservan compatibilidad con /uploads/
+  await test('307. TEST 1F-B-18: Formato de URLs de upload conserva el prefijo /uploads/ para compatibilidad frontend', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const webpBuffer = Buffer.from('RIFF....WEBPVP8 ', 'ascii');
+    const { contentType, body } = createMultipartPayload({ filename: 'banner.webp', contentType: 'image/webp', contentBuffer: webpBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf, 'Content-Type': contentType },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(res.data.urls[0].startsWith('/uploads/upload-'));
+    assert.ok(res.data.fileUrls[0].startsWith('/uploads/upload-'));
+  });
+
+  // 1F-B-19: Path traversal en /uploads/ es bloqueado con HTTP 404
+  await test('308. TEST 1F-B-19: Path traversal en /uploads/ (e.g. /uploads/../../server.js) devuelve HTTP 404', async () => {
+    const res1 = await request('/uploads/../../server.js');
+    const res2 = await request('/uploads/%2e%2e%2f%2e%2e%2fserver.js');
+    assert.strictEqual(res1.status, 404);
+    assert.strictEqual(res2.status, 404);
+  });
+
+  // 1F-B-20: Archivo sin extensión o con doble extensión no permitida es bloqueado con HTTP 404
+  await test('309. TEST 1F-B-20: Peticiones sin extensión o con doble extensión (image.jpg.php) devuelven 404', async () => {
+    const noExtRes = await request('/uploads/secretfile');
+    const doubleExtRes = await request('/uploads/image.jpg.php');
+    assert.strictEqual(noExtRes.status, 404);
+    assert.strictEqual(doubleExtRes.status, 404);
+  });
+
+  // ============================================================
+  // FASE 1F-C: PRUEBAS DE CABECERAS DE SEGURIDAD HTTP Y CSP
+  // ============================================================
+
+  // 1F-C-01: Cabecera X-Content-Type-Options: nosniff presente
+  await test('310. TEST 1F-C-01: Cabecera X-Content-Type-Options: nosniff presente en todas las respuestas', async () => {
+    const res = await request('/api/auth/csrf-token');
+    assert.strictEqual(res.headers.get('x-content-type-options'), 'nosniff');
+  });
+
+  // 1F-C-02: Cabecera X-Frame-Options: DENY presente
+  await test('311. TEST 1F-C-02: Cabecera X-Frame-Options: DENY previene Clickjacking', async () => {
+    const res = await request('/api/auth/csrf-token');
+    assert.strictEqual(res.headers.get('x-frame-options'), 'DENY');
+  });
+
+  // 1F-C-03: Cabecera Referrer-Policy presente
+  await test('312. TEST 1F-C-03: Referrer-Policy configurada en strict-origin-when-cross-origin', async () => {
+    const res = await request('/api/auth/csrf-token');
+    assert.strictEqual(res.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
+  });
+
+  // 1F-C-04: Cabecera Permissions-Policy restringe APIs sensibles
+  await test('313. TEST 1F-C-04: Permissions-Policy deshabilita APIs no utilizadas (cámara, micrófono, geolocalización)', async () => {
+    const res = await request('/api/auth/csrf-token');
+    const pp = res.headers.get('permissions-policy') || '';
+    assert.ok(pp.includes('camera=()'));
+    assert.ok(pp.includes('microphone=()'));
+    assert.ok(pp.includes('geolocation=()'));
+  });
+
+  // 1F-C-05: Content-Security-Policy (CSP) presente
+  await test('314. TEST 1F-C-05: Content-Security-Policy presente en respuestas HTTP', async () => {
+    const res = await request('/api/auth/csrf-token');
+    const csp = res.headers.get('content-security-policy') || '';
+    assert.ok(csp.length > 0, 'CSP header debe existir');
+  });
+
+  // 1F-C-06: CSP contiene default-src 'self'
+  await test('315. TEST 1F-C-06: CSP establece default-src \'self\'', async () => {
+    const res = await request('/api/auth/csrf-token');
+    const csp = res.headers.get('content-security-policy') || '';
+    assert.ok(csp.includes("default-src 'self'"));
+  });
+
+  // 1F-C-07: CSP contiene object-src 'none' para mitigar ejecución de plugins
+  await test('316. TEST 1F-C-07: CSP establece object-src \'none\'', async () => {
+    const res = await request('/api/auth/csrf-token');
+    const csp = res.headers.get('content-security-policy') || '';
+    assert.ok(csp.includes("object-src 'none'"));
+  });
+
+  // 1F-C-08: CSP contiene base-uri 'self' y form-action 'self'
+  await test('317. TEST 1F-C-08: CSP restringe base-uri y form-action a \'self\'', async () => {
+    const res = await request('/api/auth/csrf-token');
+    const csp = res.headers.get('content-security-policy') || '';
+    assert.ok(csp.includes("base-uri 'self'"));
+    assert.ok(csp.includes("form-action 'self'"));
+  });
+
+  // 1F-C-09: CSP no permite unsafe-eval
+  await test('318. TEST 1F-C-09: CSP no contiene unsafe-eval en script-src', async () => {
+    const res = await request('/api/auth/csrf-token');
+    const csp = res.headers.get('content-security-policy') || '';
+    assert.ok(!csp.includes("'unsafe-eval'"), 'CSP no debe incluir unsafe-eval');
+  });
+
+  // 1F-C-10: CSP contiene frame-ancestors 'none' coherente con X-Frame-Options
+  await test('319. TEST 1F-C-10: CSP contiene frame-ancestors \'none\'', async () => {
+    const res = await request('/api/auth/csrf-token');
+    const csp = res.headers.get('content-security-policy') || '';
+    assert.ok(csp.includes("frame-ancestors 'none'"));
+  });
+
+  // 1F-C-11: HSTS condicionado (no se emite en plain HTTP en DEV)
+  await test('320. TEST 1F-C-11: HSTS se omite en peticiones HTTP locales de desarrollo', async () => {
+    const res = await request('/api/auth/csrf-token');
+    // En DEV sobre http:// localhost, no debe forzar HSTS
+    assert.strictEqual(res.headers.get('strict-transport-security'), null);
+  });
+
+  // 1F-C-12: HSTS se activa ante cabecera x-forwarded-proto: https
+  await test('321. TEST 1F-C-12: HSTS se activa cuando se detecta conexión HTTPS o proxy seguro', async () => {
+    const res = await request('/api/auth/csrf-token', {
+      headers: { 'x-forwarded-proto': 'https' }
+    });
+    assert.strictEqual(res.headers.get('strict-transport-security'), 'max-age=31536000; includeSubDomains');
+  });
+
+  // 1F-C-13: Cabecera x-powered-by está deshabilitada
+  await test('322. TEST 1F-C-13: Cabecera x-powered-by no se expone al cliente', async () => {
+    const res = await request('/api/auth/csrf-token');
+    assert.strictEqual(res.headers.get('x-powered-by'), null);
+  });
+
+  // 1F-C-14: Respuestas de API conservan Content-Type application/json
+  await test('323. TEST 1F-C-14: Endpoints API responden con application/json y headers de seguridad', async () => {
+    const res = await request('/api/auth/csrf-token');
+    assert.strictEqual(res.status, 200);
+    assert.ok((res.headers.get('content-type') || '').includes('application/json'));
+    assert.strictEqual(res.headers.get('x-content-type-options'), 'nosniff');
+  });
+
+  // 1F-C-15: Static assets permitidos conservan security headers y MIME adecuado
+  await test('324. TEST 1F-C-15: Descarga de assets estáticos (/uploads/*) incluye headers de seguridad', async () => {
+    const testFile = path.join(uploadDir, 'test-asset-sec-headers.png');
+    fs.writeFileSync(testFile, Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
+    const res = await request('/uploads/test-asset-sec-headers.png');
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.headers.get('x-content-type-options'), 'nosniff');
+    assert.strictEqual(res.headers.get('x-frame-options'), 'DENY');
+  });
+
+  // 1F-C-16: Respuestas de error (404/403) incluyen security headers
+  await test('325. TEST 1F-C-16: Respuestas de error (404/403) conservan security headers', async () => {
+    const res = await request('/uploads/forbidden-test.json');
+    assert.strictEqual(res.status, 404);
+    assert.strictEqual(res.headers.get('x-content-type-options'), 'nosniff');
+    assert.strictEqual(res.headers.get('x-frame-options'), 'DENY');
+    assert.ok((res.headers.get('content-security-policy') || '').includes("default-src 'self'"));
+  });
+
+  // 1F-C-17: CSP permite orígenes requeridos por el frontend (Google Fonts, Google Avatars, QR Server)
+  await test('326. TEST 1F-C-17: CSP permite orígenes indispensables para estilos, fuentes y avatares', async () => {
+    const res = await request('/api/auth/csrf-token');
+    const csp = res.headers.get('content-security-policy') || '';
+    assert.ok(csp.includes('https://fonts.googleapis.com'));
+    assert.ok(csp.includes('https://fonts.gstatic.com'));
+    assert.ok(csp.includes('https://lh3.googleusercontent.com'));
+    assert.ok(csp.includes('https://api.qrserver.com'));
+  });
+
+  // 1F-C-18: CSP connect-src autoriza WebSocket y Socket.IO sin comodines globales (ni connect-src *, ni https:, ni wss:, ni data:)
+  await test('327. TEST 1F-C-18: CSP connect-src autoriza WebSocket sin comodines globales connect-src *, https:, wss: ni data:', async () => {
+    const res = await request('/api/auth/csrf-token');
+    const csp = res.headers.get('content-security-policy') || '';
+    assert.ok(!csp.includes('connect-src *'), 'No debe existir connect-src *');
+    assert.ok(!csp.includes('connect-src \'self\' wss: https:'), 'No debe existir comodín protocolar https:/wss: en connect-src');
+    // Extraer exactamente la directiva connect-src
+    const match = csp.match(/connect-src\s+([^;]+)/);
+    assert.ok(match, 'connect-src debe existir en CSP');
+    const connectTokens = match[1].split(/\s+/);
+    assert.ok(!connectTokens.includes('https:'), 'connect-src no debe contener el comodín https:');
+    assert.ok(!connectTokens.includes('wss:'), 'connect-src no debe contener el comodín wss:');
+    assert.ok(!connectTokens.includes('data:'), 'connect-src no debe contener data:');
+    assert.ok(connectTokens.includes("'self'"), 'connect-src debe incluir self');
+  });
+
+  // 1F-C-19: X-Permitted-Cross-Domain-Policies está establecido en none
+  await test('328. TEST 1F-C-19: Cabecera X-Permitted-Cross-Domain-Policies configurada en none', async () => {
+    const res = await request('/api/auth/csrf-token');
+    assert.strictEqual(res.headers.get('x-permitted-cross-domain-policies'), 'none');
+  });
+
+  // 1F-C-20: Error 500 no filtra stack traces en respuestas JSON
+  await test('329. TEST 1F-C-20: Respuestas de error no exponen stack traces ni rutas internas de Node.js', async () => {
+    const { cookie } = await loginAdminD2();
+    const res = await request('/api/collections/nonexistent_invalid_collection_name', {
+      headers: { 'Cookie': cookie }
+    });
+    const resText = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+    assert.ok(!resText.includes('at ModuleJob.run'));
+    assert.ok(!resText.includes('node:internal'));
+    assert.ok(!resText.includes('server.js:'));
   });
 
   // ============================================================

@@ -59,13 +59,45 @@ const isDevEnv = process.env.NODE_ENV === 'development' || !isProd;
 const mailMode = process.env.MAIL_MODE || (isDevEnv ? 'development' : 'production');
 const waMode = process.env.WHATSAPP_MODE || (isDevEnv ? 'simulation' : 'production');
 
+// ============================================================
+// CONFIGURACIÓN DE DIRECTORIOS Y ALMACENAMIENTO SEGURO (FASE 1F-B)
+// ============================================================
+
+// 1. DATA_DIR: Directorio privado donde residen las bases de datos JSON (NO expuesto por Express)
+const defaultDataDir = isDevEnv ? path.join(__dirname, 'data-dev') : path.join(__dirname, 'data');
+const dataDir = process.env.DATA_DIR || defaultDataDir;
+if (!fs.existsSync(dataDir)) {
+  fs.mkdirSync(dataDir, { recursive: true });
+}
+
+// 2. UPLOAD_DIR: Directorio exclusivo para assets estáticos públicos (imágenes, banners, etc.)
+const defaultUploadDir = isDevEnv ? path.join(__dirname, 'data-dev', 'uploads') : path.join(__dirname, 'uploads');
+const uploadDir = process.env.UPLOAD_DIR || defaultUploadDir;
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// 3. BACKUP_DIR: Directorio privado para copias de seguridad de colecciones
+const backupsDir = process.env.BACKUP_DIR || path.join(dataDir, 'backups');
+if (!fs.existsSync(backupsDir)) {
+  fs.mkdirSync(backupsDir, { recursive: true });
+}
+
+// Validación de seguridad estricta: DATA_DIR y UPLOAD_DIR NUNCA deben coincidir
+if (path.resolve(dataDir) === path.resolve(uploadDir)) {
+  const securityError = new Error('[FATAL SECURITY MISCONFIGURATION] DATA_DIR y UPLOAD_DIR no pueden ser el mismo directorio. Esto expondría las bases de datos en la web pública.');
+  console.error(securityError.message);
+  throw securityError;
+}
+
 console.log('----------------------------------------------------');
 console.log(`🌐 ENTORNO: ${isDevEnv ? 'DESARROLLO LOCAL (KALU-DEV)' : 'PRODUCCIÓN'}`);
 console.log('🤖 ESTADO DEL ROBOT DE COMUNICACIONES:');
 console.log('📧 Correo Emisor:', mailMode === 'development' ? 'MODO SIMULACIÓN (DEV - Solo consola)' : (process.env.EMAIL_USER ? `SÍ (${process.env.EMAIL_USER})` : 'SÍ (Fallback: cherokejd566@gmail.com)'));
 console.log('🔑 Contraseña Correo (.env):', mailMode === 'development' ? 'PROTEGIDA (Simulación DEV activa)' : (process.env.EMAIL_PASS ? 'SÍ (Presente)' : '❌ NO DETECTADA'));
 console.log('📱 WhatsApp API:', waMode === 'simulation' ? 'MODO SIMULACIÓN (DEV - Solo consola)' : (process.env.WHATSAPP_API_URL || process.env.WHATSAPP_API_KEY ? 'SÍ (Producción)' : 'Modo Simulación / Local'));
-console.log('📂 Directorio de Datos / DB:', process.env.UPLOAD_DIR || path.join(__dirname, 'uploads'));
+console.log('📂 Directorio de Datos / DB (Privado):', dataDir);
+console.log('🖼️  Directorio de Uploads / Assets (Público):', uploadDir);
 console.log('----------------------------------------------------');
 
 // --- CONFIGURACIÓN DE CORS Y ORIGINS PERMITIDOS (FASE 1D-D.2) ---
@@ -95,6 +127,91 @@ function isOriginAllowed(origin) {
 const PORT = process.env.PORT || 3001;
 
 const app = express();
+
+// ============================================================
+// BASELINE DE CABECERAS DE SEGURIDAD HTTP — FASE 1F-C
+// ============================================================
+
+// Deshabilitar cabecera que expone la tecnología subyacente
+app.disable('x-powered-by');
+
+// Middleware global de Security Headers (CSP, HSTS, X-Content-Type-Options, etc.)
+app.use((req, res, next) => {
+  // 1. Prevención estricta de MIME-Sniffing
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  // 2. Control de Clickjacking y embedding en frames
+  res.setHeader('X-Frame-Options', 'DENY');
+
+  // 3. Política de Referrer segura y compatible
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+  // 4. Permissions-Policy (restringe APIs sensibles del navegador que no usa la app)
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), display-capture=()');
+
+  // 5. Cross-Origin Resource & Embedder Policies seguras
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+
+  // 6. Strict-Transport-Security (HSTS)
+  // Solo se emite cuando la conexión es efectivamente HTTPS o se está en producción estricta
+  if (isProd || req.secure || req.headers['x-forwarded-proto'] === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+
+  // 7. Content-Security-Policy (CSP) personalizada para el ecosistema Kalu CRM
+  // Directivas adaptadas a React, Socket.IO, Google Fonts, y almacenamiento de assets
+  // connect-src estrictamente delimitado a orígenes autorizados (sin comodines globales https: ni wss:)
+  const devConnectOrigins = [
+    "'self'",
+    'ws://localhost:3000',
+    'ws://127.0.0.1:3000',
+    'ws://localhost:3001',
+    'ws://127.0.0.1:3001',
+    'ws://localhost:5173',
+    'ws://127.0.0.1:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:3001',
+    'http://127.0.0.1:3001',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173'
+  ];
+
+  const connectSrcDirective = isProd
+    ? (configuredOrigins.length > 0
+        ? `connect-src 'self' ${configuredOrigins.join(' ')} ${configuredOrigins.map(o => o.replace(/^http/, 'ws')).join(' ')}`
+        : "connect-src 'self'")
+    : `connect-src ${devConnectOrigins.join(' ')}${configuredOrigins.length > 0 ? ' ' + configuredOrigins.join(' ') : ''}`;
+
+  const cspDirectives = [
+    "default-src 'self'",
+    // Scripts: origen propio y ejecución SPA
+    "script-src 'self'",
+    // Estilos: origen propio, Google Fonts y estilos dinámicos de Tailwind/React
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    // Fuentes: origen propio, data URIs y Google Fonts (gstatic)
+    "font-src 'self' data: https://fonts.gstatic.com",
+    // Imágenes: origen propio, datos, blobs, assets de Google (Login) y QR Generator
+    "img-src 'self' data: blob: https://lh3.googleusercontent.com https://api.qrserver.com",
+    // Medios (Audio/Video/PDF): origen propio, data y blob
+    "media-src 'self' data: blob:",
+    // Conexiones: API propia y Socket.IO sin wildcard de protocolo
+    connectSrcDirective,
+    // Workers / Manifest
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+    // Bloqueo estricto de plugins/objetos ejecutables y embedding
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+  ];
+
+  res.setHeader('Content-Security-Policy', cspDirectives.join('; '));
+
+  next();
+});
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -2014,14 +2131,8 @@ io.on('connection', (socket) => {
 
 
 // ============================================================
-// SUBSISTEMA DE UPLOADS SEGURO — FASE 1F-A
+// SUBSISTEMA DE UPLOADS SEGURO — FASES 1F-A & 1F-B
 // ============================================================
-
-// Configurar la carpeta de destino física fija y controlada por el servidor
-const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
 
 // Allowlists estrictas de tipos de archivo (Fase 1F-A)
 const ALLOWED_MIME_TYPES = new Set([
@@ -2136,12 +2247,45 @@ function handleMulterUpload(req, res, next) {
   });
 }
 
-// Servir la carpeta de subidas de forma estática
-app.use('/uploads', express.static(uploadDir));
+// Allowlists estrictas de tipos de archivo y extensiones permitidas para servicio estático (Fase 1F-B)
+const ALLOWED_STATIC_EXTENSIONS = new Set([
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.webp',
+  '.pdf',
+  '.mp4'
+]);
+
+// Guardián de seguridad para servicio estático de /uploads (Fase 1F-B)
+// Bloquea categóricamente cualquier intento de acceso a .json, .svg, .html, .js, .bak, .db, etc.
+app.use('/uploads', (req, res, next) => {
+  const ext = path.extname(req.path || '').toLowerCase();
+  if (!ext || !ALLOWED_STATIC_EXTENSIONS.has(ext)) {
+    return res.status(404).json({ error: 'Archivo no encontrado' });
+  }
+
+  // Sanitizar path para evitar traversal hacia archivos fuera de uploadDir
+  const normalizedPath = path.normalize(req.path).replace(/^(\.\.[\/\\])+/, '');
+  const resolvedTarget = path.resolve(uploadDir, '.' + normalizedPath);
+  if (!resolvedTarget.startsWith(path.resolve(uploadDir))) {
+    return res.status(404).json({ error: 'Archivo no encontrado' });
+  }
+
+  next();
+});
+
+// Servir la carpeta de subidas de forma estática únicamente tras pasar el guardián
+app.use('/uploads', express.static(uploadDir, {
+  dotfiles: 'ignore',
+  etag: true,
+  lastModified: true
+}));
+
 const protectedMediaDir = path.join(__dirname, 'protected_media');
 app.use('/protected_media', express.static(protectedMediaDir));
 
-const productsDbFile = path.join(uploadDir, 'products_db.json');
+const productsDbFile = path.join(dataDir, 'products_db.json');
 
 // Leer productos locales (Protegido por requireAuth)
 app.get('/api/products', requireAuth, (req, res) => {
@@ -3307,7 +3451,7 @@ app.post('/api/ai/parse-trip', requireAuth, requireRole('admin', 'accountant'), 
 
 // --- GENERIC COLLECTIONS API WITH ASYNC MUTEX LOCK ---
 
-const getCollectionFilePath = (name) => path.join(uploadDir, `${name}_db.json`);
+const getCollectionFilePath = (name) => path.join(dataDir, `${name}_db.json`);
 
 // Async Mutex Queue per collection to prevent race conditions & file corruption
 const collectionLocks = new Map();
@@ -4438,5 +4582,10 @@ export {
   setGeminiClientForTest,
   getGeminiClient,
   isGeminiConfigured,
-  aiRateLimiter
+  aiRateLimiter,
+  dataDir,
+  uploadDir,
+  backupsDir,
+  getCollectionFilePath,
+  ALLOWED_STATIC_EXTENSIONS
 };
