@@ -40,6 +40,7 @@ import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import LoginView from './components/LoginView';
 import DashboardView from './components/DashboardView';
+import { fetchCurrentUserApi, logoutApi } from './services/localApi';
 
 // New specialized ERP Views
 import CheesePOSView from './components/CheesePOSView';
@@ -50,15 +51,25 @@ import CheeseTripsView from './components/CheeseTripsView';
 import ClientsCreditView from './components/ClientsCreditView';
 import SuppliersDebtsView from './components/SuppliersDebtsView';
 import FinancesAnalysisView from './components/FinancesAnalysisView';
-import ComplaintBoxView from './components/ComplaintBoxView';
 import SettingsAdminView from './components/SettingsAdminView';
 import AccessControlView from './components/AccessControlView';
+import ComplaintBoxView from './components/ComplaintBoxView';
+import StockPurchasesView from './components/StockPurchasesView';
 import ContadorIAView from './components/ContadorIAView';
 import CollectionsView from './components/contador/CollectionsView';
 
 import { CheckCircle2, Info, AlertTriangle, X } from 'lucide-react';
-import { onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc, fetchCollection, processSaleAtomic } from './services/localApi';
+import { 
+  onCollectionSnapshot, 
+  addLocalDoc, 
+  updateLocalDoc, 
+  deleteLocalDoc, 
+  fetchCollection,
+  processSaleAtomic,
+  initSocket
+} from './services/localApi';
 import { fetchLocalProducts, updateLocalProduct, addLocalProduct, deleteLocalProduct } from './services/productApi';
+import { fetchOfficialBcvRate } from './services/exchangeRateService';
 import { getUnitLabel } from './utils';
 
 interface ToastNotification {
@@ -68,13 +79,31 @@ interface ToastNotification {
 }
 
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return localStorage.getItem('kalu_auth_state') === 'true';
-  });
-  const [currentUser, setCurrentUser] = useState<UserIdentity | null>(() => {
-    const saved = localStorage.getItem('kalu_current_user');
-    return saved ? JSON.parse(saved) : null;
-  });
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentUser, setCurrentUser] = useState<UserIdentity | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
+
+  useEffect(() => {
+    fetchCurrentUserApi()
+      .then((user) => {
+        if (user) {
+          setIsAuthenticated(true);
+          setCurrentUser(user);
+        } else {
+          setIsAuthenticated(false);
+          setCurrentUser(null);
+          localStorage.removeItem('kalu_auth_state');
+          localStorage.removeItem('kalu_current_user');
+        }
+      })
+      .catch(() => {
+        setIsAuthenticated(false);
+        setCurrentUser(null);
+      })
+      .finally(() => {
+        setIsAuthChecking(false);
+      });
+  }, []);
   const [currentView, setCurrentView] = useState<ViewType>('portal-dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 1024);
 
@@ -298,8 +327,6 @@ export default function App() {
   const handleLoginSuccess = (user: UserIdentity, targetView?: ViewType) => {
     setIsAuthenticated(true);
     setCurrentUser(user);
-    localStorage.setItem('kalu_auth_state', 'true');
-    localStorage.setItem('kalu_current_user', JSON.stringify(user));
     if (targetView) {
       setCurrentView(targetView);
     } else {
@@ -307,7 +334,12 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await logoutApi();
+    } catch (e) {
+      console.warn('Error during logout:', e);
+    }
     setIsAuthenticated(false);
     setCurrentUser(null);
     setCurrentView('portal-dashboard');
@@ -1748,6 +1780,19 @@ export default function App() {
     const { resetAccountingData } = await import('./services/backupService');
     await resetAccountingData();
   };
+
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-editorial-bg flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-2 border-brand-accent border-t-transparent rounded-full animate-spin" />
+          <span className="text-xs font-mono text-editorial-text-muted uppercase tracking-widest">
+            Verificando sesión segura...
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (

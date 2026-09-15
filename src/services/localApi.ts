@@ -182,3 +182,76 @@ export const callSyncRate = async () => {
   }
   return await res.json();
 };
+
+// --- AUTHENTICATION API (FASE 1A) ---
+
+let cachedCsrfToken = '';
+
+export const getCsrfToken = async (): Promise<string> => {
+  if (cachedCsrfToken) return cachedCsrfToken;
+  try {
+    const res = await fetch(`${API_URL}/auth/csrf-token`, { credentials: 'include' });
+    if (res.ok) {
+      const data = await res.json();
+      cachedCsrfToken = data.csrfToken || '';
+    }
+  } catch (e) {
+    console.warn('Failed to fetch CSRF token:', e);
+  }
+  return cachedCsrfToken;
+};
+
+export const loginApi = async (credentials: {
+  loginMode: 'admin' | 'cajero';
+  email?: string;
+  cedula?: string;
+  password?: string;
+  pin?: string;
+}) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/auth/login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include',
+    body: JSON.stringify(credentials)
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Credenciales inválidas o no autorizadas');
+  }
+  if (data.csrfToken) {
+    cachedCsrfToken = data.csrfToken;
+  }
+  return data;
+};
+
+export const logoutApi = async () => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/auth/logout`, {
+    method: 'POST',
+    headers: {
+      'x-csrf-token': csrf
+    },
+    credentials: 'include'
+  });
+  cachedCsrfToken = '';
+  return await res.json();
+};
+
+export const fetchCurrentUserApi = async () => {
+  const res = await fetch(`${API_URL}/auth/me`, {
+    credentials: 'include'
+  });
+  if (!res.ok) {
+    return null;
+  }
+  const data = await res.json();
+  if (data.csrfToken) {
+    cachedCsrfToken = data.csrfToken;
+  }
+  return data.user || null;
+};
+

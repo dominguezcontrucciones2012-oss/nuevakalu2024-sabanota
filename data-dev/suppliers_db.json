@@ -1,0 +1,22 @@
+[
+  {
+    "id": "sup-demo-1",
+    "name": "Hacienda El Roble (Productor Demo)",
+    "phone": "04125550101",
+    "email": "elroble.demo@example.com",
+    "rif": "J-87654321-9",
+    "type": "producer",
+    "balanceUsd": 0,
+    "status": "active"
+  },
+  {
+    "id": "sup-demo-2",
+    "name": "Insumos Lácteos Sabanota C.A. (DEV)",
+    "phone": "04165550202",
+    "email": "insumos.demo@example.com",
+    "rif": "J-99887766-5",
+    "type": "supplier",
+    "balanceUsd": 0,
+    "status": "active"
+  }
+]

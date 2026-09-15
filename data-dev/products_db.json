@@ -1,0 +1,41 @@
+[
+  {
+    "id": "prod-demo-1",
+    "name": "Queso Llanero Duro (DEV)",
+    "category": "Quesos",
+    "price": 4.5,
+    "sellingPrice": 4.5,
+    "costPrice": 3.2,
+    "stockKg": 150,
+    "stock": 150,
+    "unit": "Kg",
+    "sku": "QL-001",
+    "description": "Queso llanero pasteurizado de prueba para entorno DEV"
+  },
+  {
+    "id": "prod-demo-2",
+    "name": "Queso Palmizulia (DEV)",
+    "category": "Quesos",
+    "price": 5.8,
+    "sellingPrice": 5.8,
+    "costPrice": 4,
+    "stockKg": 80,
+    "stock": 80,
+    "unit": "Kg",
+    "sku": "QP-002",
+    "description": "Queso palmizulia tradicional de prueba"
+  },
+  {
+    "id": "prod-demo-3",
+    "name": "Mantequilla Casera Kalu (DEV)",
+    "category": "Derivados",
+    "price": 3,
+    "sellingPrice": 3,
+    "costPrice": 2.1,
+    "stockKg": 45,
+    "stock": 45,
+    "unit": "Kg",
+    "sku": "MK-003",
+    "description": "Mantequilla artesanal de prueba"
+  }
+]

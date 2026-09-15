@@ -1,0 +1,12 @@
+[
+  {
+    "id": "general",
+    "companyName": "Mundo Kalu Sabanota (DEV Environment)",
+    "exchangeRate": 807.38,
+    "lastRateSync": "2026-09-15T01:20:12.579Z",
+    "currencySymbol": "$",
+    "secondaryCurrencySymbol": "Bs",
+    "environment": "development",
+    "version": "DEV-1.0.0"
+  }
+]

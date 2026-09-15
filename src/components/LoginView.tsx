@@ -1,16 +1,10 @@
-import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../services/localApi';
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useState } from 'react';
 import { Mail, Lock, ArrowRight, Smartphone, Terminal, Users, KeyRound, Github, Building2, Calculator } from 'lucide-react';
-
 import { UserIdentity } from '../types';
+import { loginApi } from '../services/localApi';
 
 interface LoginViewProps {
-  users: UserIdentity[];
+  users?: UserIdentity[];
   onLoginSuccess: (user: UserIdentity, targetView?: string) => void;
   onAddNotification: (message: string, type?: 'success' | 'info' | 'warning') => void;
 }
@@ -19,7 +13,7 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
   const [loginMode, setLoginMode] = useState<'admin' | 'cajero'>('admin');
   
   // Admin Credentials
-  const [email, setEmail] = useState('dominguezcontrucciones2012@gmail.com');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   
   // Cajero Credentials
@@ -32,80 +26,31 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
   const [showRoleSelection, setShowRoleSelection] = useState(false);
   const [validatedUser, setValidatedUser] = useState<UserIdentity | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
 
-    setTimeout(() => {
-      setIsLoading(false);
-      
-      if (loginMode === 'admin') {
-        const adminEmails = ['dominguezcontrucciones2012@gmail.com', 'deisycorro77@gmail.com'];
-        const inputEmail = email.toLowerCase().trim();
-        const isAdminUser = adminEmails.includes(inputEmail);
-        
-        if (!isAdminUser || password.trim() === '') {
-          onAddNotification(`Credenciales administrativas no autorizadas.`, 'warning');
-          return;
-        }
+    try {
+      const credentials = loginMode === 'admin' 
+        ? { loginMode, email: email.trim(), password: password.trim() }
+        : { loginMode, cedula: cedula.trim(), pin: pin.trim() };
 
-        const adminUser: UserIdentity = {
-          id: 'admin-master',
-          name: 'Administrador General',
-          initials: 'AD',
-          cedula: 'N/A',
-          pin: 'N/A',
-          role: 'admin',
-          active: true
-        };
-        
-        setValidatedUser(adminUser);
-        setShowRoleSelection(true);
-        onAddNotification(`Credenciales validadas. Seleccione el módulo de ingreso.`, 'success');
-        
+      const res = await loginApi(credentials);
+      const user = res.user;
+
+      if (user.role === 'cajero') {
+        onLoginSuccess(user, 'pos-terminal');
+        onAddNotification(`Bienvenido ${user.name}. Ingresando al Punto de Venta.`, 'success');
       } else {
-        const inputCedula = cedula.trim();
-        const inputPin = pin.trim();
-        
-        if (inputCedula === 'ADMIN' && inputPin === 'kalu2024') {
-          const masterUser: UserIdentity = {
-            id: 'master-admin',
-            name: 'Super Admin Maestro',
-            initials: 'SA',
-            cedula: 'ADMIN',
-            pin: 'kalu2024',
-            role: 'admin',
-            active: true
-          };
-          setValidatedUser(masterUser);
-          setShowRoleSelection(true);
-          onAddNotification(`Modo de Emergencia Maestro Activado.`, 'success');
-          return;
-        }
-
-        const foundUser = users.find(u => u.cedula === inputCedula && u.pin === inputPin);
-        
-        if (!foundUser) {
-          onAddNotification(`Credenciales inválidas. Verifique su Cédula y PIN.`, 'warning');
-          return;
-        }
-
-        if (!foundUser.active) {
-          onAddNotification(`Este usuario se encuentra inactivo. Consulte al administrador.`, 'warning');
-          return;
-        }
-
-        // Si es cajero, login directo a POS sin preguntar el rol (como antes)
-        if (foundUser.role === 'cajero') {
-          onLoginSuccess(foundUser, 'pos-terminal');
-          onAddNotification(`Bienvenido ${foundUser.name}. Ingresando al Punto de Venta.`, 'success');
-        } else {
-          setValidatedUser(foundUser);
-          setShowRoleSelection(true);
-          onAddNotification(`Credenciales validadas para ${foundUser.name}.`, 'success');
-        }
+        setValidatedUser(user);
+        setShowRoleSelection(true);
+        onAddNotification(`Credenciales validadas para ${user.name}. Seleccione el módulo de ingreso.`, 'success');
       }
-    }, 600);
+    } catch (err: any) {
+      onAddNotification(err.message || 'Error al validar credenciales con el servidor.', 'warning');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleRoleSelect = (role: 'crm' | 'contador') => {

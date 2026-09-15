@@ -3,29 +3,55 @@ import multer from 'multer';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import http from 'http';
 import { Server } from 'socket.io';
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import bcrypt from 'bcryptjs';
+import session from 'express-session';
+import rateLimit from 'express-rate-limit';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Cargar .env asegurando la ruta absoluta a la raíz del proyecto
-dotenv.config({ path: path.join(__dirname, '.env') });
-dotenv.config(); // Cargar también fallback por si está en proceso general
+// Cargar variables de entorno con prioridad para desarrollo seguro
+const isProd = process.env.NODE_ENV === 'production';
+const envFiles = isProd
+  ? [path.join(__dirname, '.env')]
+  : [
+      path.join(__dirname, '.env.development.local'),
+      path.join(__dirname, '.env.local'),
+      path.join(__dirname, '.env.development'),
+      path.join(__dirname, '.env')
+    ];
+
+for (const envFile of envFiles) {
+  if (fs.existsSync(envFile)) {
+    dotenv.config({ path: envFile, override: false });
+  }
+}
+dotenv.config(); // Cargar también fallback general
 
 // Inicializar cliente de Google Gemini para el Robot Kalu
 const geminiApiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
-const ai = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
+const ai = (geminiApiKey && !geminiApiKey.startsWith('mock') && !geminiApiKey.startsWith('dummy')) 
+  ? new GoogleGenAI({ apiKey: geminiApiKey }) 
+  : null;
+
+const isDevEnv = process.env.NODE_ENV === 'development' || !isProd;
+const mailMode = process.env.MAIL_MODE || (isDevEnv ? 'development' : 'production');
+const waMode = process.env.WHATSAPP_MODE || (isDevEnv ? 'simulation' : 'production');
 
 console.log('----------------------------------------------------');
+console.log(`🌐 ENTORNO: ${isDevEnv ? 'DESARROLLO LOCAL (KALU-DEV)' : 'PRODUCCIÓN'}`);
 console.log('🤖 ESTADO DEL ROBOT DE COMUNICACIONES:');
-console.log('📧 Correo Emisor Configurado:', process.env.EMAIL_USER ? `SÍ (${process.env.EMAIL_USER})` : 'SÍ (Fallback: cherokejd566@gmail.com)');
-console.log('🔑 Contraseña de Aplicación (.env):', process.env.EMAIL_PASS ? 'SÍ (Presente)' : '❌ NO DETECTADA (process.env.EMAIL_PASS vacío)');
-console.log('📱 WhatsApp API Configurada:', process.env.WHATSAPP_API_URL || process.env.WHATSAPP_API_KEY ? 'SÍ' : 'Modo Simulación / Local');
+console.log('📧 Correo Emisor:', mailMode === 'development' ? 'MODO SIMULACIÓN (DEV - Solo consola)' : (process.env.EMAIL_USER ? `SÍ (${process.env.EMAIL_USER})` : 'SÍ (Fallback: cherokejd566@gmail.com)'));
+console.log('🔑 Contraseña Correo (.env):', mailMode === 'development' ? 'PROTEGIDA (Simulación DEV activa)' : (process.env.EMAIL_PASS ? 'SÍ (Presente)' : '❌ NO DETECTADA'));
+console.log('📱 WhatsApp API:', waMode === 'simulation' ? 'MODO SIMULACIÓN (DEV - Solo consola)' : (process.env.WHATSAPP_API_URL || process.env.WHATSAPP_API_KEY ? 'SÍ (Producción)' : 'Modo Simulación / Local'));
+console.log('📂 Directorio de Datos / DB:', process.env.UPLOAD_DIR || path.join(__dirname, 'uploads'));
 console.log('----------------------------------------------------');
 
 const PORT = process.env.PORT || 3001;
@@ -36,8 +62,181 @@ const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST', 'PATCH', 'DELETE'] }
 });
 
-app.use(cors());
+app.use(cors({
+  origin: function (origin, callback) {
+    // Permitir solicitudes en localhost/127.0.0.1 y apps clientes
+    callback(null, true);
+  },
+  credentials: true
+}));
 app.use(express.json());
+
+const SESSION_SECRET = process.env.SESSION_SECRET || 'kalu_dev_session_secret_2026_super_safe_and_random';
+
+// Configuración de sesiones server-side (MemoryStore para DEV, modular para SQLite/Redis en producción)
+app.use(session({
+  name: '__kalu_sid',
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  rolling: true,
+  cookie: {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: 'lax',
+    maxAge: 24 * 60 * 60 * 1000 // 24 horas de vigencia
+  }
+}));
+
+// Rate limiter específico para Login (10 intentos por cada ventana de 15 minutos)
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'Demasiados intentos de autenticación fallidos. Por favor espere 15 minutos antes de intentar de nuevo.'
+  }
+});
+
+// Middleware para asegurar la existencia del token CSRF en la sesión
+app.use((req, res, next) => {
+  if (req.session && !req.session.csrfToken) {
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+  }
+  next();
+});
+
+// Verificación segura de credenciales con bcrypt
+function verifyCredential(input, hash) {
+  if (!input || !hash) return false;
+  try {
+    return bcrypt.compareSync(String(input), String(hash));
+  } catch (e) {
+    return false;
+  }
+}
+
+// ============================================================
+// ENDPOINTS DE AUTENTICACIÓN SEGURA (FASE 1A)
+// ============================================================
+
+// 1. Obtener Token CSRF activo para el cliente
+app.get('/api/auth/csrf-token', (req, res) => {
+  if (!req.session.csrfToken) {
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+  }
+  res.json({ csrfToken: req.session.csrfToken });
+});
+
+// 2. Login con verificación en backend y rotación de sesión
+app.post('/api/auth/login', loginLimiter, (req, res) => {
+  try {
+    const { loginMode = 'admin', email, cedula, password, pin } = req.body;
+
+    const users = readCollection('users');
+    let matchedUser = null;
+
+    if (loginMode === 'admin') {
+      const inputEmail = (email || '').trim().toLowerCase();
+      if (!inputEmail || !password) {
+        return res.status(400).json({ error: 'Debe ingresar correo y contraseña' });
+      }
+
+      matchedUser = users.find(u => 
+        (u.email && u.email.toLowerCase() === inputEmail) || 
+        (u.username && u.username.toLowerCase() === inputEmail) ||
+        (u.cedula && u.cedula.toLowerCase() === inputEmail)
+      );
+
+      if (!matchedUser || !matchedUser.active || !verifyCredential(password, matchedUser.passwordHash)) {
+        return res.status(401).json({ error: 'Credenciales inválidas o cuenta no autorizada' });
+      }
+    } else {
+      // Modo cajero / terminal con Cédula y PIN
+      const inputCedula = (cedula || '').trim();
+      const inputPin = (pin || '').trim();
+
+      if (!inputCedula || !inputPin) {
+        return res.status(400).json({ error: 'Debe ingresar cédula y PIN de acceso' });
+      }
+
+      matchedUser = users.find(u => String(u.cedula).trim() === inputCedula);
+
+      if (!matchedUser || !matchedUser.active || !verifyCredential(inputPin, matchedUser.pinHash)) {
+        return res.status(401).json({ error: 'Credenciales inválidas o cuenta no autorizada' });
+      }
+    }
+
+    // Regenerar ID de sesión para prevenir Session Fixation
+    req.session.regenerate((err) => {
+      if (err) {
+        console.error('[Auth Error] Error regenerando sesión:', err);
+        return res.status(500).json({ error: 'Error interno de autenticación' });
+      }
+
+      req.session.userId = matchedUser.id;
+      req.session.userRole = matchedUser.role;
+      req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+
+      const safeUser = {
+        id: matchedUser.id,
+        name: matchedUser.name,
+        role: matchedUser.role,
+        cedula: matchedUser.cedula,
+        initials: matchedUser.initials || (matchedUser.name ? matchedUser.name.slice(0, 2).toUpperCase() : 'US')
+      };
+
+      res.json({
+        success: true,
+        user: safeUser,
+        csrfToken: req.session.csrfToken
+      });
+    });
+  } catch (error) {
+    console.error('[Auth Exception]:', error);
+    res.status(500).json({ error: 'Error procesando autenticación' });
+  }
+});
+
+// 3. Obtener sesión activa del usuario autenticado
+app.get('/api/auth/me', (req, res) => {
+  if (!req.session || !req.session.userId) {
+    return res.status(401).json({ error: 'No autenticado' });
+  }
+
+  const users = readCollection('users');
+  const user = users.find(u => String(u.id) === String(req.session.userId));
+
+  if (!user || !user.active) {
+    req.session.destroy(() => {});
+    return res.status(401).json({ error: 'Sesión inválida o cuenta inactiva' });
+  }
+
+  const safeUser = {
+    id: user.id,
+    name: user.name,
+    role: user.role,
+    cedula: user.cedula,
+    initials: user.initials || (user.name ? user.name.slice(0, 2).toUpperCase() : 'US')
+  };
+
+  res.json({
+    user: safeUser,
+    csrfToken: req.session.csrfToken
+  });
+});
+
+// 4. Logout e invalidación de sesión server-side
+app.post('/api/auth/logout', (req, res) => {
+  req.session.destroy((err) => {
+    if (err) {
+      console.error('[Auth Error] Error destruyendo sesión:', err);
+    }
+    res.clearCookie('__kalu_sid');
+    res.json({ success: true, message: 'Sesión cerrada correctamente' });
+  });
+});
 
 // Servir la build estática de producción de Vite si existe la carpeta dist
 const distDir = path.join(__dirname, 'dist');
@@ -389,12 +588,13 @@ function findClientByPhone(phone, clientsList) {
 }
 
 async function sendWhatsAppDirectMessage(toPhone, messageBody) {
+  const isDev = process.env.NODE_ENV === 'development' || process.env.WHATSAPP_MODE === 'simulation';
   const token = process.env.WHATSAPP_API_KEY;
   const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || '1344089325449515';
 
-  if (!token || !phoneId) {
-    console.warn('[Robot Kalu WhatsApp] Faltan credenciales de WhatsApp en el entorno.');
-    return;
+  if (isDev || !token || !phoneId) {
+    console.log(`[Robot Kalu WhatsApp (DEV/Simulado)] A: ${toPhone}\nMensaje:\n${messageBody}\n-----------------------------`);
+    return { success: true, simulated: true, recipient: toPhone };
   }
 
   try {
@@ -1092,6 +1292,14 @@ app.get('/api/sync-rate', async (req, res) => {
 app.get('/api/collections/:name', (req, res) => {
   try {
     const data = readCollection(req.params.name);
+    // Sanitizar colección de usuarios para jamás exponer contraseñas, PINs ni hashes
+    if (req.params.name === 'users' && Array.isArray(data)) {
+      const sanitized = data.map(u => {
+        const { password, pin, passwordHash, pinHash, ...safe } = u;
+        return safe;
+      });
+      return res.json(sanitized);
+    }
     res.json(data);
   } catch (error) {
     console.error(`Error reading ${req.params.name}:`, error);
@@ -1379,52 +1587,54 @@ async function sendWhatsAppNotification({ phone, name, message }) {
     cleanPhone = '58' + cleanPhone;
   }
 
+  const isDev = process.env.NODE_ENV === 'development' || process.env.WHATSAPP_MODE === 'simulation';
   const waApiUrl = process.env.WHATSAPP_API_URL || process.env.MESSAGING_API_URL || process.env.WHATSAPP_URL;
   const waApiKey = process.env.WHATSAPP_API_KEY || process.env.API_KEY || process.env.WHATSAPP_TOKEN;
 
-  if (waApiUrl) {
-    try {
-      console.log(`[Robot WhatsApp Cobranza] Enviando mensaje a ${cleanPhone}...`);
-      const response = await fetch(waApiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(waApiKey ? { 'Authorization': `Bearer ${waApiKey}`, 'x-api-key': waApiKey } : {})
-        },
-        body: JSON.stringify({
-          phone: cleanPhone,
-          to: cleanPhone,
-          message,
-          body: message,
-          text: message
-        })
-      });
-      if (response.ok) {
-        return { success: true, channel: 'whatsapp', recipient: cleanPhone };
-      } else {
-        const errText = await response.text();
-        console.error('[Robot WhatsApp Cobranza] Error en respuesta:', response.status, errText);
-        return { success: false, error: errText };
-      }
-    } catch (e) {
-      console.error('[Robot WhatsApp Cobranza] Error de conexión:', e.message);
-      return { success: false, error: e.message };
-    }
-  } else {
-    console.log(`[Robot WhatsApp Cobranza (Simulado)] A: ${cleanPhone}\nMensaje:\n${message}\n-----------------------------`);
+  if (isDev || !waApiUrl) {
+    console.log(`[Robot WhatsApp Cobranza (DEV/Simulado)] A: ${cleanPhone}\nMensaje:\n${message}\n-----------------------------`);
     return { success: true, simulated: true, recipient: cleanPhone };
+  }
+
+  try {
+    console.log(`[Robot WhatsApp Cobranza] Enviando mensaje a ${cleanPhone}...`);
+    const response = await fetch(waApiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(waApiKey ? { 'Authorization': `Bearer ${waApiKey}`, 'x-api-key': waApiKey } : {})
+      },
+      body: JSON.stringify({
+        phone: cleanPhone,
+        to: cleanPhone,
+        message,
+        body: message,
+        text: message
+      })
+    });
+    if (response.ok) {
+      return { success: true, channel: 'whatsapp', recipient: cleanPhone };
+    } else {
+      const errText = await response.text();
+      console.error('[Robot WhatsApp Cobranza] Error en respuesta:', response.status, errText);
+      return { success: false, error: errText };
+    }
+  } catch (e) {
+    console.error('[Robot WhatsApp Cobranza] Error de conexión:', e.message);
+    return { success: false, error: e.message };
   }
 }
 
 async function sendEmailNotification({ email, name, subject, htmlContent }) {
   if (!email) return { success: false, reason: 'No email' };
   
-  const emailUser = process.env.EMAIL_USER || 'cherokejd566@gmail.com';
+  const isDev = process.env.NODE_ENV === 'development' || process.env.MAIL_MODE === 'development' || process.env.MAIL_MODE === 'simulation';
+  const emailUser = process.env.EMAIL_USER || 'dev-simulator@kalu.local';
   const emailPass = process.env.EMAIL_PASS;
 
-  if (!emailPass) {
-    console.warn('[Robot Correo Cobranza] No se puede enviar correo: process.env.EMAIL_PASS no configurado.');
-    return { success: false, reason: 'No email credentials' };
+  if (isDev || !emailPass) {
+    console.log(`[Robot Correo Cobranza (DEV/Simulado)] A: ${email}\nAsunto: ${subject || 'Notificación de Cobro'}\nHTML Preview: ${(htmlContent || '').substring(0, 150)}...\n-----------------------------`);
+    return { success: true, simulated: true, recipient: email };
   }
 
   try {

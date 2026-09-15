@@ -1,0 +1,26 @@
+[
+  {
+    "id": "cli-demo-1",
+    "name": "Cliente Demo Comercial S.A.",
+    "phone": "04141234567",
+    "email": "cliente.demo1@example.com",
+    "cedula": "J-12345678-0",
+    "address": "Sabaneta, Barinas",
+    "creditLimitUsd": 500,
+    "currentDebtUsd": 0,
+    "points": 120,
+    "status": "active"
+  },
+  {
+    "id": "cli-demo-2",
+    "name": "Víveres y Charcutería La Gran Parada (DEV)",
+    "phone": "04249876543",
+    "email": "granparada.demo@example.com",
+    "cedula": "V-18765432",
+    "address": "Barinas Centro",
+    "creditLimitUsd": 1000,
+    "currentDebtUsd": 50,
+    "points": 350,
+    "status": "active"
+  }
+]
