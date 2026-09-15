@@ -2897,6 +2897,122 @@ async function runTests() {
   });
 
   // ============================================================
+  // PRUEBAS DE MIGRACIÓN FRONTEND Y CONSUMER SCAN (FASE 1D-C.3)
+  // ============================================================
+
+  // 164. Consumer scan: Confirmar que ProfileTab.tsx y ProducerPortal.tsx ya no llaman a /api/send-recovery
+  await test('164. 1D-C.3: Consumer scan: Componentes migraron 100% fuera de /api/send-recovery', async () => {
+    const fs = await import('fs');
+    const profileTabCode = await fs.promises.readFile('./src/components/ProfileTab.tsx', 'utf8');
+    const producerPortalCode = await fs.promises.readFile('./src/components/portals/ProducerPortal.tsx', 'utf8');
+
+    assert.strictEqual(profileTabCode.includes('/api/send-recovery'), false, 'ProfileTab no debe llamar a /api/send-recovery');
+    assert.strictEqual(producerPortalCode.includes('/api/send-recovery'), false, 'ProducerPortal no debe llamar a /api/send-recovery');
+  });
+
+  // 165. No generación local de OTP en ProfileTab ni ProducerPortal
+  await test('165. 1D-C.3: No existe generación local de OTP con Math.random en ProfileTab ni ProducerPortal', async () => {
+    const fs = await import('fs');
+    const profileTabCode = await fs.promises.readFile('./src/components/ProfileTab.tsx', 'utf8');
+    const producerPortalCode = await fs.promises.readFile('./src/components/portals/ProducerPortal.tsx', 'utf8');
+
+    assert.strictEqual(profileTabCode.includes('Math.random() * 900000'), false, 'ProfileTab no debe generar OTP local');
+    assert.strictEqual(producerPortalCode.includes('Math.random() * 900000'), false, 'ProducerPortal no debe generar OTP local');
+  });
+
+  // 166. No verificación local de OTP en frontend
+  await test('166. 1D-C.3: No existe comparación local de recoveryCode en frontend', async () => {
+    const fs = await import('fs');
+    const profileTabCode = await fs.promises.readFile('./src/components/ProfileTab.tsx', 'utf8');
+    const producerPortalCode = await fs.promises.readFile('./src/components/portals/ProducerPortal.tsx', 'utf8');
+
+    assert.strictEqual(profileTabCode.includes('recoveryCodeInput === recoveryCode'), false, 'ProfileTab no debe comparar OTP localmente');
+    assert.strictEqual(producerPortalCode.includes('recoveryCodeInput === recoveryCode'), false, 'ProducerPortal no debe comparar OTP localmente');
+  });
+
+  // 167. Helpers de localApi para recovery implementados y tipados
+  await test('167. 1D-C.3: localApi exporta helpers de recovery tipados y limpios', async () => {
+    const fs = await import('fs');
+    const localApiCode = await fs.promises.readFile('./src/services/localApi.ts', 'utf8');
+
+    assert.ok(localApiCode.includes('export const portalRecoveryRequestApi'));
+    assert.ok(localApiCode.includes('export const portalRecoveryVerifyApi'));
+    assert.ok(localApiCode.includes('export const portalRecoveryResetPinApi'));
+  });
+
+  // 168. Flujo completo E2E client mediante endpoints server-side
+  await test('168. 1D-C.3: Flujo E2E completo de Cliente: challenge -> verify -> reset-pin', async () => {
+    // 1. Challenge generado server-side
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    assert.ok(otpTest.challengeId);
+
+    // 2. Verificación server-side
+    const verRes = verifyRecoveryCode({
+      challengeId: otpTest.challengeId,
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      code: otpTest.otpForDelivery
+    });
+    assert.strictEqual(verRes.success, true);
+    assert.ok(verRes.resetToken);
+
+    // 3. Reset-PIN endpoint server-side
+    const resetRes = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        resetToken: verRes.resetToken,
+        newPin: '778899'
+      })
+    });
+    assert.strictEqual(resetRes.status, 200);
+    assert.strictEqual(resetRes.data.success, true);
+  });
+
+  // 169. Flujo completo E2E producer mediante endpoints server-side
+  await test('169. 1D-C.3: Flujo E2E completo de Productor: challenge -> verify -> reset-pin', async () => {
+    // 1. Challenge generado server-side
+    const otpTest = createRecoveryChallenge({
+      portalType: 'producer',
+      targetId: 'sup-demo-1',
+      targetName: 'Hacienda El Roble',
+      channel: 'whatsapp',
+      recipient: '04125550101'
+    });
+    assert.ok(otpTest.challengeId);
+
+    // 2. Verificación server-side
+    const verRes = verifyRecoveryCode({
+      challengeId: otpTest.challengeId,
+      portalType: 'producer',
+      targetId: 'sup-demo-1',
+      code: otpTest.otpForDelivery
+    });
+    assert.strictEqual(verRes.success, true);
+    assert.ok(verRes.resetToken);
+
+    // 3. Reset-PIN endpoint server-side
+    const resetRes = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: '04125550101',
+        resetToken: verRes.resetToken,
+        newPin: '445566'
+      })
+    });
+    assert.strictEqual(resetRes.status, 200);
+    assert.strictEqual(resetRes.data.success, true);
+  });
+
+  // ============================================================
   // PRUEBAS DE RATE LIMITER (SE EJECUTAN AL FINAL)
   // ============================================================
 

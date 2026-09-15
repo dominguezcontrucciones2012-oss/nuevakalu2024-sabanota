@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { User, ShoppingBag, HelpCircle, Gift, ShieldCheck, Info, LogOut, ChevronRight, ArrowLeft, MapPin, Calendar, Wind, Sparkles, Lock, Key, MessageCircle, MessageSquare, Mail, Trash2, Award, Zap } from 'lucide-react';
 import { ClientProfile, DebtInstallment, Transaction } from '../types';
 import { getVIPLevelInfo, VIP_LEVELS_MATRIX } from '../config/vipMatrix';
+import { portalRecoveryRequestApi, portalRecoveryVerifyApi, portalRecoveryResetPinApi } from '../services/localApi';
 
 interface ProfileTabProps {
   clientData: ClientProfile | null;
@@ -38,14 +39,37 @@ export default function ProfileTab({
   const [useBiometrics, setUseBiometrics] = useState(false);
   const [showIdentityModal, setShowIdentityModal] = useState(false);
 
-  // Recovery Dispatch States (Connected to dual backend robot)
+  // Server-Side Recovery Flow States (Fase 1D-C.3)
+  const [recoveryStep, setRecoveryStep] = useState<'channel_select' | 'code_verify' | 'new_pin'>('channel_select');
   const [sendingRecoveryEmail, setSendingRecoveryEmail] = useState(false);
   const [sendingRecoveryWhatsapp, setSendingRecoveryWhatsapp] = useState(false);
-  const [recoverySentVia, setRecoverySentVia] = useState<'email' | 'whatsapp'>('email');
-  const [recoveryCode, setRecoveryCode] = useState('');
+  const [verifyingRecoveryCode, setVerifyingRecoveryCode] = useState(false);
+  const [resettingPin, setResettingPin] = useState(false);
+
+  const [recoverySentVia, setRecoverySentVia] = useState<'email' | 'whatsapp'>('whatsapp');
+  const [recoveryRecipientMasked, setRecoveryRecipientMasked] = useState('');
+  const [recoveryChallengeId, setRecoveryChallengeId] = useState('');
+  const [recoveryResetToken, setRecoveryResetToken] = useState('');
+
   const [recoveryCodeInput, setRecoveryCodeInput] = useState('');
+  const [newPinInput, setNewPinInput] = useState('');
+  const [confirmPinInput, setConfirmPinInput] = useState('');
   const [recoveryErrorMsg, setRecoveryErrorMsg] = useState('');
-  const [isVerifyingCode, setIsVerifyingCode] = useState(false);
+
+  const resetRecoveryFlow = () => {
+    setRecoveryStep('channel_select');
+    setSendingRecoveryEmail(false);
+    setSendingRecoveryWhatsapp(false);
+    setVerifyingRecoveryCode(false);
+    setResettingPin(false);
+    setRecoveryChallengeId('');
+    setRecoveryResetToken('');
+    setRecoveryRecipientMasked('');
+    setRecoveryCodeInput('');
+    setNewPinInput('');
+    setConfirmPinInput('');
+    setRecoveryErrorMsg('');
+  };
 
   const renderMainView = () => (
     <>
@@ -97,7 +121,7 @@ export default function ProfileTab({
         {(() => {
           const vip = getVIPLevelInfo(kaluPoints);
           return (
-            <div 
+            <div
               onClick={() => setActiveSubView('mundo_kalu')}
               className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex justify-between items-center shadow-lg relative overflow-hidden cursor-pointer hover:border-emerald-500/40 transition-colors"
             >
@@ -113,7 +137,7 @@ export default function ProfileTab({
                   {Number(kaluPoints || 0)} pts ⭐ • Inicial {Math.round(vip.initialPct * 100)}%
                 </p>
               </div>
-              <button 
+              <button
                 onClick={(e) => {
                   e.stopPropagation();
                   setActiveSubView('mundo_kalu');
@@ -378,7 +402,7 @@ export default function ProfileTab({
                   </div>
                   <div className="text-right">
                     <p className="font-black text-white text-lg">${amount.toFixed(2)}</p>
-                    <button 
+                    <button
                       onClick={() => {
                         setActiveSubView('main');
                         if (onNavigateTab) onNavigateTab('pagos');
@@ -394,8 +418,8 @@ export default function ProfileTab({
           })()}
 
           {filterTab === 'pagadas' && (() => {
-            const paidTxs = allTransactions.filter((t: any) => 
-              t.clientId === clientData?.id && 
+            const paidTxs = allTransactions.filter((t: any) =>
+              t.clientId === clientData?.id &&
               (t.status === 'approved' || t.status === 'Completado' || !t.isVoided) &&
               (t.category === 'ventas' || t.category === 'credito' || t.category === 'ingresos_cobranza' || t.category === 'payment')
             );
@@ -460,8 +484,8 @@ export default function ProfileTab({
           })()}
 
           {filterTab === 'canceladas' && (() => {
-            const cancelledTxs = allTransactions.filter((t: any) => 
-              t.clientId === clientData?.id && 
+            const cancelledTxs = allTransactions.filter((t: any) =>
+              t.clientId === clientData?.id &&
               (t.isVoided || t.status === 'rejected' || t.status === 'voided' || t.status === 'cancelado')
             );
 
@@ -648,56 +672,57 @@ export default function ProfileTab({
     <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col overflow-y-auto animate-in slide-in-from-right duration-300">
       <div className="sticky top-0 z-50 bg-slate-950/80 backdrop-blur-md border-b border-slate-900 p-4 flex items-center gap-3">
         <button onClick={() => {
-          if (isVerifyingCode) {
-            setIsVerifyingCode(false);
+          if (recoveryStep === 'code_verify') {
+            setRecoveryStep('channel_select');
+            setRecoveryCodeInput('');
+            setRecoveryErrorMsg('');
+          } else if (recoveryStep === 'new_pin') {
+            resetRecoveryFlow();
+            setActiveSubView('seguridad');
           } else {
+            resetRecoveryFlow();
             setActiveSubView('seguridad');
           }
         }} className="w-8 h-8 rounded-full bg-slate-900 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h2 className="text-base font-black text-white">Seguridad</h2>
+        <h2 className="text-base font-black text-white">Seguridad de la Cuenta</h2>
       </div>
 
-      <div className="p-5 flex-1">
-        {!isVerifyingCode ? (
+      <div className="p-5 flex-1 flex flex-col">
+        {recoveryStep === 'channel_select' && (
           <>
             <h3 className="text-2xl font-extrabold text-slate-100 mt-4 leading-tight">Te enviaremos un código de recuperación</h3>
             <p className="text-sm text-slate-400 mt-1 mb-6">Elige dónde quieres recibirlo.</p>
 
+            {recoveryErrorMsg && (
+              <div className="bg-rose-500/20 border border-rose-500/50 rounded-lg p-3 mb-4">
+                <p className="text-rose-500 text-xs font-bold text-center">{recoveryErrorMsg}</p>
+              </div>
+            )}
+
             {/* WhatsApp Option */}
-            <div 
+            <div
               onClick={async () => {
                 if (sendingRecoveryWhatsapp || sendingRecoveryEmail) return;
                 setSendingRecoveryWhatsapp(true);
-                const code = Math.floor(100000 + Math.random() * 900000).toString();
-                setRecoveryCode(code);
-                const targetPhone = clientData?.phone || (clientData as any)?.telefono || '04140000000';
-                const hostname = window.location.hostname || 'localhost';
+                setRecoveryErrorMsg('');
+                const identifier = clientData?.phone || (clientData as any)?.telefono || clientData?.id || '';
 
                 try {
-                  const res = await fetch(`http://${hostname}:3001/api/send-recovery`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      channel: 'whatsapp',
-                      phone: targetPhone,
-                      code,
-                      name: clientData?.name || 'Cliente'
-                    })
+                  const res = await portalRecoveryRequestApi({
+                    portalType: 'client',
+                    identifier,
+                    channel: 'whatsapp'
                   });
-                  if (res.ok) {
-                    setRecoverySentVia('whatsapp');
-                    setIsVerifyingCode(true);
-                    setRecoveryCodeInput('');
-                    setRecoveryErrorMsg('');
-                  } else {
-                    const errData = await res.json().catch(() => ({}));
-                    onAddNotification(`Error en WhatsApp: ${errData.details || errData.error || 'No se pudo enviar'}`, 'warning');
-                  }
+                  setRecoverySentVia('whatsapp');
+                  setRecoveryChallengeId(res.challengeId || '');
+                  setRecoveryRecipientMasked(res.recipientMasked || `+58***${String(clientData?.phone || (clientData as any)?.telefono || '2054').slice(-4)}`);
+                  setRecoveryStep('code_verify');
+                  setRecoveryCodeInput('');
                 } catch (e: any) {
-                  console.error(e);
-                  onAddNotification(`Error de conexión al enviar WhatsApp (${e.message})`, 'warning');
+                  setRecoveryErrorMsg(e.message || 'Error al solicitar código por WhatsApp');
+                  onAddNotification?.(e.message || 'Error al solicitar código', 'warning');
                 } finally {
                   setSendingRecoveryWhatsapp(false);
                 }
@@ -717,38 +742,27 @@ export default function ProfileTab({
             </div>
 
             {/* Mail Option */}
-            <div 
+            <div
               onClick={async () => {
                 if (sendingRecoveryEmail || sendingRecoveryWhatsapp) return;
                 setSendingRecoveryEmail(true);
-                const code = Math.floor(100000 + Math.random() * 900000).toString();
-                setRecoveryCode(code);
-                const targetEmail = clientData?.email || (clientData as any)?.correo || 'cherokejd566@gmail.com';
-                const hostname = window.location.hostname || 'localhost';
+                setRecoveryErrorMsg('');
+                const identifier = clientData?.email || (clientData as any)?.correo || clientData?.phone || clientData?.id || '';
 
                 try {
-                  const res = await fetch(`http://${hostname}:3001/api/send-recovery`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      channel: 'email',
-                      email: targetEmail,
-                      code,
-                      name: clientData?.name || 'Cliente'
-                    })
+                  const res = await portalRecoveryRequestApi({
+                    portalType: 'client',
+                    identifier,
+                    channel: 'email'
                   });
-                  if (res.ok) {
-                    setRecoverySentVia('email');
-                    setIsVerifyingCode(true);
-                    setRecoveryCodeInput('');
-                    setRecoveryErrorMsg('');
-                  } else {
-                    const errData = await res.json().catch(() => ({}));
-                    onAddNotification(`Error en Correo: ${errData.details || errData.error || 'No se pudo enviar'}`, 'warning');
-                  }
+                  setRecoverySentVia('email');
+                  setRecoveryChallengeId(res.challengeId || '');
+                  setRecoveryRecipientMasked(res.recipientMasked || clientData?.email || '');
+                  setRecoveryStep('code_verify');
+                  setRecoveryCodeInput('');
                 } catch (e: any) {
-                  console.error(e);
-                  onAddNotification(`Error de conexión al enviar correo (${e.message})`, 'warning');
+                  setRecoveryErrorMsg(e.message || 'Error al solicitar código por correo');
+                  onAddNotification?.(e.message || 'Error al solicitar código', 'warning');
                 } finally {
                   setSendingRecoveryEmail(false);
                 }
@@ -761,19 +775,21 @@ export default function ProfileTab({
                 </div>
                 <div>
                   <p className="text-sm font-bold text-slate-200">{sendingRecoveryEmail ? 'Enviando Correo...' : 'Correo'}</p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">Enviar a {clientData?.email || 'cherokejd566@gmail.com'}</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">Enviar a {clientData?.email || 'correo registrado'}</p>
                 </div>
               </div>
               <ChevronRight className="w-4 h-4 text-slate-500" />
             </div>
           </>
-        ) : (
-          <div className="space-y-4 animate-in fade-in">
+        )}
+
+        {recoveryStep === 'code_verify' && (
+          <div className="space-y-4 animate-in fade-in flex-1">
             <h3 className="text-2xl font-extrabold text-slate-100 mt-4 leading-tight">Ingresa el código</h3>
             <p className="text-sm text-slate-400 mt-1 mb-6">
-              {recoverySentVia === 'whatsapp' 
-                ? 'Escribe el código de 6 dígitos que enviamos a tu WhatsApp.' 
-                : 'Escribe el código de 6 dígitos que enviamos a tu correo.'}
+              {recoverySentVia === 'whatsapp'
+                ? `Escribe el código de 6 dígitos que enviamos a tu WhatsApp (${recoveryRecipientMasked || 'tu número'}).`
+                : `Escribe el código de 6 dígitos que enviamos a tu correo (${recoveryRecipientMasked || 'tu correo'}).`}
             </p>
 
             {recoveryErrorMsg && (
@@ -782,31 +798,128 @@ export default function ProfileTab({
               </div>
             )}
 
-            <input 
-              type="text" 
-              placeholder="••••••" 
-              value={recoveryCodeInput} 
+            <input
+              type="text"
+              placeholder="••••••"
+              value={recoveryCodeInput}
               onChange={e => {
                 const val = e.target.value.replace(/\D/g, '').slice(0, 6);
                 setRecoveryCodeInput(val);
-              }} 
-              maxLength={6} 
-              className="w-full bg-slate-900 border border-slate-800 rounded-2xl px-4 py-4 text-xl text-white text-center tracking-[0.75em] focus:outline-none focus:border-emerald-500 transition-colors" 
+              }}
+              maxLength={6}
+              className="w-full bg-slate-900 border border-slate-800 rounded-2xl px-4 py-4 text-xl text-white text-center tracking-[0.75em] focus:outline-none focus:border-emerald-500 transition-colors"
             />
 
-            <button 
-              onClick={() => {
-                if (recoveryCodeInput === recoveryCode) {
-                  onAddNotification('¡Código Verificado con éxito! Ahora puedes cambiar tu clave.', 'success');
-                  setIsVerifyingCode(false);
-                  setActiveSubView('main');
-                } else {
-                  setRecoveryErrorMsg('El código ingresado es incorrecto.');
+            <button
+              disabled={verifyingRecoveryCode || recoveryCodeInput.length !== 6}
+              onClick={async () => {
+                if (verifyingRecoveryCode || recoveryCodeInput.length !== 6) return;
+                setVerifyingRecoveryCode(true);
+                setRecoveryErrorMsg('');
+                const identifier = clientData?.phone || (clientData as any)?.telefono || clientData?.email || clientData?.id || '';
+
+                try {
+                  const res = await portalRecoveryVerifyApi({
+                    portalType: 'client',
+                    identifier,
+                    challengeId: recoveryChallengeId,
+                    code: recoveryCodeInput
+                  });
+
+                  if (res.resetToken) {
+                    setRecoveryResetToken(res.resetToken);
+                    setRecoveryStep('new_pin');
+                    setRecoveryErrorMsg('');
+                    onAddNotification?.('Código verificado con éxito. Establece tu nuevo PIN.', 'success');
+                  } else {
+                    setRecoveryErrorMsg('Código de verificación inválido o expirado.');
+                  }
+                } catch (e: any) {
+                  setRecoveryErrorMsg(e.message || 'Código incorrecto o expirado.');
+                } finally {
+                  setVerifyingRecoveryCode(false);
                 }
               }}
-              className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black uppercase tracking-widest text-sm rounded-xl py-4 transition-colors"
+              className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-black uppercase tracking-widest text-sm rounded-xl py-4 transition-colors"
             >
-              Verificar Código
+              {verifyingRecoveryCode ? 'Verificando...' : 'Verificar Código'}
+            </button>
+          </div>
+        )}
+
+        {recoveryStep === 'new_pin' && (
+          <div className="space-y-4 animate-in fade-in flex-1">
+            <h3 className="text-2xl font-extrabold text-slate-100 mt-4 leading-tight">Crea tu nuevo PIN</h3>
+            <p className="text-sm text-slate-400 mt-1 mb-4">
+              Ingresa un código de seguridad numérico de exactamente 6 dígitos para acceder a tu cuenta.
+            </p>
+
+            {recoveryErrorMsg && (
+              <div className="bg-rose-500/20 border border-rose-500/50 rounded-lg p-3">
+                <p className="text-rose-500 text-xs font-bold text-center">{recoveryErrorMsg}</p>
+              </div>
+            )}
+
+            <div>
+              <label className="text-xs font-bold text-slate-400 block mb-1">Nuevo PIN (6 dígitos)</label>
+              <input
+                type="password"
+                placeholder="••••••"
+                value={newPinInput}
+                onChange={e => setNewPinInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                maxLength={6}
+                className="w-full bg-slate-900 border border-slate-800 rounded-2xl px-4 py-3.5 text-lg text-white text-center tracking-[0.5em] focus:outline-none focus:border-emerald-500 transition-colors"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-400 block mb-1">Confirmar Nuevo PIN</label>
+              <input
+                type="password"
+                placeholder="••••••"
+                value={confirmPinInput}
+                onChange={e => setConfirmPinInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                maxLength={6}
+                className="w-full bg-slate-900 border border-slate-800 rounded-2xl px-4 py-3.5 text-lg text-white text-center tracking-[0.5em] focus:outline-none focus:border-emerald-500 transition-colors"
+              />
+            </div>
+
+            <button
+              disabled={resettingPin || newPinInput.length !== 6 || confirmPinInput.length !== 6}
+              onClick={async () => {
+                if (newPinInput !== confirmPinInput) {
+                  setRecoveryErrorMsg('Los PINs ingresados no coinciden.');
+                  return;
+                }
+                if (newPinInput.length !== 6) {
+                  setRecoveryErrorMsg('El PIN debe contener exactamente 6 dígitos numéricos.');
+                  return;
+                }
+
+                setResettingPin(true);
+                setRecoveryErrorMsg('');
+                const identifier = clientData?.phone || (clientData as any)?.telefono || clientData?.email || clientData?.id || '';
+
+                try {
+                  await portalRecoveryResetPinApi({
+                    portalType: 'client',
+                    identifier,
+                    resetToken: recoveryResetToken,
+                    newPin: newPinInput
+                  });
+
+                  onAddNotification?.('¡PIN actualizado con éxito! Tu clave ha sido restablecida.', 'success');
+                  resetRecoveryFlow();
+                  setActiveSubView('main');
+                } catch (e: any) {
+                  setRecoveryErrorMsg(e.message || 'Error al actualizar el PIN.');
+                } finally {
+                  setResettingPin(false);
+                }
+              }}
+              className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-black uppercase tracking-widest text-sm rounded-xl py-4 transition-colors mt-2"
+            >
+              {resettingPin ? 'Actualizando PIN...' : 'Guardar Nuevo PIN'}
             </button>
           </div>
         )}
@@ -923,7 +1036,7 @@ export default function ProfileTab({
               {VIP_LEVELS_MATRIX.map((tier) => {
                 const isSelected = tier.level === currentVip.level;
                 return (
-                  <div 
+                  <div
                     key={tier.level}
                     className={`p-4 rounded-2xl border transition-all ${isSelected ? 'bg-slate-900 border-emerald-500/70 ring-1 ring-emerald-500/40' : 'bg-slate-900/40 border-slate-800/80'}`}
                   >

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { 
+import {
   Store, Home, Package, Truck, Wallet, LogOut, Search, Shield, ChevronRight, LogIn, User,
   ShoppingCart, X, Trash2, Copy, Image as ImageIcon, Banknote, Check,
   Key, ArrowLeft, Gift, MapPin, Mail, MessageCircle, Info, Star
@@ -16,7 +16,10 @@ import {
   fetchPortalProducerTripsApi,
   fetchPortalProducerTransactionsApi,
   fetchPortalProducerOrdersApi,
-  submitPortalProducerOrderApi
+  submitPortalProducerOrderApi,
+  portalRecoveryRequestApi,
+  portalRecoveryVerifyApi,
+  portalRecoveryResetPinApi
 } from '../../services/localApi';
 import KaluLoader from '../KaluLoader';
 import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
@@ -31,12 +34,12 @@ const parseCustomDate = (dateStr: string): number => {
       'ene': 'Jan', 'feb': 'Feb', 'mar': 'Mar', 'abr': 'Apr', 'may': 'May', 'jun': 'Jun',
       'jul': 'Jul', 'ago': 'Aug', 'sep': 'Sep', 'oct': 'Oct', 'nov': 'Nov', 'dic': 'Dec'
     };
-    
+
     let normalizedStr = dateStr.toLowerCase();
     Object.keys(monthMap).forEach(es => {
       normalizedStr = normalizedStr.replace(es, monthMap[es].toLowerCase());
     });
-    
+
     const translatedTime = new Date(normalizedStr).getTime();
     if (!isNaN(translatedTime) && translatedTime > 0) return translatedTime;
 
@@ -53,11 +56,11 @@ const parseCustomDate = (dateStr: string): number => {
   return 0;
 };
 
-export default function ProducerPortal({ 
+export default function ProducerPortal({
   products, suppliers, onAddNotification, isolatedType, isolatedId,
   cheeseTrips = [], transactions = [], mobileOrders = [], settings, exchangeRate
 }: MobilePortalsViewProps) {
-  
+
   const activeRate = exchangeRate || (settings as any)?.exchangeRate || 45.0;
 
   const [loggedSupplier, setLoggedSupplier] = useState<SupplierProfile | null>(null);
@@ -126,7 +129,7 @@ export default function ProducerPortal({
     window.addEventListener('error', handleError);
     return () => window.removeEventListener('error', handleError);
   }, []);
-  
+
   const [supplierPhoneInput, setSupplierPhoneInput] = useState('');
   const [supplierPinInput, setSupplierPinInput] = useState('');
 
@@ -136,13 +139,35 @@ export default function ProducerPortal({
   const [loginError, setLoginError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
 
-  // Recovery States
+  // Recovery States (Server-Side Recovery Flow - Fase 1D-C.3)
   const [sendingRecoveryEmail, setSendingRecoveryEmail] = useState(false);
   const [sendingRecoveryWhatsapp, setSendingRecoveryWhatsapp] = useState(false);
-  const [recoverySentVia, setRecoverySentVia] = useState<'email' | 'whatsapp'>('email');
-  const [recoveryCode, setRecoveryCode] = useState('');
+  const [verifyingRecoveryCode, setVerifyingRecoveryCode] = useState(false);
+  const [resettingPin, setResettingPin] = useState(false);
+
+  const [recoverySentVia, setRecoverySentVia] = useState<'email' | 'whatsapp'>('whatsapp');
+  const [recoveryRecipientMasked, setRecoveryRecipientMasked] = useState('');
+  const [recoveryChallengeId, setRecoveryChallengeId] = useState('');
+  const [recoveryResetToken, setRecoveryResetToken] = useState('');
+
   const [recoveryCodeInput, setRecoveryCodeInput] = useState('');
+  const [newPinInput, setNewPinInput] = useState('');
+  const [confirmPinInput, setConfirmPinInput] = useState('');
   const [recoveryErrorMsg, setRecoveryErrorMsg] = useState('');
+
+  const resetProducerRecoveryFlow = () => {
+    setSendingRecoveryEmail(false);
+    setSendingRecoveryWhatsapp(false);
+    setVerifyingRecoveryCode(false);
+    setResettingPin(false);
+    setRecoveryChallengeId('');
+    setRecoveryResetToken('');
+    setRecoveryRecipientMasked('');
+    setRecoveryCodeInput('');
+    setNewPinInput('');
+    setConfirmPinInput('');
+    setRecoveryErrorMsg('');
+  };
 
   useEffect(() => {
     localStorage.setItem('kaluProducerLoginAttempts', loginAttempts.toString());
@@ -170,7 +195,7 @@ export default function ProducerPortal({
     const attempts = loginAttempts + 1;
     let lockout = lockoutUntil;
     let errorMsg = '';
-    
+
     if (attempts === 1) {
       errorMsg = 'PIN o Usuario incorrecto. Quedan 2 intentos.';
     } else if (attempts === 2) {
@@ -189,7 +214,7 @@ export default function ProducerPortal({
     setLockoutUntil(lockout);
     setLoginError(errorMsg);
   };
-  
+
   const STORE_BANNERS = [
     { id: 'b1', title: 'Nueva Línea de Repuestos Bera', image: 'bg-emerald-900', desc: 'Amortiguadores, tripas y cauchos con crédito Kalu a 4 cuotas.' },
     { id: 'b2', title: 'Víveres y Alimentos a Crédito Kalu', image: 'bg-slate-900', desc: 'Llena tu despensa hoy y paga en cómodas cuotas con tu nivel Kalu.' },
@@ -233,9 +258,9 @@ export default function ProducerPortal({
     setTouchStart(null);
     setTouchEnd(null);
   };
-  
+
   const [producerActiveTab, setProducerActiveTab] = useState<'inicio' | 'tienda' | 'pagar' | 'perfil'>('inicio');
-  const [profileSubView, setProfileSubView] = useState<'main' | 'mis-datos' | 'info-personal' | 'mis-direcciones' | 'seguridad' | 'recuperar-identidad' | 'recuperar-canales'>('main');
+  const [profileSubView, setProfileSubView] = useState<'main' | 'mis-datos' | 'info-personal' | 'mis-direcciones' | 'seguridad' | 'recuperar-identidad' | 'recuperar-canales' | 'recuperar-codigo' | 'recuperar-nuevo-pin'>('main');
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
 
   // Swipe Navigation for Mobile Tabs (Inicio <-> Tienda <-> Pagar <-> Perfil)
@@ -303,7 +328,7 @@ export default function ProducerPortal({
   const handleSupplierLogin = async (e: React.FormEvent | React.MouseEvent) => {
     e.preventDefault();
     if (lockoutUntil > Date.now()) return;
-    
+
     const cleanInput = supplierPhoneInput.trim();
     if (!cleanInput || !supplierPinInput) {
       setLoginError('Por favor ingrese su identificador y PIN.');
@@ -387,7 +412,7 @@ export default function ProducerPortal({
       if (supplierCart.length === 0) {
         return;
       }
-      
+
       let orderTotalUsd = 0;
       const items = supplierCart.map(item => {
         const product = (products || []).find(p => p.id === item.productId);
@@ -444,19 +469,19 @@ export default function ProducerPortal({
 
   const filteredSupplierProducts = baseProducts.filter(p => {
     const matchesSearch = (p.name || '').toLowerCase().includes((supplierSearch || '').toLowerCase());
-    
+
     // Normalizar la categoría real a nuestras opciones locales
     let normalizedCategory = 'Otros';
     const c = (p.category || '').toLowerCase();
     if (c.includes('vivere') || c.includes('comida') || p.name === 'Queso Duro Llanero') normalizedCategory = 'Víveres';
     if (c.includes('repuesto') || c.includes('insumo') || c.includes('moto')) normalizedCategory = 'Insumos/Repuestos';
-    
+
     const matchesCategory = supplierCategory === 'Todos' || normalizedCategory === supplierCategory;
-    
+
     // El productor solo ve víveres, insumos y el Queso Duro Llanero (prohibidos otros quesos)
     const isStoreItem = normalizedCategory === 'Víveres' || normalizedCategory === 'Insumos/Repuestos';
     const isNotFakeCheese = !c.includes('queso') || p.name === 'Queso Duro Llanero';
-    
+
     return matchesSearch && matchesCategory && isStoreItem && isNotFakeCheese;
   });
 
@@ -586,7 +611,7 @@ export default function ProducerPortal({
               </form>
             </div>
           ) : (
-            <div 
+            <div
               {...producerSwipeHandlers}
               className="flex-1 flex flex-col min-h-0 relative pb-16 touch-pan-y"
             >
@@ -618,7 +643,7 @@ export default function ProducerPortal({
                   {/* Tarjeta de Balance Principal (Más Compacta) */}
                   <div className="bg-slate-900 border border-emerald-500/20 rounded-xl p-4 relative overflow-hidden shadow-sm shrink-0">
                     <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/10 rounded-full -mr-8 -mt-8 blur-xl" />
-                    
+
                     <div className="flex justify-between items-start mb-2 relative z-10">
                       <div>
                         <span className="text-[9px] uppercase font-bold tracking-widest text-emerald-400">Mi Libreta Digital</span>
@@ -630,7 +655,7 @@ export default function ProducerPortal({
                         </span>
                       </div>
                     </div>
-                    
+
                     <div className="relative z-10">
                       {(() => {
                         const balance = Number(loggedSupplier?.balanceOwed || 0);
@@ -694,7 +719,7 @@ export default function ProducerPortal({
                     </div>
 
                     {/* Mi Libreta / Movimientos */}
-                    <button 
+                    <button
                       onClick={() => setIsHistoryModalOpen(true)}
                       className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 flex flex-col justify-between hover:bg-emerald-500/20 transition-all text-left group"
                     >
@@ -711,7 +736,7 @@ export default function ProducerPortal({
 
                   {/* Carrusel */}
                   <div data-no-swipe="true" className="flex-1 min-h-0 relative rounded-2xl overflow-hidden shadow-2xl mb-1 mt-1">
-                    <div 
+                    <div
                       className="w-full h-full relative"
                       onTouchStart={handleTouchStart}
                       onTouchMove={handleTouchMove}
@@ -751,7 +776,7 @@ export default function ProducerPortal({
                           );
                         })}
                       </div>
-                      
+
                       {/* Indicadores flotantes sobre el carrusel */}
                       <div className="absolute bottom-2 left-0 right-0 flex justify-center gap-1.5 z-20">
                         {activeBanners.map((_, i) => (
@@ -805,7 +830,7 @@ export default function ProducerPortal({
                                   {p.category}
                                 </div>
                               </div>
-                              
+
                               <div className="p-2.5 flex-1 flex flex-col justify-between">
                                 <div>
                                   <p className="font-bold text-slate-200 text-[10px] leading-tight line-clamp-2">{p.name}</p>
@@ -815,10 +840,10 @@ export default function ProducerPortal({
                                     <p className="text-xs text-emerald-400 font-mono font-black">${Number(p.sellingPrice || 0).toFixed(2)}</p>
                                     <p className="text-[9px] text-slate-500 font-mono">~ Bs. {(Number(p.sellingPrice || 0) * activeRate).toFixed(2)}</p>
                                   </div>
-                                  
+
                                   <div className="pt-1 flex gap-2">
-                                    <input 
-                                      type="number" 
+                                    <input
+                                      type="number"
                                       inputMode="numeric"
                                       min="1"
                                       value={inputQuantities[p.id] !== undefined ? inputQuantities[p.id] : 1}
@@ -828,12 +853,12 @@ export default function ProducerPortal({
                                       }}
                                       className="w-12 bg-slate-950 border border-slate-800 rounded-lg text-center text-[11px] text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
                                     />
-                                    <button 
+                                    <button
                                       onClick={() => {
                                         const val = inputQuantities[p.id];
                                         const qty = typeof val === 'number' ? val : (parseInt(String(val)) || 1);
                                         handleSupplierCartSet(p.id, qty);
-                                      }} 
+                                      }}
                                       className={`flex-1 py-1.5 font-bold uppercase rounded-lg text-[9px] tracking-wider transition-colors border ${cartItem ? 'bg-blue-500/20 text-blue-400 border-blue-500/50 hover:bg-blue-500/30' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-emerald-500 hover:text-slate-950 hover:border-emerald-500'}`}
                                     >
                                       {cartItem ? 'Añadido' : 'Agregar'}
@@ -847,10 +872,10 @@ export default function ProducerPortal({
                       </div>
                     )}
                   </div>
-                  
+
                   {/* Botón Flotante de Carrito (Estilo Pill) */}
                   {supplierCart.length > 0 && !isCartModalOpen && (
-                    <button 
+                    <button
                       onClick={() => setIsCartModalOpen(true)}
                       className="fixed bottom-20 right-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-full py-3 px-5 shadow-[0_8px_30px_rgb(16,185,129,0.3)] flex items-center gap-3 animate-fade-in transition-all z-50"
                     >
@@ -876,7 +901,7 @@ export default function ProducerPortal({
                             <X className="w-4 h-4" />
                           </button>
                         </div>
-                        
+
                         <div className="flex-1 overflow-y-auto pr-1 space-y-3 mb-4">
                           {supplierCart.map(item => {
                             const p = products.find(prod => prod.id === item.productId) || baseProducts.find(prod => prod.id === item.productId);
@@ -900,7 +925,7 @@ export default function ProducerPortal({
                             );
                           })}
                         </div>
-                        
+
                         <div className="space-y-4 pt-4 border-t border-slate-800/50 shrink-0">
                           <div className="flex justify-between items-end mb-2">
                             <span className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Total a Pagar</span>
@@ -919,10 +944,10 @@ export default function ProducerPortal({
                               </span>
                             </div>
                           </div>
-                          
-                          <button 
-                            type="button" 
-                            onClick={submitSupplierOrder} 
+
+                          <button
+                            type="button"
+                            onClick={submitSupplierOrder}
                             className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-xl text-xs flex items-center justify-center gap-2 transition-all uppercase tracking-wider shadow-[0_4px_14px_rgb(16,185,129,0.2)]"
                           >
                             Confirmar Pedido
@@ -944,20 +969,20 @@ export default function ProducerPortal({
                       <X className="w-4 h-4" />
                     </button>
                   </div>
-                  
+
                   <div className="space-y-6 pb-20">
                     {/* 1. BANCO DESTINO */}
                     <div className="space-y-2">
                       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest pl-1">1. Banco Destino</p>
                       <div className="grid grid-cols-2 gap-3">
-                        <button 
+                        <button
                           onClick={() => setPaymentBank('0102')}
                           className={`p-3 rounded-xl border flex flex-col items-center justify-center transition-colors ${paymentBank === '0102' ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400' : 'bg-slate-900 border-slate-800 text-slate-400'}`}
                         >
                           <span className="font-bold text-sm">Venezuela</span>
                           <span className="text-[10px] font-mono mt-1 opacity-70">0102</span>
                         </button>
-                        <button 
+                        <button
                           onClick={() => setPaymentBank('0134')}
                           className={`p-3 rounded-xl border flex flex-col items-center justify-center transition-colors ${paymentBank === '0134' ? 'bg-emerald-500/10 border-emerald-500 text-emerald-400' : 'bg-slate-900 border-slate-800 text-slate-400'}`}
                         >
@@ -998,7 +1023,7 @@ export default function ProducerPortal({
                       <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex justify-between items-center">
                         <div className="flex items-center gap-2 flex-1">
                           <span className="text-emerald-500/50 font-bold">Bs.</span>
-                          <input 
+                          <input
                             type="number"
                             inputMode="decimal"
                             placeholder="0.00"
@@ -1018,7 +1043,7 @@ export default function ProducerPortal({
                       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest pl-1">4. Datos del Pago</p>
                       <div className="space-y-3">
                         <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
-                          <input 
+                          <input
                             type="text"
                             inputMode="numeric"
                             maxLength={6}
@@ -1028,7 +1053,7 @@ export default function ProducerPortal({
                             className="bg-transparent text-slate-200 font-mono w-full focus:outline-none placeholder-slate-600 text-center tracking-widest"
                           />
                         </div>
-                        
+
                         <label htmlFor="pago-capture-file" className="border-2 border-dashed border-slate-800 rounded-xl p-6 flex flex-col items-center justify-center text-slate-500 hover:text-emerald-400 hover:border-emerald-500/50 transition-colors bg-slate-900/50 relative overflow-hidden">
                           {paymentImagePreview ? (
                             <>
@@ -1046,7 +1071,7 @@ export default function ProducerPortal({
                           )}
                           <input type="file" id="pago-capture-file" accept="image/*" className="absolute inset-0 opacity-0 w-full h-full z-20 cursor-pointer" onChange={handleImageChange} />
                         </label>
-                        
+
                         <button className="w-full py-4 mt-2 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-500 hover:text-slate-950 font-bold uppercase tracking-widest text-[11px] rounded-xl transition-colors border border-emerald-500/20 flex items-center justify-center gap-2">
                           Enviar Comprobante a Caja <ChevronRight className="w-4 h-4" />
                         </button>
@@ -1087,7 +1112,7 @@ export default function ProducerPortal({
                             </div>
                             <ChevronRight className="w-4 h-4 text-slate-500" />
                           </button>
-                          
+
                           <button onClick={() => setProfileSubView('seguridad')} className="w-full flex items-center justify-between p-4 border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
                             <div className="flex items-center gap-3 text-emerald-400">
                               <Shield className="w-5 h-5" />
@@ -1130,14 +1155,14 @@ export default function ProducerPortal({
                       </div>
 
                       {/* Cerrar Sesión */}
-                      <button 
+                      <button
                         onClick={() => { setLoggedSupplier(null); setSupplierCart([]); setProfileSubView('main'); setProducerActiveTab('inicio'); }}
                         className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between hover:bg-rose-500/10 hover:border-rose-500/30 group transition-colors"
                       >
                         <span className="text-sm font-semibold text-slate-100 group-hover:text-rose-400">Cerrar sesión</span>
                         <LogOut className="w-5 h-5 text-slate-500 group-hover:text-rose-400" />
                       </button>
-                      
+
                       <div className="text-center pt-4">
                         <span className="text-[8px] font-mono tracking-[0.3em] uppercase text-slate-600">Versión 3.2.0</span>
                       </div>
@@ -1153,7 +1178,7 @@ export default function ProducerPortal({
                         </button>
                         <h2 className="text-lg font-bold text-white">Mis datos</h2>
                       </div>
-                      
+
                       <div className="p-4 space-y-4">
                         <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
                           <button onClick={() => setProfileSubView('info-personal')} className="w-full flex items-center justify-between p-4 border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
@@ -1184,7 +1209,7 @@ export default function ProducerPortal({
                         </button>
                         <h2 className="text-lg font-bold text-white">Información personal</h2>
                       </div>
-                      
+
                       <div className="flex-1 overflow-y-auto p-4 space-y-3">
                         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
                           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">Nombre y Apellido</p>
@@ -1221,7 +1246,7 @@ export default function ProducerPortal({
                         </button>
                         <h2 className="text-lg font-bold text-white">Mis direcciones</h2>
                       </div>
-                      
+
                       <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-slate-500">
                         <MapPin className="w-12 h-12 mb-4 opacity-50" />
                         <p className="text-sm font-semibold mb-2 text-slate-300">Aún no tienes direcciones</p>
@@ -1239,7 +1264,7 @@ export default function ProducerPortal({
                         </button>
                         <h2 className="text-lg font-bold text-white">Seguridad</h2>
                       </div>
-                      
+
                       <div className="p-4">
                         <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
                           <button onClick={() => setProfileSubView('recuperar-identidad')} className="w-full flex items-center justify-between p-4 border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
@@ -1249,7 +1274,7 @@ export default function ProducerPortal({
                             </div>
                             <ChevronRight className="w-4 h-4 text-slate-500" />
                           </button>
-                          
+
                           <div className="w-full flex items-center justify-between p-4">
                             <div className="flex items-start gap-3">
                               <Shield className="w-5 h-5 text-emerald-400 shrink-0" />
@@ -1273,27 +1298,27 @@ export default function ProducerPortal({
                     <div className="absolute inset-0 bg-slate-950 flex flex-col z-30 animate-fade-in">
                       {/* Fondo oscurecido para simular modal, aunque ocupa toda la pantalla en este diseño */}
                       <div className="absolute inset-0 bg-slate-950/80"></div>
-                      
+
                       <div className="relative z-10 bg-slate-900 rounded-t-3xl border-t border-slate-800 mt-auto px-6 py-8 pb-10 flex flex-col items-center animate-slide-up text-center">
                         <div className="w-12 h-1 bg-slate-700 rounded-full mb-8"></div>
-                        
+
                         <div className="w-20 h-20 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center mb-6">
                           <Key className="w-8 h-8 text-emerald-400" />
                         </div>
-                        
+
                         <h2 className="text-xl font-bold text-white mb-2">Validemos tu identidad</h2>
                         <p className="text-xs text-slate-400 mb-8 max-w-[250px] mx-auto">
                           Necesitamos verificar que seas tú. Este paso no te llevará mucho tiempo.
                         </p>
-                        
-                        <button 
+
+                        <button
                           onClick={() => setProfileSubView('recuperar-canales')}
                           className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold uppercase tracking-wider text-sm rounded-xl py-4 mb-4 transition-colors"
                         >
                           Comenzar
                         </button>
-                        
-                        <button 
+
+                        <button
                           onClick={() => setProfileSubView('seguridad')}
                           className="text-sm font-bold text-slate-400 hover:text-white transition-colors"
                         >
@@ -1307,49 +1332,46 @@ export default function ProducerPortal({
                   {profileSubView === 'recuperar-canales' && (
                     <div className="absolute inset-0 bg-slate-950 flex flex-col z-40 animate-slide-in-right">
                       <div className="flex items-center gap-4 px-4 py-5 shrink-0">
-                        <button onClick={() => setProfileSubView('recuperar-identidad')} className="p-1 rounded-full bg-slate-800 text-slate-300 hover:text-white">
+                        <button onClick={() => {
+                          resetProducerRecoveryFlow();
+                          setProfileSubView('seguridad');
+                        }} className="p-1 rounded-full bg-slate-800 text-slate-300 hover:text-white">
                           <ArrowLeft className="w-5 h-5" />
                         </button>
-                        <h2 className="text-lg font-bold text-white">Seguridad</h2>
+                        <h2 className="text-lg font-bold text-white">Seguridad de la Cuenta</h2>
                       </div>
-                      
+
                       <div className="p-6">
                         <h2 className="text-2xl font-bold text-white leading-tight mb-2">Te enviaremos un código de<br/>recuperación</h2>
-                        <p className="text-xs text-slate-400 mb-8">Elige dónde quieres recibirlo.</p>
-                        
+                        <p className="text-xs text-slate-400 mb-6">Elige dónde quieres recibirlo.</p>
+
+                        {recoveryErrorMsg && (
+                          <div className="bg-rose-500/20 border border-rose-500/50 rounded-lg p-3 mb-4">
+                            <p className="text-rose-500 text-xs font-bold text-center">{recoveryErrorMsg}</p>
+                          </div>
+                        )}
+
                         <div className="space-y-4">
-                          <button 
+                          <button
                             disabled={sendingRecoveryWhatsapp || sendingRecoveryEmail}
                             onClick={async () => {
                               setSendingRecoveryWhatsapp(true);
-                              const code = Math.floor(100000 + Math.random() * 900000).toString();
-                              setRecoveryCode(code);
-                              const targetPhone = loggedSupplier.phone || loggedSupplier.telefono || '04140000000';
-                              const hostname = window.location.hostname || 'localhost';
+                              setRecoveryErrorMsg('');
+                              const identifier = loggedSupplier.phone || loggedSupplier.telefono || loggedSupplier.rif || loggedSupplier.id || '';
 
                               try {
-                                const res = await fetch(`http://${hostname}:3001/api/send-recovery`, {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ 
-                                    channel: 'whatsapp', 
-                                    phone: targetPhone, 
-                                    code, 
-                                    name: loggedSupplier.name 
-                                  })
+                                const res = await portalRecoveryRequestApi({
+                                  portalType: 'producer',
+                                  identifier,
+                                  channel: 'whatsapp'
                                 });
-                                if (res.ok) {
-                                  setRecoverySentVia('whatsapp');
-                                  setProfileSubView('ingresar-codigo');
-                                  setRecoveryCodeInput('');
-                                  setRecoveryErrorMsg('');
-                                } else {
-                                  const errData = await res.json().catch(() => ({}));
-                                  alert(`Error en WhatsApp: ${errData.details || errData.error || 'No se pudo enviar'}`);
-                                }
+                                setRecoverySentVia('whatsapp');
+                                setRecoveryChallengeId(res.challengeId || '');
+                                setRecoveryRecipientMasked(res.recipientMasked || `+58***${String(loggedSupplier.phone || '0000').slice(-4)}`);
+                                setProfileSubView('recuperar-codigo');
+                                setRecoveryCodeInput('');
                               } catch (e: any) {
-                                console.error(e);
-                                alert(`Error de conexión al enviar WhatsApp (${e.message})`);
+                                setRecoveryErrorMsg(e.message || 'Error al solicitar código por WhatsApp');
                               } finally {
                                 setSendingRecoveryWhatsapp(false);
                               }
@@ -1366,39 +1388,27 @@ export default function ProducerPortal({
                             </div>
                             <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-emerald-400 transition-colors" />
                           </button>
-                          
-                          <button 
+
+                          <button
                             disabled={sendingRecoveryEmail || sendingRecoveryWhatsapp}
                             onClick={async () => {
                               setSendingRecoveryEmail(true);
-                              const code = Math.floor(100000 + Math.random() * 900000).toString();
-                              setRecoveryCode(code);
-                              const targetEmail = loggedSupplier.email || loggedSupplier.correo || 'cherokejd566@gmail.com';
-                              const hostname = window.location.hostname || 'localhost';
-                              
+                              setRecoveryErrorMsg('');
+                              const identifier = loggedSupplier.email || loggedSupplier.correo || loggedSupplier.phone || loggedSupplier.id || '';
+
                               try {
-                                const res = await fetch(`http://${hostname}:3001/api/send-recovery`, {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ 
-                                    channel: 'email', 
-                                    email: targetEmail, 
-                                    code, 
-                                    name: loggedSupplier.name 
-                                  })
+                                const res = await portalRecoveryRequestApi({
+                                  portalType: 'producer',
+                                  identifier,
+                                  channel: 'email'
                                 });
-                                if (res.ok) {
-                                  setRecoverySentVia('email');
-                                  setProfileSubView('ingresar-codigo');
-                                  setRecoveryCodeInput('');
-                                  setRecoveryErrorMsg('');
-                                } else {
-                                  const errData = await res.json().catch(() => ({}));
-                                  alert(`Error en Correo: ${errData.details || errData.error || 'No se pudo enviar'}`);
-                                }
+                                setRecoverySentVia('email');
+                                setRecoveryChallengeId(res.challengeId || '');
+                                setRecoveryRecipientMasked(res.recipientMasked || loggedSupplier.email || '');
+                                setProfileSubView('recuperar-codigo');
+                                setRecoveryCodeInput('');
                               } catch (e: any) {
-                                console.error(e);
-                                alert(`Error de conexión al enviar correo (${e.message})`);
+                                setRecoveryErrorMsg(e.message || 'Error al solicitar código por correo');
                               } finally {
                                 setSendingRecoveryEmail(false);
                               }
@@ -1410,7 +1420,7 @@ export default function ProducerPortal({
                               </div>
                               <div>
                                 <p className="text-sm font-bold text-slate-100">{sendingRecoveryEmail ? 'Enviando Correo...' : 'Correo'}</p>
-                                <p className="text-[10px] text-slate-400 mt-0.5">Enviar a {loggedSupplier.email || 'cherokejd566@gmail.com'}</p>
+                                <p className="text-[10px] text-slate-400 mt-0.5">Enviar a {loggedSupplier.email || 'correo registrado'}</p>
                               </div>
                             </div>
                             <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-slate-300 transition-colors" />
@@ -1421,7 +1431,7 @@ export default function ProducerPortal({
                   )}
 
                   {/* INGRESAR CÓDIGO DE RECUPERACIÓN */}
-                  {profileSubView === 'ingresar-codigo' && (
+                  {profileSubView === 'recuperar-codigo' && (
                     <div className="absolute inset-0 bg-slate-950 flex flex-col z-40 animate-slide-in-right">
                       <div className="flex items-center gap-4 px-4 py-5 shrink-0">
                         <button onClick={() => setProfileSubView('recuperar-canales')} className="p-1 rounded-full bg-slate-800 text-slate-300 hover:text-white">
@@ -1429,47 +1439,156 @@ export default function ProducerPortal({
                         </button>
                         <h2 className="text-lg font-bold text-white">Verificación</h2>
                       </div>
-                      
+
                       <div className="p-6">
                         <h2 className="text-2xl font-bold text-white leading-tight mb-2">Ingresa el código</h2>
                         <p className="text-xs text-slate-400 mb-8">
-                          {recoverySentVia === 'whatsapp' 
-                            ? 'Escribe el código de 6 dígitos que enviamos a tu WhatsApp.' 
-                            : 'Escribe el código de 6 dígitos que enviamos a tu correo.'}
+                          {recoverySentVia === 'whatsapp'
+                            ? `Escribe el código de 6 dígitos que enviamos a tu WhatsApp (${recoveryRecipientMasked || 'tu número'}).`
+                            : `Escribe el código de 6 dígitos que enviamos a tu correo (${recoveryRecipientMasked || 'tu correo'}).`}
                         </p>
-                        
+
                         <div className="space-y-4">
                           {recoveryErrorMsg && (
                             <div className="bg-rose-500/20 border border-rose-500/50 rounded-lg p-3">
                               <p className="text-rose-500 text-xs font-bold text-center">{recoveryErrorMsg}</p>
                             </div>
                           )}
-                          <input 
-                            type="text" 
-                            placeholder="      " 
-                            value={recoveryCodeInput} 
+                          <input
+                            type="text"
+                            placeholder="••••••"
+                            value={recoveryCodeInput}
                             onChange={e => {
                               const val = e.target.value.replace(/\D/g, '').slice(0, 6);
                               setRecoveryCodeInput(val);
-                            }} 
-                            maxLength={6} 
-                            className="w-full bg-slate-900 border border-slate-800 rounded-2xl px-4 py-4 text-xl text-white text-center tracking-[0.75em] focus:outline-none focus:border-emerald-500 transition-colors" 
+                            }}
+                            maxLength={6}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-2xl px-4 py-4 text-xl text-white text-center tracking-[0.75em] focus:outline-none focus:border-emerald-500 transition-colors"
                           />
-                          <button 
-                            onClick={() => {
-                              if (recoveryCodeInput === recoveryCode) {
-                                // Aquí puedes mandar a otra vista para crear PIN.
-                                alert('¡Código Correcto! Aquí irá el formulario para cambiar tu PIN.');
-                                setProfileSubView('main');
-                              } else {
-                                setRecoveryErrorMsg('El código es incorrecto.');
+                          <button
+                            disabled={verifyingRecoveryCode || recoveryCodeInput.length !== 6}
+                            onClick={async () => {
+                              if (verifyingRecoveryCode || recoveryCodeInput.length !== 6) return;
+                              setVerifyingRecoveryCode(true);
+                              setRecoveryErrorMsg('');
+                              const identifier = loggedSupplier.phone || loggedSupplier.telefono || loggedSupplier.email || loggedSupplier.rif || loggedSupplier.id || '';
+
+                              try {
+                                const res = await portalRecoveryVerifyApi({
+                                  portalType: 'producer',
+                                  identifier,
+                                  challengeId: recoveryChallengeId,
+                                  code: recoveryCodeInput
+                                });
+
+                                if (res.resetToken) {
+                                  setRecoveryResetToken(res.resetToken);
+                                  setProfileSubView('recuperar-nuevo-pin');
+                                  setRecoveryErrorMsg('');
+                                } else {
+                                  setRecoveryErrorMsg('Código de verificación inválido o expirado.');
+                                }
+                              } catch (e: any) {
+                                setRecoveryErrorMsg(e.message || 'Código incorrecto o expirado.');
+                              } finally {
+                                setVerifyingRecoveryCode(false);
                               }
                             }}
-                            className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold uppercase tracking-wider text-sm rounded-xl py-4 transition-colors"
+                            className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold uppercase tracking-wider text-sm rounded-xl py-4 transition-colors"
                           >
-                            Verificar Código
+                            {verifyingRecoveryCode ? 'Verificando...' : 'Verificar Código'}
                           </button>
                         </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ESTABLECER NUEVO PIN DE PRODUCTOR */}
+                  {profileSubView === 'recuperar-nuevo-pin' && (
+                    <div className="absolute inset-0 bg-slate-950 flex flex-col z-40 animate-slide-in-right">
+                      <div className="flex items-center gap-4 px-4 py-5 shrink-0">
+                        <button onClick={() => {
+                          resetProducerRecoveryFlow();
+                          setProfileSubView('seguridad');
+                        }} className="p-1 rounded-full bg-slate-800 text-slate-300 hover:text-white">
+                          <ArrowLeft className="w-5 h-5" />
+                        </button>
+                        <h2 className="text-lg font-bold text-white">Nuevo PIN de Seguridad</h2>
+                      </div>
+
+                      <div className="p-6 space-y-4">
+                        <h2 className="text-2xl font-bold text-white leading-tight mb-2">Crea tu nuevo PIN</h2>
+                        <p className="text-xs text-slate-400 mb-4">
+                          Ingresa un código numérico de exactamente 6 dígitos para acceder a tu portal.
+                        </p>
+
+                        {recoveryErrorMsg && (
+                          <div className="bg-rose-500/20 border border-rose-500/50 rounded-lg p-3">
+                            <p className="text-rose-500 text-xs font-bold text-center">{recoveryErrorMsg}</p>
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="text-xs font-bold text-slate-400 block mb-1">Nuevo PIN (6 dígitos)</label>
+                          <input
+                            type="password"
+                            placeholder="••••••"
+                            value={newPinInput}
+                            onChange={e => setNewPinInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                            maxLength={6}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-2xl px-4 py-3.5 text-lg text-white text-center tracking-[0.5em] focus:outline-none focus:border-emerald-500 transition-colors"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-xs font-bold text-slate-400 block mb-1">Confirmar Nuevo PIN</label>
+                          <input
+                            type="password"
+                            placeholder="••••••"
+                            value={confirmPinInput}
+                            onChange={e => setConfirmPinInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                            maxLength={6}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-2xl px-4 py-3.5 text-lg text-white text-center tracking-[0.5em] focus:outline-none focus:border-emerald-500 transition-colors"
+                          />
+                        </div>
+
+                        <button
+                          disabled={resettingPin || newPinInput.length !== 6 || confirmPinInput.length !== 6}
+                          onClick={async () => {
+                            if (newPinInput !== confirmPinInput) {
+                              setRecoveryErrorMsg('Los PINs ingresados no coinciden.');
+                              return;
+                            }
+                            if (newPinInput.length !== 6) {
+                              setRecoveryErrorMsg('El PIN debe contener exactamente 6 dígitos numéricos.');
+                              return;
+                            }
+
+                            setResettingPin(true);
+                            setRecoveryErrorMsg('');
+                            const identifier = loggedSupplier.phone || loggedSupplier.telefono || loggedSupplier.email || loggedSupplier.rif || loggedSupplier.id || '';
+
+                            try {
+                              await portalRecoveryResetPinApi({
+                                portalType: 'producer',
+                                identifier,
+                                resetToken: recoveryResetToken,
+                                newPin: newPinInput
+                              });
+
+                              onAddNotification('¡PIN actualizado con éxito! Ya puedes iniciar sesión con tu nueva clave.', 'success');
+                              resetProducerRecoveryFlow();
+                              setProfileSubView('main');
+                            } catch (e: any) {
+                              setRecoveryErrorMsg(e.message || 'Error al actualizar el PIN.');
+                            } finally {
+                              setResettingPin(false);
+                            }
+                          }}
+                          className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold uppercase tracking-wider text-sm rounded-xl py-4 transition-colors mt-2"
+                        >
+                          {resettingPin ? 'Actualizando PIN...' : 'Guardar Nuevo PIN'}
+                        </button>
                       </div>
                     </div>
                   )}
@@ -1487,7 +1606,7 @@ export default function ProducerPortal({
                         <X className="w-4 h-4" />
                       </button>
                     </div>
-                    
+
                     <div className="flex-1 overflow-y-auto pr-1 pb-4">
                       <p className="text-[10px] text-slate-400 mb-2 font-bold uppercase tracking-widest border-b border-slate-800 pb-1">Pedidos Activos</p>
                       {producerMobileOrders.length === 0 ? (
@@ -1506,7 +1625,7 @@ export default function ProducerPortal({
                               </div>
                             </div>
                             {order.status === 'Entregado' && (
-                              <button 
+                              <button
                                 onClick={() => { setIsHistoryModalOpen(false); setProducerActiveTab('pagar'); }}
                                 className="w-full mt-1 bg-emerald-500 hover:bg-emerald-600 text-black font-bold uppercase tracking-widest text-[9px] rounded py-1.5 transition-colors"
                               >
@@ -1529,7 +1648,7 @@ export default function ProducerPortal({
                           </span>
                         </div>
                       ))}
-                      
+
                       <p className="text-[10px] text-slate-400 mb-2 mt-6 font-bold uppercase tracking-widest border-b border-slate-800 pb-1">Arrimes Anteriores</p>
                       {(producerArrimes || []).length === 0 ? <p className="text-slate-500 text-[10px] text-center mt-4">No hay registros de arrime</p> : (producerArrimes || []).map(arrime => {
                         const arrimeKg = getTxKg(arrime);

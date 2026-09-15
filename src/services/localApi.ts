@@ -347,6 +347,84 @@ export const fetchCurrentPortalUserApi = async () => {
   }
 };
 
+// --- PORTAL RECOVERY API HELPERS (FASE 1D-C.3) ---
+
+export const portalRecoveryRequestApi = async (payload: {
+  portalType: 'client' | 'producer';
+  identifier: string;
+  channel: 'email' | 'whatsapp';
+}) => {
+  const res = await fetch(`${API_URL}/portal/auth/recovery/request`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      portalType: payload.portalType,
+      identifier: payload.identifier,
+      channel: payload.channel
+    })
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Error al procesar la solicitud de recuperación');
+  }
+  return data;
+};
+
+export const portalRecoveryVerifyApi = async (payload: {
+  portalType: 'client' | 'producer';
+  identifier: string;
+  challengeId: string;
+  code: string;
+}) => {
+  const res = await fetch(`${API_URL}/portal/auth/recovery/verify`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      portalType: payload.portalType,
+      identifier: payload.identifier,
+      challengeId: payload.challengeId,
+      code: payload.code
+    })
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Código de recuperación inválido o expirado');
+  }
+  return data;
+};
+
+export const portalRecoveryResetPinApi = async (payload: {
+  portalType: 'client' | 'producer';
+  identifier: string;
+  resetToken: string;
+  newPin: string;
+}) => {
+  const res = await fetch(`${API_URL}/portal/auth/recovery/reset-pin`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      portalType: payload.portalType,
+      identifier: payload.identifier,
+      resetToken: payload.resetToken,
+      newPin: payload.newPin
+    })
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Error al restablecer el PIN de seguridad');
+  }
+  return data;
+};
+
 // --- PORTAL SCOPED & PUBLIC API HELPERS (FASE 1D-B) ---
 
 // 1. Configuración Pública de Portal
