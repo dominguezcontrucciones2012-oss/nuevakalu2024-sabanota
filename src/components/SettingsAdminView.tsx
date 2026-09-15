@@ -1,4 +1,4 @@
-import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../services/localApi';
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc, uploadFilesApi } from '../services/localApi';
 import React, { useState, useEffect } from 'react';
 import { BusinessSettings, UserIdentity } from '../types';
 import {
@@ -224,20 +224,8 @@ export default function SettingsAdminView({
 
         setUploadStatus(`Subiendo archivo ${i+1} de ${shift.items.length}: ${item.fileName}...`);
 
-        const formData = new FormData();
-        formData.append('files', cleanBlob, item.fileName);
-
         try {
-          const response = await fetch('/api/upload', {
-            method: 'POST',
-            body: formData
-          });
-
-          if (!response.ok) {
-            throw new Error(`Error HTTP: ${response.status}`);
-          }
-
-          const result = await response.json();
+          const result = await uploadFilesApi([cleanBlob], item.fileName);
           const downloadUrl = result.urls[0];
 
           setUploadStatus(`Guardando referencia en base de datos ${i+1}/${shift.items.length}...`);

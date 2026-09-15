@@ -3,6 +3,9 @@
 // ============================================================
 import assert from 'assert';
 import http from 'http';
+import fs from 'fs';
+import path from 'path';
+import bcrypt from 'bcryptjs';
 import { io as ioClient } from 'socket.io-client';
 import {
   createRecoveryChallenge,
@@ -61,6 +64,28 @@ async function request(url, options = {}) {
 
 async function runTests() {
   console.log('🧪 Iniciando Suite de Pruebas Automatizadas — Fases 1A, 1B, 1C y 1D-A: Portal Server-Side Auth (81 Pruebas)\n');
+
+  // Inicializar fixtures de desarrollo para ejecución determinista
+  const clientsPath = path.resolve('data-dev/clients_db.json');
+  if (fs.existsSync(clientsPath)) {
+    const clientsData = JSON.parse(fs.readFileSync(clientsPath, 'utf8'));
+    const c1 = clientsData.find(item => item.id === 'cli-demo-1');
+    if (c1) c1.pinHash = bcrypt.hashSync('678000', 10);
+    const c2 = clientsData.find(item => item.id === 'cli-demo-2');
+    if (c2) c2.pinHash = bcrypt.hashSync('543200', 10);
+    fs.writeFileSync(clientsPath, JSON.stringify(clientsData, null, 2));
+  }
+
+  const suppliersPath = path.resolve('data-dev/suppliers_db.json');
+  if (fs.existsSync(suppliersPath)) {
+    const suppliersData = JSON.parse(fs.readFileSync(suppliersPath, 'utf8'));
+    const s1 = suppliersData.find(item => item.id === 'sup-demo-1');
+    if (s1) s1.pinHash = bcrypt.hashSync('321900', 10);
+    const s2 = suppliersData.find(item => item.id === 'sup-demo-2');
+    if (s2) s2.pinHash = bcrypt.hashSync('998877', 10);
+    fs.writeFileSync(suppliersPath, JSON.stringify(suppliersData, null, 2));
+  }
+
   let passed = 0;
   let failed = 0;
 
@@ -2290,14 +2315,6 @@ async function runTests() {
   // --- RECOVERY VERIFY ---
   // 140. Verify con OTP correcto emite resetToken
   await test('140. 1D-C.2: POST /api/portal/auth/recovery/verify con OTP correcto devuelve resetToken', async () => {
-    const reqRes = await request('/api/portal/auth/recovery/request', {
-      method: 'POST',
-      body: JSON.stringify({
-        portalType: 'client',
-        identifier: '04141234567',
-        channel: 'whatsapp'
-      })
-    });
     const otpTest = createRecoveryChallenge({
       portalType: 'client',
       targetId: 'cli-demo-1',
@@ -2534,6 +2551,18 @@ async function runTests() {
     });
     assert.strictEqual(loginRes.status, 200);
     assert.strictEqual(loginRes.data.authenticated, true);
+
+    // Restaurar PIN por defecto '678000' para cli-demo-1
+    const fs = await import('fs');
+    const bcrypt = await import('bcryptjs');
+    const defaultPinHash = bcrypt.hashSync('678000', 10);
+    const clientsPath = path.resolve('data-dev/clients_db.json');
+    if (fs.existsSync(clientsPath)) {
+      const clientsData = JSON.parse(fs.readFileSync(clientsPath, 'utf8'));
+      const c = clientsData.find(item => item.id === 'cli-demo-1');
+      if (c) c.pinHash = defaultPinHash;
+      fs.writeFileSync(clientsPath, JSON.stringify(clientsData, null, 2));
+    }
   });
 
   // 150. Reset-PIN con productor actualiza PIN de productor
@@ -2572,6 +2601,18 @@ async function runTests() {
       })
     });
     assert.strictEqual(loginRes.status, 200);
+
+    // Restaurar PIN por defecto '321900' para sup-demo-1
+    const fs = await import('fs');
+    const bcrypt = await import('bcryptjs');
+    const defaultPinHash = bcrypt.hashSync('321900', 10);
+    const suppliersPath = path.resolve('data-dev/suppliers_db.json');
+    if (fs.existsSync(suppliersPath)) {
+      const suppliersData = JSON.parse(fs.readFileSync(suppliersPath, 'utf8'));
+      const s = suppliersData.find(item => item.id === 'sup-demo-1');
+      if (s) s.pinHash = defaultPinHash;
+      fs.writeFileSync(suppliersPath, JSON.stringify(suppliersData, null, 2));
+    }
   });
 
   // 151. Reset-PIN con resetToken inválido es rechazado
@@ -2892,6 +2933,30 @@ async function runTests() {
     });
     assert.strictEqual(meRes.status, 200);
     assert.strictEqual(meRes.data.user.role, 'admin');
+
+    // Restaurar PINs por defecto para que los bloques de prueba posteriores no fallen
+    const fs = await import('fs');
+    const bcrypt = await import('bcryptjs');
+
+    const clientsPath = path.resolve('data-dev/clients_db.json');
+    if (fs.existsSync(clientsPath)) {
+      const clientsData = JSON.parse(fs.readFileSync(clientsPath, 'utf8'));
+      const c1 = clientsData.find(item => item.id === 'cli-demo-1');
+      if (c1) c1.pinHash = bcrypt.hashSync('678000', 10);
+      const c2 = clientsData.find(item => item.id === 'cli-demo-2');
+      if (c2) c2.pinHash = bcrypt.hashSync('112233', 10);
+      fs.writeFileSync(clientsPath, JSON.stringify(clientsData, null, 2));
+    }
+
+    const suppliersPath = path.resolve('data-dev/suppliers_db.json');
+    if (fs.existsSync(suppliersPath)) {
+      const suppliersData = JSON.parse(fs.readFileSync(suppliersPath, 'utf8'));
+      const s1 = suppliersData.find(item => item.id === 'sup-demo-1');
+      if (s1) s1.pinHash = bcrypt.hashSync('321900', 10);
+      const s2 = suppliersData.find(item => item.id === 'sup-demo-2');
+      if (s2) s2.pinHash = bcrypt.hashSync('998877', 10);
+      fs.writeFileSync(suppliersPath, JSON.stringify(suppliersData, null, 2));
+    }
   });
 
   // 163. Legacy /api/send-recovery fue retirado definitivamente (404 Not Found)
@@ -5132,6 +5197,359 @@ async function runTests() {
   });
 
   // ============================================================
+  // PRUEBAS DE SEGURIDAD — FASE 1F-A: BLINDAJE DE UPLOADS
+  // ============================================================
+
+  // Helper para construir Multipart FormData en Node.js nativo (sin dependencias externas)
+  function createMultipartPayload({ fieldName = 'files', filename = 'test.jpg', contentType = 'image/jpeg', contentBuffer }) {
+    const boundary = `----WebKitFormBoundary${Date.now()}${Math.random().toString(36).substring(2)}`;
+    const head = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`
+    );
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const body = Buffer.concat([head, contentBuffer, tail]);
+    return {
+      contentType: `multipart/form-data; boundary=${boundary}`,
+      body
+    };
+  }
+
+  // 1F-A-01: Upload sin autenticación -> 401
+  await test('272. TEST 1F-A-01: POST /api/upload sin sesión devuelve 401 Unauthorized', async () => {
+    const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+    const { contentType, body } = createMultipartPayload({ filename: 'test.jpg', contentType: 'image/jpeg', contentBuffer: jpegBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Content-Type': contentType
+      },
+      body
+    });
+    assert.strictEqual(res.status, 401, `Esperado 401, recibido ${res.status}`);
+  });
+
+  // 1F-A-02: Upload CRM autenticado autorizado -> 200 OK
+  await test('273. TEST 1F-A-02: POST /api/upload con sesión CRM válida y CSRF devuelve 200 OK', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+    const { contentType, body } = createMultipartPayload({ filename: 'banner.jpg', contentType: 'image/jpeg', contentBuffer: jpegBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf,
+        'Content-Type': contentType
+      },
+      body
+    });
+    assert.strictEqual(res.status, 200, `Esperado 200, recibido ${res.status}`);
+    assert.strictEqual(res.data.success, true);
+    assert.ok(Array.isArray(res.data.urls) && res.data.urls.length > 0);
+    assert.ok(res.data.urls[0].startsWith('/uploads/upload-'));
+  });
+
+  // 1F-A-03: Upload sin CSRF -> 403
+  await test('274. TEST 1F-A-03: POST /api/upload sin header x-csrf-token devuelve 403 Forbidden', async () => {
+    const { cookie } = await loginAdminD2();
+    const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+    const { contentType, body } = createMultipartPayload({ filename: 'test.jpg', contentType: 'image/jpeg', contentBuffer: jpegBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'Content-Type': contentType
+      },
+      body
+    });
+    assert.strictEqual(res.status, 403, `Esperado 403, recibido ${res.status}`);
+  });
+
+  // 1F-A-04: Upload con CSRF inválido -> 403
+  await test('275. TEST 1F-A-04: POST /api/upload con token CSRF manipulado devuelve 403 Forbidden', async () => {
+    const { cookie } = await loginAdminD2();
+    const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+    const { contentType, body } = createMultipartPayload({ filename: 'test.jpg', contentType: 'image/jpeg', contentBuffer: jpegBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': 'bad_csrf_token_attack_123',
+        'Content-Type': contentType
+      },
+      body
+    });
+    assert.strictEqual(res.status, 403, `Esperado 403, recibido ${res.status}`);
+  });
+
+  // 1F-A-05: MIME no permitido -> 415
+  await test('276. TEST 1F-A-05: POST /api/upload con MIME no permitido (e.g. text/html) devuelve 415', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const textBuffer = Buffer.from('<h1>Evil script</h1>');
+    const { contentType, body } = createMultipartPayload({ filename: 'evil.html', contentType: 'text/html', contentBuffer: textBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf,
+        'Content-Type': contentType
+      },
+      body
+    });
+    assert.strictEqual(res.status, 415, `Esperado 415, recibido ${res.status}`);
+  });
+
+  // 1F-A-06: Extensión no permitida -> 415
+  await test('277. TEST 1F-A-06: POST /api/upload con extensión ejecutable (e.g. .exe o .php) devuelve 415', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const badBuffer = Buffer.from('malicious binary content here');
+    const { contentType, body } = createMultipartPayload({ filename: 'evil.php', contentType: 'application/x-php', contentBuffer: badBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf,
+        'Content-Type': contentType
+      },
+      body
+    });
+    assert.strictEqual(res.status, 415, `Esperado 415, recibido ${res.status}`);
+  });
+
+  // 1F-A-07: MIME spoofing (MIME declarado válido pero Magic Number falso) -> 415
+  await test('278. TEST 1F-A-07: POST /api/upload con MIME spoofing (declarado image/png pero contenido texto) devuelve 415', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const spoofedBuffer = Buffer.from('<script>alert("XSS")</script>');
+    const { contentType, body } = createMultipartPayload({ filename: 'image.png', contentType: 'image/png', contentBuffer: spoofedBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf,
+        'Content-Type': contentType
+      },
+      body
+    });
+    assert.strictEqual(res.status, 415, `Esperado 415, recibido ${res.status}`);
+  });
+
+  // 1F-A-08: Archivo demasiado grande -> 413
+  await test('279. TEST 1F-A-08: POST /api/upload con archivo mayor a 10MB devuelve 413 Payload Too Large', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const largeBuffer = Buffer.alloc(11 * 1024 * 1024); // 11 MB
+    largeBuffer[0] = 0xFF; largeBuffer[1] = 0xD8; largeBuffer[2] = 0xFF; // JPEG magic header
+    const { contentType, body } = createMultipartPayload({ filename: 'large.jpg', contentType: 'image/jpeg', contentBuffer: largeBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf,
+        'Content-Type': contentType
+      },
+      body
+    });
+    assert.strictEqual(res.status, 413, `Esperado 413, recibido ${res.status}`);
+  });
+
+  // 1F-A-09: Path traversal en filename neutralizado
+  await test('280. TEST 1F-A-09: Filename con Path Traversal (../../evil.jpg) es neutralizado a un nombre seguro sin escapar del directorio', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+    const { contentType, body } = createMultipartPayload({ filename: '../../../../etc/evil.jpg', contentType: 'image/jpeg', contentBuffer: jpegBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf,
+        'Content-Type': contentType
+      },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+    const savedUrl = res.data.urls[0];
+    assert.ok(!savedUrl.includes('..'), 'La URL devuelta no debe contener ..');
+    assert.ok(!savedUrl.includes('evil.jpg'), 'El nombre final no debe ser el original del cliente');
+  });
+
+  // 1F-A-10: El filename del cliente no determina el path de almacenamiento
+  await test('281. TEST 1F-A-10: El servidor genera nombres aleatorios criptográficos para el almacenamiento', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+    const { contentType, body } = createMultipartPayload({ filename: 'custom_secret_client_name.jpg', contentType: 'image/jpeg', contentBuffer: jpegBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf,
+        'Content-Type': contentType
+      },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.urls[0].includes('custom_secret_client_name'), false);
+    assert.ok(res.data.urls[0].startsWith('/uploads/upload-'));
+  });
+
+  // 1F-A-11: Archivo válido JPEG -> 200
+  await test('282. TEST 1F-A-11: Archivo con cabecera válida JPEG (FF D8 FF) es aceptado', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+    const { contentType, body } = createMultipartPayload({ filename: 'photo.jpg', contentType: 'image/jpeg', contentBuffer: jpegBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf, 'Content-Type': contentType },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 1F-A-12: Archivo válido PNG -> 200
+  await test('283. TEST 1F-A-12: Archivo con cabecera válida PNG (89 50 4E 47 0D 0A 1A 0A) es aceptado', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const pngBuffer = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D]);
+    const { contentType, body } = createMultipartPayload({ filename: 'photo.png', contentType: 'image/png', contentBuffer: pngBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf, 'Content-Type': contentType },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 1F-A-13: Archivo válido WEBP -> 200
+  await test('284. TEST 1F-A-13: Archivo con estructura RIFF/WEBP válida es aceptado', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    // RIFF (4 bytes) + Size (4 bytes) + WEBP (4 bytes)
+    const webpBuffer = Buffer.concat([
+      Buffer.from('RIFF', 'ascii'),
+      Buffer.from([0x24, 0x00, 0x00, 0x00]),
+      Buffer.from('WEBP', 'ascii'),
+      Buffer.from('VP8 ', 'ascii')
+    ]);
+    const { contentType, body } = createMultipartPayload({ filename: 'image.webp', contentType: 'image/webp', contentBuffer: webpBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf, 'Content-Type': contentType },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 1F-A-14: Archivo válido PDF -> 200
+  await test('285. TEST 1F-A-14: Archivo con firma válida PDF (%PDF-) es aceptado', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const pdfBuffer = Buffer.from('%PDF-1.4\n%âãÏÓ\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF');
+    const { contentType, body } = createMultipartPayload({ filename: 'factura.pdf', contentType: 'application/pdf', contentBuffer: pdfBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf, 'Content-Type': contentType },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 1F-A-15: Errores no revelan filesystem interno
+  await test('286. TEST 1F-A-15: Las respuestas de error de upload no revelan rutas absolutas del sistema operativo', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const badBuffer = Buffer.from('bad');
+    const { contentType, body } = createMultipartPayload({ filename: 'bad.xyz', contentType: 'application/octet-stream', contentBuffer: badBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf, 'Content-Type': contentType },
+      body
+    });
+    const errorStr = JSON.stringify(res.data);
+    assert.strictEqual(errorStr.includes('C:\\'), false);
+    assert.strictEqual(errorStr.includes('/var/www'), false);
+    assert.strictEqual(errorStr.includes('node_modules'), false);
+  });
+
+  // 1F-A-16: Subidas sucesivas no se sobrescriben entre sí
+  await test('287. TEST 1F-A-16: Dos subidas sucesivas con el mismo originalname generan dos archivos distintos sin sobrescribirse', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+    const payload1 = createMultipartPayload({ filename: 'same_name.jpg', contentType: 'image/jpeg', contentBuffer: jpegBuffer });
+    const payload2 = createMultipartPayload({ filename: 'same_name.jpg', contentType: 'image/jpeg', contentBuffer: jpegBuffer });
+
+    const res1 = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf, 'Content-Type': payload1.contentType },
+      body: payload1.body
+    });
+    const res2 = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf, 'Content-Type': payload2.contentType },
+      body: payload2.body
+    });
+
+    assert.strictEqual(res1.status, 200);
+    assert.strictEqual(res2.status, 200);
+    assert.notStrictEqual(res1.data.urls[0], res2.data.urls[0], 'Cada subida debe tener un nombre de archivo único');
+  });
+
+  // 1F-A-17: Upload autenticado como portal de cliente es aceptado
+  await test('288. TEST 1F-A-17: POST /api/upload permite subidas a usuarios autenticados en portal cliente', async () => {
+    // Login portal cliente usando helper con PIN vigente
+    const { cookie: clientCookie, csrf: clientCsrf } = await loginClientAD2();
+
+    const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+    const { contentType, body } = createMultipartPayload({ filename: 'recibo.jpg', contentType: 'image/jpeg', contentBuffer: jpegBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Cookie': clientCookie,
+        'x-csrf-token': clientCsrf,
+        'Content-Type': contentType
+      },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.ok(res.data.urls[0].startsWith('/uploads/upload-'));
+  });
+
+  // 1F-A-18: Upload autenticado como portal de productor es aceptado
+  await test('289. TEST 1F-A-18: POST /api/upload permite subidas a usuarios autenticados en portal productor', async () => {
+    // Login portal productor usando helper con PIN vigente
+    const { cookie: producerCookie, csrf: producerCsrf } = await loginProducerAD2();
+
+    const jpegBuffer = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+    const { contentType, body } = createMultipartPayload({ filename: 'remision.jpg', contentType: 'image/jpeg', contentBuffer: jpegBuffer });
+
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: {
+        'Cookie': producerCookie,
+        'x-csrf-token': producerCsrf,
+        'Content-Type': contentType
+      },
+      body
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.ok(res.data.urls[0].startsWith('/uploads/upload-'));
+  });
+
+  // ============================================================
   // PRUEBAS DE RATE LIMITER (SE EJECUTAN AL FINAL)
   // ============================================================
 
@@ -5195,6 +5613,19 @@ async function runTests() {
     }
     assert.ok(got429, 'Debe retornar HTTP 429 Too Many Requests ante intentos repetidos');
   });
+
+  // Limpiar archivos sintéticos generados durante las pruebas de upload
+  try {
+    const devDir = path.resolve('data-dev');
+    if (fs.existsSync(devDir)) {
+      const devFiles = fs.readdirSync(devDir);
+      for (const file of devFiles) {
+        if (file.startsWith('upload-') && (file.endsWith('.jpg') || file.endsWith('.png') || file.endsWith('.webp') || file.endsWith('.pdf') || file.endsWith('.mp4'))) {
+          try { fs.unlinkSync(path.join(devDir, file)); } catch {}
+        }
+      }
+    }
+  } catch {}
 
   console.log(`\n==================================================`);
   console.log(`RESULTADO DE LA SUITE: ${passed} PASADAS / ${failed} FALLIDAS`);

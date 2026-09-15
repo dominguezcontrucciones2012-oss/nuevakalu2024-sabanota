@@ -630,3 +630,36 @@ export const submitPortalProducerOrderApi = async (orderPayload: any) => {
   }
   return await res.json();
 };
+
+// 17. Subida Segura de Archivos (Fase 1F-A)
+export const uploadFilesApi = async (files: File[] | Blob[], customFileName?: string): Promise<{ success: boolean; urls: string[]; fileUrls?: string[] }> => {
+  const csrf = await getCsrfToken();
+  const formData = new FormData();
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    if (customFileName && files.length === 1) {
+      formData.append('files', file, customFileName);
+    } else {
+      formData.append('files', file);
+    }
+  }
+
+  const res = await fetch(`${API_URL}/upload`, {
+    method: 'POST',
+    headers: {
+      'x-csrf-token': csrf
+    },
+    credentials: 'include',
+    body: formData
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || `Error al subir archivo (${res.status})`);
+  }
+  return {
+    success: true,
+    urls: data.urls || [],
+    fileUrls: data.urls || []
+  };
+};

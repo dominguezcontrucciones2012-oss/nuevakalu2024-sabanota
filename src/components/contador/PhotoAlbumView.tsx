@@ -1,4 +1,4 @@
-import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc, uploadFilesApi } from '../../services/localApi';
 import React, { useState, useEffect, useRef } from 'react';
 
 
@@ -32,17 +32,15 @@ export default function PhotoAlbumView({ onBack }: PhotoAlbumViewProps) {
 
   useEffect(() => {
     fetchDrafts();
-  }, [today]);
+  }, []);
 
   const fetchDrafts = async () => {
     setIsLoading(true);
     try {
-      const res = await fetchCollection('daily_drafts');
-      const drafts = await res.json();
-      const fetchedDrafts = drafts.filter((d: any) => d.date === today) as Draft[];
-      
-      fetchedDrafts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      setDrafts(fetchedDrafts);
+      const data = await fetchCollection('daily_drafts');
+      if (data) {
+        setDrafts(data.filter((d: any) => d.date === today && d.type === 'photo'));
+      }
     } catch (error) {
       console.error("Error fetching drafts:", error);
     } finally {
@@ -58,16 +56,8 @@ export default function PhotoAlbumView({ onBack }: PhotoAlbumViewProps) {
     setUploadProgress(0);
 
     try {
-      const formData = new FormData();
-      formData.append('files', file);
-
-      const hostname = window.location.hostname;
-      const res = await fetch(`http://${hostname}:3001/api/upload`, {
-        method: 'POST',
-        body: formData
-      });
-      const data = await res.json();
-      const downloadURL = `http://${hostname}:3001${data.fileUrls[0]}`;
+      const data = await uploadFilesApi([file]);
+      const downloadURL = data.urls[0] || (data.fileUrls ? data.fileUrls[0] : '');
 
       const newDraft = {
         type: 'photo' as const,

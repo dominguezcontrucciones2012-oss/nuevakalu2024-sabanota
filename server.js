@@ -2013,27 +2013,128 @@ io.on('connection', (socket) => {
 });
 
 
-// Configurar la carpeta de destino física (puede ser /var/www/app/uploads en producción)
+// ============================================================
+// SUBSISTEMA DE UPLOADS SEGURO — FASE 1F-A
+// ============================================================
+
+// Configurar la carpeta de destino física fija y controlada por el servidor
 const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Configuración de Multer para guardar los archivos
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadDir);
+// Allowlists estrictas de tipos de archivo (Fase 1F-A)
+const ALLOWED_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'application/pdf',
+  'video/mp4'
+]);
+
+const ALLOWED_EXTENSIONS = new Set([
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.webp',
+  '.pdf',
+  '.mp4'
+]);
+
+/**
+ * Validador criptográfico/estructural de Magic Numbers (Signatures de archivo)
+ * No confía en el header mimetype ni en el filename provisto por el cliente.
+ */
+function validateFileBufferSignature(buffer, declaredMime, extension) {
+  if (!buffer || !Buffer.isBuffer(buffer) || buffer.length < 4) {
+    return false;
+  }
+
+  // JPEG: FF D8 FF
+  if (declaredMime === 'image/jpeg' || extension === '.jpg' || extension === '.jpeg') {
+    return buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF;
+  }
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (declaredMime === 'image/png' || extension === '.png') {
+    return (
+      buffer.length >= 8 &&
+      buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47 &&
+      buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A
+    );
+  }
+
+  // WEBP: RIFF....WEBP (0..3 = 'RIFF', 8..11 = 'WEBP')
+  if (declaredMime === 'image/webp' || extension === '.webp') {
+    if (buffer.length < 12) return false;
+    const isRiff = buffer.subarray(0, 4).toString('ascii') === 'RIFF';
+    const isWebp = buffer.subarray(8, 12).toString('ascii') === 'WEBP';
+    return isRiff && isWebp;
+  }
+
+  // PDF: %PDF- (25 50 44 46)
+  if (declaredMime === 'application/pdf' || extension === '.pdf') {
+    if (buffer.length < 5) return false;
+    return buffer.subarray(0, 5).toString('ascii') === '%PDF-';
+  }
+
+  // MP4 Video: ftyp box (bytes 4..7 = 'ftyp')
+  if (declaredMime === 'video/mp4' || extension === '.mp4') {
+    if (buffer.length < 8) return false;
+    const isFtyp = buffer.subarray(4, 8).toString('ascii') === 'ftyp';
+    return isFtyp;
+  }
+
+  return false;
+}
+
+// Multer memory storage para inspección de magic numbers previa a la persistencia
+const uploadMemory = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // Máximo 10 MB por archivo
+    files: 10
   },
-  filename: function (req, file, cb) {
-    // Generar un nombre único
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    // Extensión del archivo
-    const ext = path.extname(file.originalname) || (file.mimetype === 'video/mp4' ? '.mp4' : '.jpg');
-    cb(null, 'banner-' + uniqueSuffix + ext);
+  fileFilter: (req, file, cb) => {
+    const rawMime = String(file.mimetype || '').toLowerCase().trim();
+    if (!ALLOWED_MIME_TYPES.has(rawMime)) {
+      const err = new Error('TIPO_NO_PERMITIDO');
+      err.code = 'LIMIT_UNEXPECTED_MIME';
+      return cb(err);
+    }
+    cb(null, true);
   }
 });
 
-const upload = multer({ storage: storage });
+// Middleware de autenticación para subida de archivos (CRM o Portales)
+function requireUploadAuth(req, res, next) {
+  if (req.session && req.session.userId) {
+    return requireAuth(req, res, next);
+  }
+  if (req.session && req.session.portalUser && req.session.portalUser.id) {
+    return requirePortalAuth(req, res, next);
+  }
+  return res.status(401).json({ error: 'Autenticación requerida para subida de archivos' });
+}
+
+// Middleware de manejo de errores de Multer (Size, MIME, etc.)
+function handleMulterUpload(req, res, next) {
+  uploadMemory.array('files', 10)(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: 'El archivo excede el tamaño máximo permitido (10MB).' });
+      }
+      if (err.code === 'LIMIT_UNEXPECTED_MIME' || err.message === 'TIPO_NO_PERMITIDO') {
+        return res.status(415).json({ error: 'Tipo de archivo no permitido. Solo se admiten JPEG, PNG, WEBP, PDF y MP4.' });
+      }
+      if (err.code === 'LIMIT_FILE_COUNT') {
+        return res.status(400).json({ error: 'Se superó el número máximo de archivos simultáneos (10).' });
+      }
+      return res.status(400).json({ error: 'Error procesando la subida de archivos.' });
+    }
+    next();
+  });
+}
 
 // Servir la carpeta de subidas de forma estática
 app.use('/uploads', express.static(uploadDir));
@@ -2153,20 +2254,61 @@ app.delete('/api/products/:id', requireAuth, requireRole('admin'), verifyCsrf, (
   }
 });
 
-// Endpoint para recibir los videos/imágenes
-app.post('/api/upload', upload.array('files', 10), (req, res) => {
+// Endpoint seguro para recibir videos/imágenes/documentos (Fase 1F-A)
+// Blindado con: requireUploadAuth + verifyCsrf + handleMulterUpload + magic numbers validation + random filenames
+app.post('/api/upload', requireUploadAuth, verifyCsrf, handleMulterUpload, (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
-      return res.status(400).json({ error: 'No files uploaded.' });
+      return res.status(400).json({ error: 'No se enviaron archivos para subir.' });
     }
 
-    // Mapear los nombres a la ruta relativa
-    const fileUrls = req.files.map(f => `/uploads/${f.filename}`);
+    const savedUrls = [];
 
-    res.json({ success: true, urls: fileUrls });
+    for (const file of req.files) {
+      const rawExt = path.extname(file.originalname || '').toLowerCase();
+      const declaredMime = String(file.mimetype || '').toLowerCase().trim();
+
+      // Resolver extensión normalizada segura
+      let safeExt = rawExt;
+      if (!ALLOWED_EXTENSIONS.has(safeExt)) {
+        if (declaredMime === 'image/jpeg') safeExt = '.jpg';
+        else if (declaredMime === 'image/png') safeExt = '.png';
+        else if (declaredMime === 'image/webp') safeExt = '.webp';
+        else if (declaredMime === 'application/pdf') safeExt = '.pdf';
+        else if (declaredMime === 'video/mp4') safeExt = '.mp4';
+        else {
+          return res.status(415).json({ error: 'Extensión de archivo no permitida.' });
+        }
+      }
+
+      // Validar Magic Numbers en el buffer en memoria
+      const isSignatureValid = validateFileBufferSignature(file.buffer, declaredMime, safeExt);
+      if (!isSignatureValid) {
+        return res.status(415).json({
+          error: 'El contenido del archivo no coincide con un formato válido o fue manipulado.'
+        });
+      }
+
+      // Generar nombre aleatorio criptográficamente seguro (Inmune a path traversal y colisiones)
+      const randomId = crypto.randomBytes(16).toString('hex');
+      const timestamp = Date.now();
+      const safeFilename = `upload-${timestamp}-${randomId}${safeExt}`;
+      const destinationPath = path.join(uploadDir, safeFilename);
+
+      // Persistir de forma segura
+      fs.writeFileSync(destinationPath, file.buffer);
+      savedUrls.push(`/uploads/${safeFilename}`);
+    }
+
+    // Retornar urls y fileUrls para máxima compatibilidad con los consumidores frontend
+    res.json({
+      success: true,
+      urls: savedUrls,
+      fileUrls: savedUrls
+    });
   } catch (error) {
-    console.error('Error procesando subida:', error);
-    res.status(500).json({ error: 'Internal server error.' });
+    console.error('[Upload Security Error]:', error.message || error);
+    res.status(500).json({ error: 'Error interno del servidor al procesar la subida.' });
   }
 });
 

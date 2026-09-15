@@ -9,6 +9,7 @@ import { CheeseProduct, SupplierProfile, CheeseLedgerBatch } from '../types';
 import { processInventoryCommand, AIAction } from '../services/geminiInventoryAssistant';
 import StockPurchasesView, { PurchaseItem } from './StockPurchasesView';
 import { getUnitLabel, formatCurrency, formatQuantity, parseSafeDecimal } from '../utils';
+import { uploadFilesApi } from '../services/localApi';
 
 interface CheeseInventoryViewProps {
   isAdmin?: boolean;
@@ -252,17 +253,9 @@ export default function CheeseInventoryView({
     let imageUrl = '';
     if (newImageFile) {
       try {
-        const formData = new FormData();
-        formData.append('files', newImageFile);
-        const res = await fetch('/api/upload', {
-          method: 'POST',
-          body: formData
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.urls && data.urls.length > 0) {
-            imageUrl = data.urls[0];
-          }
+        const data = await uploadFilesApi([newImageFile]);
+        if (data.urls && data.urls.length > 0) {
+          imageUrl = data.urls[0];
         }
       } catch (err) {
         console.error('Error uploading image', err);
@@ -374,25 +367,17 @@ export default function CheeseInventoryView({
       
       const compressedFile = await compressImage(file);
       
-      const formData = new FormData();
-      formData.append('files', compressedFile);
-      
       onAddNotification('Subiendo foto al servidor local...', 'info');
       
-      const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      const data = await uploadFilesApi([compressedFile], file.name);
       
-      if (res.ok) {
-        const data = await res.json();
-        if (data.urls && data.urls.length > 0) {
-          const url = data.urls[0];
-          if (editingProduct?.id === prodId) {
-            setEditingProduct(prev => prev ? { ...prev, imageUrl: url } : prev);
-          }
-          await onUpdateProduct(prodId, { imageUrl: url });
-          onAddNotification('¡Foto guardada con éxito!', 'success');
+      if (data.urls && data.urls.length > 0) {
+        const url = data.urls[0];
+        if (editingProduct?.id === prodId) {
+          setEditingProduct(prev => prev ? { ...prev, imageUrl: url } : prev);
         }
-      } else {
-        onAddNotification(`Error del servidor al subir: ${res.status}`, 'warning');
+        await onUpdateProduct(prodId, { imageUrl: url });
+        onAddNotification('¡Foto guardada con éxito!', 'success');
       }
     } catch (err: any) {
       onAddNotification(`Fallo al subir imagen: ${err.message}`, 'warning');
