@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { Camera, AlertCircle, ShieldCheck, Lock, RefreshCw, X } from 'lucide-react';
-import { signTransactionApproval } from '../utils/crypto';
 import { fetchPortalClientTransactionsApi, approvePortalClientTransactionApi } from '../services/localApi';
 
 interface QrScannerTabProps {
@@ -283,40 +282,23 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
                   onClick={async () => {
                     setIsSubmitting(true);
                     try {
-                      const clientCi = loggedClient?.ciRif || loggedClient?.cedula || loggedClient?.ci || '';
-                      const txAmount = Number(fetchedTx.amount || fetchedTx.totalUSD || 0);
-                      const nonce = fetchedTx.authNonce || `NONCE-${Date.now()}`;
-                      console.log('[QR DIAGNOSTIC] 🔐 Firmando digitalmente transacción:', {
+                      const nonce = fetchedTx.authNonce;
+                      if (!nonce) {
+                        onAddNotification('Error de seguridad: La transacción no contiene un nonce válido del servidor.', 'warning');
+                        setIsSubmitting(false);
+                        return;
+                      }
+
+                      console.log('[QR DIAGNOSTIC] 🚀 Enviando autorización al servidor (approvePortalClientTransactionApi):', {
                         txId: fetchedTx.id,
-                        invoiceNumber: fetchedTx.invoiceNumber,
-                        clientId: loggedClient?.id,
-                        clientCi,
-                        amount: txAmount,
-                        nonce
+                        authNonce: nonce
                       });
-
-                      // Firma Criptográfica con Token Único
-                      const { signature, timestamp } = await signTransactionApproval({
-                        txId: fetchedTx.id,
-                        clientId: String(loggedClient?.id || ''),
-                        clientCi: String(clientCi),
-                        amount: txAmount,
-                        nonce: nonce
-                      });
-
-                      console.log('[QR DIAGNOSTIC] ✍️ Firma generada:', {
-                        signature,
-                        timestamp
-                      });
-
-                      console.log('[QR DIAGNOSTIC] 🚀 Enviando aprobación al servidor (approvePortalClientTransactionApi):', { nonce, signature });
 
                       await approvePortalClientTransactionApi(fetchedTx.id, {
-                        authNonce: nonce,
-                        authSignature: signature
+                        authNonce: nonce
                       });
                       
-                      onAddNotification('¡Compra Firmada Digitalmente y Aprobada!', 'success');
+                      onAddNotification('¡Compra Autorizada y Aprobada con Éxito!', 'success');
                       setShowQrPaymentModal(false);
                       setFetchedTx(null);
                       onNavigateTab('inicio');

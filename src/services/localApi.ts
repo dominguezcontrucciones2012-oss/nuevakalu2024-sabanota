@@ -565,8 +565,8 @@ export const submitPortalClientOrderApi = async (orderPayload: any) => {
   return await res.json();
 };
 
-// 11. Aprobar Transacción QR por Cliente
-export const approvePortalClientTransactionApi = async (txId: string, approvalData: { authNonce: string; authSignature: string }) => {
+// 11. Aprobar Transacción QR por Cliente (Fase 1G-C.3: Autorización Server-Side)
+export const approvePortalClientTransactionApi = async (txId: string, approvalData?: { authNonce?: string }) => {
   const csrf = await getCsrfToken();
   const res = await fetch(`${API_URL}/portal/client/transactions/${txId}/approve`, {
     method: 'POST',
@@ -575,7 +575,7 @@ export const approvePortalClientTransactionApi = async (txId: string, approvalDa
       'x-csrf-token': csrf
     },
     credentials: 'include',
-    body: JSON.stringify(approvalData)
+    body: JSON.stringify(approvalData || {})
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));

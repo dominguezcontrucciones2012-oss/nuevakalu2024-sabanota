@@ -5,7 +5,6 @@ import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '
 
 import { fetchCollection, addLocalDoc, updateLocalDoc, deleteLocalDoc, batchDeleteLocalDocs, onCollectionSnapshot } from '../services/localApi';
 import { updateLocalProduct } from '../services/productApi';
-import { generateAuthNonce, verifyTransactionSignature } from '../utils/crypto';
 
 interface CheesePOSViewProps {
   exchangeRate: number;
@@ -131,12 +130,7 @@ export default function CheesePOSView({
           const txs = await res.json();
           const tx = txs.find((t: any) => String(t.id) === String(pendingApprovalId));
           if (tx && tx.status === 'approved') {
-              const signatureCheck = await verifyTransactionSignature(tx);
-              if (!signatureCheck.isValid) {
-                onAddNotification(`BLINDAJE DE SEGURIDAD: Transacción rechazada (${signatureCheck.reason}).`, 'warning');
-                return;
-              }
-              onAddNotification('Transacción aprobada y verificada criptográficamente en servidor.', 'success');
+              onAddNotification('Transacción aprobada por el cliente y verificada en servidor.', 'success');
               await updateLocalDoc('transactions', pendingApprovalId, { 
                 status: 'approved',
                 authSignature: tx.authSignature,
@@ -550,15 +544,12 @@ export default function CheesePOSView({
       const kaluDebt = parseNum(total * (1 - initialPct));
       const numCuotas = getKaluInstallmentsCount(kaluCreditType, client?.loyaltyPoints || 0);
       const kaluCuota = parseNum(kaluDebt / numCuotas);
-      
-      const authNonce = generateAuthNonce();
 
       const pendingTx: Partial<Transaction> = {
         category: 'credito',
         isIncome: true,
         amount: total,
         status: 'pending_approval',
-        authNonce,
         clientId: client?.id,
         clientCi: client?.ciRif || client?.ci || client?.idNumber || client?.cedula || client?.rfc || '',
         
@@ -593,14 +584,6 @@ export default function CheesePOSView({
         // Setup listener via WebSocket for real-time approval with strict cryptographic verification
         const handleApprovedDoc = async (updatedDoc: any) => {
             if (updatedDoc.status === 'approved') {
-                   // BLINDAJE DE SEGURIDAD PASO 1: Validación de Firma Criptográfica Temporal
-                   const verification = await verifyTransactionSignature(updatedDoc);
-                   if (!verification.isValid) {
-                     console.error('[POS Security Reject] Firma criptográfica inválida o ausente:', verification.reason);
-                     onAddNotification(`ALERTA DE SEGURIDAD: Transacción bloqueada. ${verification.reason}`, 'warning');
-                     return;
-                   }
-
                    setIsWaitingForApproval(false);
                    setPendingApprovalId(null);
     

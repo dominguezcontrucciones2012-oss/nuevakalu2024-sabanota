@@ -2138,30 +2138,192 @@ app.post('/api/portal/client/orders', requirePortalAuth, requirePortalType('clie
   }
 });
 
-// 11. Aprobar Transacción con QR por el Cliente (Ownership verificado en backend)
+// ============================================================
+// SUBSISTEMA DE AUTORIZACIÓN CRIPTOGRÁFICA QR SERVER-SIDE (FASE 1G-C.1)
+// ============================================================
+
+/**
+ * Obtiene o resuelve el secreto criptográfico para firma de transacciones (Servidor exclusivamente).
+ * - En PRODUCCIÓN: TRANSACTION_SIGNATURE_SECRET es OBLIGATORIO. Si falta, lanza excepción de seguridad al arrancar.
+ * - En DESARROLLO/TEST: Si no se provee por variable de entorno, se genera un secreto efímero criptográficamente seguro
+ *   usando crypto.randomBytes(32). Nunca se guarda en disco ni se expone a clientes.
+ */
+let ephemeralDevTxSecret = null;
+function getTransactionSignatureSecret() {
+  if (process.env.TRANSACTION_SIGNATURE_SECRET && process.env.TRANSACTION_SIGNATURE_SECRET.trim()) {
+    return process.env.TRANSACTION_SIGNATURE_SECRET.trim();
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('[FATAL SECURITY MISCONFIGURATION] TRANSACTION_SIGNATURE_SECRET es obligatorio en entorno de producción.');
+  }
+  if (!ephemeralDevTxSecret) {
+    ephemeralDevTxSecret = crypto.randomBytes(32).toString('hex');
+  }
+  return ephemeralDevTxSecret;
+}
+
+// Validación de arranque en producción
+if (process.env.NODE_ENV === 'production' && (!process.env.TRANSACTION_SIGNATURE_SECRET || !process.env.TRANSACTION_SIGNATURE_SECRET.trim())) {
+  throw new Error('[FATAL SECURITY MISCONFIGURATION] TRANSACTION_SIGNATURE_SECRET es obligatorio en entorno de producción.');
+}
+
+/**
+ * Helper para pruebas: permite resetear o inspeccionar el secreto efímero de desarrollo.
+ */
+function resetEphemeralDevTxSecretForTest() {
+  ephemeralDevTxSecret = null;
+}
+
+/**
+ * Genera un nonce criptográfico de autorización server-side (Fase 1G-C.2).
+ * Utiliza exclusivamente crypto.randomBytes(32) de Node.js (64 caracteres hex).
+ */
+function generateTransactionAuthNonce() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+/**
+ * Construye el payload canónico para la firma criptográfica de una transacción.
+ * Utiliza datos confiables cargados del servidor.
+ *
+ * Contrato canónico:
+ * canonicalPayload = [txId, clientId, clientCi, amount, authNonce].join('::')
+ */
+function buildTransactionCanonicalPayload(tx) {
+  if (!tx || typeof tx !== 'object') return '';
+  const txId = String(tx.id || '').trim();
+  const clientId = String(tx.clientId || '').trim();
+  const clientCi = String(tx.clientCi || '').trim();
+  const amount = Number(tx.amount || tx.totalUSD || 0).toFixed(2);
+  const nonce = String(tx.authNonce || '').trim();
+  return [txId, clientId, clientCi, amount, nonce].join('::');
+}
+
+/**
+ * Calcula la firma HMAC-SHA256 para un payload canónico de transacción.
+ */
+function computeTransactionHmac(canonicalPayload, secret = getTransactionSignatureSecret()) {
+  return crypto.createHmac('sha256', secret)
+    .update(canonicalPayload)
+    .digest('hex');
+}
+
+/**
+ * Valida criptográficamente la firma de autorización de una transacción.
+ * Acepta formatos:
+ * - 'SIG-v1.<nonceLast8>.<hex64>'
+ * - 'SIG-v1.<hex64>'
+ * - '<hex64>'
+ * Utiliza crypto.timingSafeEqual en tiempo constante.
+ */
+function verifyTransactionApprovalSignature(tx, providedSignature, secret = getTransactionSignatureSecret()) {
+  if (!providedSignature || typeof providedSignature !== 'string') return false;
+  if (!tx || typeof tx !== 'object') return false;
+
+  const canonicalPayload = buildTransactionCanonicalPayload(tx);
+  if (!canonicalPayload) return false;
+
+  const expectedHex = computeTransactionHmac(canonicalPayload, secret);
+
+  let providedHex = providedSignature.trim();
+  if (providedHex.startsWith('SIG-v1.')) {
+    const parts = providedHex.split('.');
+    providedHex = parts[parts.length - 1].trim();
+  }
+
+  if (providedHex.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(providedHex)) {
+    return false;
+  }
+
+  const bufProvided = Buffer.from(providedHex.toLowerCase(), 'hex');
+  const bufExpected = Buffer.from(expectedHex.toLowerCase(), 'hex');
+
+  if (bufProvided.length !== bufExpected.length) return false;
+  return crypto.timingSafeEqual(bufProvided, bufExpected);
+}
+
+// 11. Aprobar Transacción con QR por el Cliente (Fase 1G-C.3: Protocolo Definitivo de Autorización Server-Side)
 app.post('/api/portal/client/transactions/:id/approve', requirePortalAuth, requirePortalType('client'), verifyCsrf, async (req, res) => {
   try {
     const txId = req.params.id;
-    const { authNonce, authSignature } = req.body || {};
+    const { authNonce } = req.body || {};
+
     let updatedTx = null;
+    let errorCode = null;
+    let errorMessage = null;
 
     await withCollectionLock('transactions', async () => {
       const txs = readCollection('transactions');
-      const tx = txs.find(t => String(t.id) === String(txId) && String(t.clientId) === String(req.portalUser.id));
-      if (!tx) return;
+      const tx = txs.find(t => String(t.id) === String(txId));
 
+      // 1. Ownership & Existencia: la transacción debe existir y pertenecer al cliente autenticado (req.portalUser.id)
+      if (!tx || String(tx.clientId) !== String(req.portalUser.id)) {
+        errorCode = 404;
+        errorMessage = 'Transacción no encontrada';
+        return;
+      }
+
+      // 2. Máquina de Estados: Solo se permite aprobar transacciones en 'pending_approval'
+      if (tx.status !== 'pending_approval') {
+        errorCode = 409;
+        errorMessage = `La transacción no está pendiente de aprobación (estado actual: ${tx.status})`;
+        return;
+      }
+
+      // 3. TTL: Validar que la solicitud de aprobación no haya superado 15 minutos de antigüedad
+      const TX_APPROVAL_TTL_MS = 15 * 60 * 1000; // 15 minutos
+      const txCreatedTime = tx.createdAt ? Number(tx.createdAt) : (tx.timestamp ? new Date(tx.timestamp).getTime() : (tx.date ? new Date(tx.date).getTime() : 0));
+      if (!txCreatedTime || isNaN(txCreatedTime)) {
+        errorCode = 400;
+        errorMessage = 'La transacción no posee un timestamp de creación válido para autorización';
+        return;
+      }
+
+      const age = Date.now() - txCreatedTime;
+      if (age > TX_APPROVAL_TTL_MS) {
+        errorCode = 410;
+        errorMessage = 'La solicitud de aprobación ha expirado (límite de 15 minutos excedido)';
+        return;
+      }
+
+      // 4. Verificación de Nonce: Si el cliente proporciona authNonce, debe coincidir exactamente con el server-generated en DB
+      if (authNonce && typeof authNonce === 'string') {
+        const providedNonce = authNonce.trim();
+        const expectedNonce = String(tx.authNonce || '').trim();
+        if (providedNonce !== expectedNonce) {
+          errorCode = 400;
+          errorMessage = 'Nonce de autorización inválido o no coincide con la transacción pendiente';
+          return;
+        }
+      }
+
+      // 5. Firma Criptográfica de Autoridad Server-Side (HMAC-SHA256 generada exclusivamente por el backend)
+      const canonicalPayload = buildTransactionCanonicalPayload(tx);
+      const serverAuthSignature = computeTransactionHmac(canonicalPayload);
+
+      // 6. Transición atómica de estado a 'approved' y registro de auditoría
       tx.status = 'approved';
-      tx.authNonce = authNonce || '';
-      tx.authSignature = authSignature || '';
-      tx.approvedByClientAt = Date.now();
+      tx.authSignature = `SIG-v1.${(tx.authNonce || '').slice(-8)}.${serverAuthSignature}`;
+      tx.approvedByClientAt = new Date().toISOString();
+      tx.approvedByClientIp = req.ip || '';
+
       writeCollection('transactions', txs, { action: 'update', collection: 'transactions', doc: tx });
       updatedTx = tx;
     });
 
-    if (!updatedTx) {
-      return res.status(404).json({ error: 'Transacción no encontrada o no pertenece al cliente' });
+    if (errorCode) {
+      return res.status(errorCode).json({ error: errorMessage });
     }
-    res.json({ success: true, transaction: updatedTx });
+
+    if (!updatedTx) {
+      return res.status(404).json({ error: 'Transacción no encontrada' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Transacción aprobada y autorizada por el cliente con éxito',
+      transaction: updatedTx
+    });
   } catch (err) {
     console.error('[Portal Client Tx Approve Error]:', err);
     res.status(500).json({ error: 'Error aprobando transacción' });
@@ -2522,77 +2684,86 @@ app.get('/api/products', requireAuth, (req, res) => {
 });
 
 // Actualizar producto local (Admin: total | Cajero: estrictamente ajuste de stock)
-app.patch('/api/products/:id', requireAuth, requireRole('admin', 'cajero'), verifyCsrf, (req, res) => {
+app.patch('/api/products/:id', requireAuth, requireRole('admin', 'cajero'), verifyCsrf, async (req, res) => {
   try {
-    if (!fs.existsSync(productsDbFile)) {
-      return res.status(404).json({ error: 'DB no encontrada' });
-    }
-    const data = JSON.parse(fs.readFileSync(productsDbFile, 'utf8'));
-    const index = data.findIndex(p => String(p.id) === String(req.params.id));
+    const updatedProduct = await withCollectionLock('products', async () => {
+      const data = readCollection('products');
+      const index = data.findIndex(p => String(p.id) === String(req.params.id));
 
-    if (index === -1) {
+      if (index === -1) {
+        return null;
+      }
+
+      const current = data[index];
+      const previousDoc = { ...data[index] };
+      const updates = req.body || {};
+      const userRole = String(req.user.role).toLowerCase();
+
+      if (userRole === 'cajero') {
+        // Whitelist estricta para cajeros: solo ajuste de inventario
+        const allowedCajeroFields = ['adjustStockKg', 'adjustStock', 'csrfToken'];
+        const forbiddenKeys = Object.keys(updates).filter(k => !allowedCajeroFields.includes(k));
+
+        if (forbiddenKeys.length > 0 || (updates.adjustStockKg === undefined && updates.adjustStock === undefined)) {
+          const err = new Error('Acceso denegado: los cajeros solo tienen autorización para ajustes de inventario (stock).');
+          err.statusCode = 403;
+          throw err;
+        }
+
+        if (updates.adjustStockKg !== undefined) {
+          current.stockKg = Math.max(0, Math.round((Number(current.stockKg || 0) + Number(updates.adjustStockKg)) * 100) / 100);
+        }
+        if (updates.adjustStock !== undefined) {
+          current.stock = Math.max(0, Number(current.stock || 0) + Number(updates.adjustStock));
+        }
+        data[index] = current;
+      } else {
+        // Rol Admin: aplicar cambios administrativos
+        if (updates.adjustStockKg) {
+          current.stockKg = (Number(current.stockKg || 0) + Number(updates.adjustStockKg));
+          delete updates.adjustStockKg;
+        }
+        if (updates.adjustStock) {
+          current.stock = (Number(current.stock || 0) + Number(updates.adjustStock));
+          delete updates.adjustStock;
+        }
+        data[index] = { ...current, ...updates };
+      }
+
+      writeCollection('products', data, { action: 'update', collection: 'products', doc: data[index] }, previousDoc);
+      return data[index];
+    });
+
+    if (updatedProduct === null) {
       return res.status(404).json({ error: 'Producto no encontrado' });
     }
 
-    const current = data[index];
-    const previousDoc = { ...data[index] };
-    const updates = req.body || {};
-    const userRole = String(req.user.role).toLowerCase();
-
-    if (userRole === 'cajero') {
-      // Whitelist estricta para cajeros: solo ajuste de inventario
-      const allowedCajeroFields = ['adjustStockKg', 'adjustStock', 'csrfToken'];
-      const forbiddenKeys = Object.keys(updates).filter(k => !allowedCajeroFields.includes(k));
-
-      if (forbiddenKeys.length > 0 || (updates.adjustStockKg === undefined && updates.adjustStock === undefined)) {
-        return res.status(403).json({
-          error: 'Acceso denegado: los cajeros solo tienen autorización para ajustes de inventario (stock).'
-        });
-      }
-
-      if (updates.adjustStockKg !== undefined) {
-        current.stockKg = Math.max(0, Math.round((Number(current.stockKg || 0) + Number(updates.adjustStockKg)) * 100) / 100);
-      }
-      if (updates.adjustStock !== undefined) {
-        current.stock = Math.max(0, Number(current.stock || 0) + Number(updates.adjustStock));
-      }
-      data[index] = current;
-    } else {
-      // Rol Admin: aplicar cambios administrativos
-      if (updates.adjustStockKg) {
-        current.stockKg = (Number(current.stockKg || 0) + Number(updates.adjustStockKg));
-        delete updates.adjustStockKg;
-      }
-      if (updates.adjustStock) {
-        current.stock = (Number(current.stock || 0) + Number(updates.adjustStock));
-        delete updates.adjustStock;
-      }
-      data[index] = { ...current, ...updates };
-    }
-
-    writeCollection('products', data, { action: 'update', collection: 'products', doc: data[index] }, previousDoc);
-    res.json({ success: true, product: data[index] });
+    res.json({ success: true, product: updatedProduct });
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
     console.error(error);
     res.status(500).json({ error: 'Error actualizando producto' });
   }
 });
 
 // Crear producto local (Solo Admin + CSRF + validación de payload)
-app.post('/api/products', requireAuth, requireRole('admin'), verifyCsrf, (req, res) => {
+app.post('/api/products', requireAuth, requireRole('admin'), verifyCsrf, async (req, res) => {
   try {
     const { name, pricePerKg, wholesalePrice } = req.body || {};
     if (!name || typeof name !== 'string' || name.trim().length === 0) {
       return res.status(400).json({ error: 'Nombre de producto requerido' });
     }
 
-    let data = [];
-    if (fs.existsSync(productsDbFile)) {
-      data = JSON.parse(fs.readFileSync(productsDbFile, 'utf8'));
-    }
-    const newProduct = { id: req.body.id || Date.now().toString(), ...req.body };
-    data.push(newProduct);
-    writeCollection('products', data, { action: 'add', collection: 'products', doc: newProduct });
+    const newProduct = await withCollectionLock('products', async () => {
+      const data = readCollection('products');
+      const doc = { id: req.body.id || Date.now().toString(), ...req.body };
+      data.push(doc);
+      writeCollection('products', data, { action: 'add', collection: 'products', doc });
+      return doc;
+    });
+
     res.json({ success: true, product: newProduct });
   } catch (error) {
     console.error(error);
@@ -2601,15 +2772,23 @@ app.post('/api/products', requireAuth, requireRole('admin'), verifyCsrf, (req, r
 });
 
 // Eliminar producto local (Solo Admin + CSRF)
-app.delete('/api/products/:id', requireAuth, requireRole('admin'), verifyCsrf, (req, res) => {
+app.delete('/api/products/:id', requireAuth, requireRole('admin'), verifyCsrf, async (req, res) => {
   try {
-    if (!fs.existsSync(productsDbFile)) {
-      return res.status(404).json({ error: 'DB no encontrada' });
+    const deleted = await withCollectionLock('products', async () => {
+      const data = readCollection('products');
+      const previousDoc = data.find(p => String(p.id) === String(req.params.id));
+      if (!previousDoc) {
+        return false;
+      }
+      const filtered = data.filter(p => String(p.id) !== String(req.params.id));
+      writeCollection('products', filtered, { action: 'delete', collection: 'products', doc: { id: req.params.id } }, previousDoc);
+      return true;
+    });
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Producto no encontrado' });
     }
-    const data = JSON.parse(fs.readFileSync(productsDbFile, 'utf8'));
-    const previousDoc = data.find(p => String(p.id) === String(req.params.id));
-    const filtered = data.filter(p => String(p.id) !== String(req.params.id));
-    writeCollection('products', filtered, { action: 'delete', collection: 'products', doc: { id: req.params.id } }, previousDoc);
+
     res.json({ success: true });
   } catch (error) {
     console.error(error);
@@ -3435,7 +3614,7 @@ app.post('/api/ai/parse-trip', requireAuth, requireRole('admin', 'accountant'), 
   }
 });
 
-// --- GENERIC COLLECTIONS API WITH ASYNC MUTEX LOCK ---
+// --- GENERIC COLLECTIONS API WITH ASYNC MUTEX LOCK & ATOMIC TRANSACTIONS (FASE 1H) ---
 
 const getCollectionFilePath = (name) => path.join(dataDir, `${name}_db.json`);
 
@@ -3459,18 +3638,178 @@ const withCollectionLock = (name, fn) => {
   return nextPromise;
 };
 
+/**
+ * Primitivo centralizado de escritura atómica en disco (Fase 1H)
+ * 1. Crea archivo temporal único en el mismo directorio/filesystem.
+ * 2. Escribe buffer completo y ejecuta fsyncSync para garantizar persistencia física.
+ * 3. Renombra atómicamente a la ruta destino final.
+ * 4. Limpia temporales en caso de fallo y NUNCA destruye ni trunca el archivo anterior.
+ */
+function atomicWriteJsonFile(filePath, data) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  const tempPath = path.join(
+    dir,
+    `.${path.basename(filePath)}.tmp-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`
+  );
+
+  const serialized = JSON.stringify(data, null, 2);
+  let fd = null;
+  try {
+    fd = fs.openSync(tempPath, 'w');
+    fs.writeSync(fd, serialized, 0, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(tempPath, filePath);
+  } catch (err) {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+    if (fs.existsSync(tempPath)) {
+      try { fs.unlinkSync(tempPath); } catch {}
+    }
+    console.error(`[AtomicWrite Error] Fallo al escribir atómicamente ${filePath}:`, err.message);
+    throw err;
+  }
+}
+
+/**
+ * Lectura segura de colecciones JSON con protección contra corrupción (Fase 1H)
+ * Si el archivo existe pero está corrupto/inválido:
+ * - NO devuelve [] silenciosamente (lo cual destruiría datos en una posterior escritura).
+ * - Crea un snapshot de resguardo '.corrupt.<timestamp>' para análisis forense.
+ * - Lanza excepción clara impidiendo sobrescrituras destructivas.
+ */
 const readCollection = (name) => {
   const filePath = getCollectionFilePath(name);
-  if (fs.existsSync(filePath)) {
-    try {
-      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    } catch (e) {
-      console.error(`Error parsing JSON for collection ${name}:`, e);
-      return [];
-    }
+  if (!fs.existsSync(filePath)) {
+    return [];
   }
-  return [];
+
+  const raw = fs.readFileSync(filePath, 'utf8');
+  if (!raw || raw.trim().length === 0) {
+    // Archivo vacío existente: parsear como array vacío si es válido
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) && typeof parsed !== 'object') {
+      throw new Error(`Estructura JSON no válida para la colección ${name}`);
+    }
+    return parsed;
+  } catch (e) {
+    const corruptSnapshot = path.join(dataDir, `${name}_db.json.corrupt-${Date.now()}`);
+    try {
+      fs.copyFileSync(filePath, corruptSnapshot);
+      console.error(`[Corrupt JSON Detected] Archivo ${name}_db.json corrupto. Snapshot de resguardo creado en: ${corruptSnapshot}`);
+    } catch {}
+    console.error(`[Fatal Data Integrity Error] Error parsing JSON for collection ${name}:`, e.message);
+    throw new Error(`[DATA_INTEGRITY_ERROR] La base de datos de ${name} está corrupta o es inválida: ${e.message}`);
+  }
 };
+
+/**
+ * Coordinador de Transacciones Multi-Colección (Fase 1H)
+ * Provee garantías ACID sobre archivos JSON:
+ * - Snapshot consistente de colecciones en memoria.
+ * - Modificaciones aisladas en memoria durante la ejecución.
+ * - Validación antes de persistir.
+ * - Commit atómico: serializa todas las colecciones modificadas con atomicWriteJsonFile.
+ * - Rollback garantizado: si ocurre cualquier error, no se toca el disco ni se emiten eventos.
+ * - Emisión diferida de Socket.IO únicamente tras el commit exitoso.
+ */
+async function withTransaction(fn) {
+  return await withCollectionLock('GLOBAL_TRANSACTION', async () => {
+    const snapshots = new Map(); // name -> original cloned JSON
+    const stagedChanges = new Map(); // name -> modified JSON
+    const stagedDeltas = []; // [{ delta, previousDoc }]
+    const touchedCollections = new Set();
+
+    function getCollectionData(name) {
+      if (stagedChanges.has(name)) {
+        return stagedChanges.get(name);
+      }
+      if (!snapshots.has(name)) {
+        const original = readCollection(name);
+        snapshots.set(name, JSON.parse(JSON.stringify(original)));
+      }
+      const workingCopy = JSON.parse(JSON.stringify(snapshots.get(name)));
+      stagedChanges.set(name, workingCopy);
+      return workingCopy;
+    }
+
+    const txContext = {
+      read(name) {
+        return getCollectionData(name);
+      },
+      write(name, data, delta = null, previousDoc = null) {
+        if (!snapshots.has(name)) {
+          const original = readCollection(name);
+          snapshots.set(name, JSON.parse(JSON.stringify(original)));
+        }
+        touchedCollections.add(name);
+        stagedChanges.set(name, JSON.parse(JSON.stringify(data)));
+        if (delta) {
+          stagedDeltas.push({ delta, previousDoc });
+        } else {
+          stagedDeltas.push({ reloadCollection: name });
+        }
+      }
+    };
+
+    // 1. Ejecutar lógica de negocio dentro del contexto transaccional
+    let result;
+    try {
+      result = await fn(txContext);
+    } catch (err) {
+      console.warn(`[Transaction Aborted / Rollback In-Memory]:`, err.message);
+      throw err;
+    }
+
+    // 2. Commit: Persistir todas las colecciones modificadas atómicamente
+    const writtenBackups = new Map(); // name -> original snapshot para rollback físico si fallara una escritura
+    try {
+      for (const colName of touchedCollections) {
+        const filePath = getCollectionFilePath(colName);
+        const originalData = snapshots.get(colName);
+        writtenBackups.set(colName, originalData);
+
+        const newData = stagedChanges.get(colName);
+        atomicWriteJsonFile(filePath, newData);
+      }
+    } catch (commitErr) {
+      console.error(`[Transaction Commit Error] Fallo durante escritura física. Ejecutando rollback en disco...`, commitErr.message);
+      // Rollback físico de colecciones que ya se hubiesen escrito
+      for (const [colName, oldData] of writtenBackups.entries()) {
+        try {
+          const filePath = getCollectionFilePath(colName);
+          if (oldData !== undefined) {
+            atomicWriteJsonFile(filePath, oldData);
+          }
+        } catch (rollbackErr) {
+          console.error(`[Critical Rollback Error] (${colName}):`, rollbackErr.message);
+        }
+      }
+      throw commitErr;
+    }
+
+    // 3. Post-Commit: Emitir deltas Socket.IO encolados de forma segura
+    for (const item of stagedDeltas) {
+      if (item.delta) {
+        emitCollectionDeltaScoped(item.delta, item.previousDoc);
+      } else if (item.reloadCollection) {
+        emitCollectionUpdatedScoped(item.reloadCollection);
+      }
+    }
+
+    return result;
+  });
+}
 
 // ============================================================
 // SISTEMA CENTRAL DE EMISIÓN SOCKET.IO DIRIGIDA (FASE 1D-D.2)
@@ -3642,13 +3981,7 @@ function emitCollectionUpdatedScoped(collectionName) {
 
 const writeCollection = (name, data, delta = null, previousDoc = null) => {
   const filePath = getCollectionFilePath(name);
-  const tempPath = `${filePath}.tmp-${Date.now()}`;
-  try {
-    fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf8');
-    fs.renameSync(tempPath, filePath);
-  } catch (err) {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
-  }
+  atomicWriteJsonFile(filePath, data);
 
   if (delta) {
     emitCollectionDeltaScoped(delta, previousDoc);
@@ -3685,11 +4018,11 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
     const amountPaid = Number(paidAmount !== undefined ? paidAmount : saleTotal);
     const debtAmount = Math.max(0, Math.round((saleTotal - amountPaid) * 100) / 100);
 
-    // Global Lock for atomic transaction across collections
-    const result = await withCollectionLock('GLOBAL_TRANSACTION', async () => {
+    // Transacción Multi-Colección con snapshot, rollback y atomic write
+    const result = await withTransaction(async (tx) => {
       // 1. PRODUCTS & KARDEX
-      const productsData = readCollection('products');
-      const kardexData = readCollection('kardex');
+      const productsData = tx.read('products');
+      const kardexData = tx.read('kardex');
       const updatedProducts = [];
 
       for (const item of (saleItems || [])) {
@@ -3719,17 +4052,11 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
             notes: 'Venta registrada desde el POS'
           };
           kardexData.push(kardexMovement);
-          emitCollectionDeltaScoped({ action: 'add', collection: 'kardex', doc: kardexMovement });
+          // Encolar delta de kardex
+          tx.write('kardex', kardexData, { action: 'add', collection: 'kardex', doc: kardexMovement });
         }
       }
-      writeCollection('products', productsData);
-      // writeCollection sin delta emitiría collection_updated; pasamos { action: 'batchAdd', collection: 'kardex' } o guardamos el archivo
-      const kardexPath = getCollectionFilePath('kardex');
-      try {
-        fs.writeFileSync(kardexPath, JSON.stringify(kardexData, null, 2), 'utf8');
-      } catch (err) {
-        fs.writeFileSync(kardexPath, JSON.stringify(kardexData, null, 2), 'utf8');
-      }
+      tx.write('products', productsData);
 
       // 2. CLIENT / SUPPLIER
       let updatedClient = null;
@@ -3737,7 +4064,7 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
       let finalCustomerName = customerName || 'Cliente de Mostrador';
 
       if (clientId) {
-        const clientsData = readCollection('clients');
+        const clientsData = tx.read('clients');
         const cIndex = clientsData.findIndex(c => String(c.id) === String(clientId));
         if (cIndex !== -1) {
           const c = clientsData[cIndex];
@@ -3762,10 +4089,10 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
             tier: getVIPCode(newPoints)
           };
           clientsData[cIndex] = updatedClient;
-          writeCollection('clients', clientsData, { action: 'update', collection: 'clients', doc: updatedClient });
+          tx.write('clients', clientsData, { action: 'update', collection: 'clients', doc: updatedClient });
         }
       } else if (supplierId) {
-        const suppliersData = readCollection('suppliers');
+        const suppliersData = tx.read('suppliers');
         const sIndex = suppliersData.findIndex(s => String(s.id) === String(supplierId));
         if (sIndex !== -1) {
           const s = suppliersData[sIndex];
@@ -3791,13 +4118,13 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
             balanceOwed: newBalanceOwed
           };
           suppliersData[sIndex] = updatedSupplier;
-          writeCollection('suppliers', suppliersData, { action: 'update', collection: 'suppliers', doc: updatedSupplier });
+          tx.write('suppliers', suppliersData, { action: 'update', collection: 'suppliers', doc: updatedSupplier });
         }
       }
 
       // 3. BILLS / RECEIVABLES & KALU INSTALLMENTS
       if (debtAmount > 0) {
-        const billsData = readCollection('bills');
+        const billsData = tx.read('bills');
         const newBill = {
           id: `bill-rcv-${Date.now()}`,
           type: 'receivable',
@@ -3809,12 +4136,12 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
           notes: `Consumo de tienda (${supplierId ? 'Libreta de Queso' : 'Crédito'})`
         };
         billsData.push(newBill);
-        writeCollection('bills', billsData, { action: 'add', collection: 'bills', doc: newBill });
+        tx.write('bills', billsData, { action: 'add', collection: 'bills', doc: newBill });
 
         // Atomic Installments generation for Kalu Credit
         const hasKaluMethod = (addedPayments || []).some(p => p.method === 'Mundo Kalu') || paymentMethodType === 'Mundo Kalu';
         if (hasKaluMethod && clientId) {
-          const installmentsData = readCollection('installments');
+          const installmentsData = tx.read('installments');
           const kaluItem = (addedPayments || []).find(p => p.method === 'Mundo Kalu');
           const financedAmount = kaluItem ? Number(kaluItem.amount || debtAmount) : debtAmount;
           const installmentsCount = Number(req.body.installmentsCount || 3);
@@ -3838,20 +4165,14 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
               type: req.body.kaluCreditType || 'cotidiano'
             };
             installmentsData.push(installmentDoc);
-            emitCollectionDeltaScoped({ action: 'add', collection: 'installments', doc: installmentDoc });
             nextDate.setDate(nextDate.getDate() + 15);
           }
-          const installmentsPath = getCollectionFilePath('installments');
-          try {
-            fs.writeFileSync(installmentsPath, JSON.stringify(installmentsData, null, 2), 'utf8');
-          } catch (err) {
-            fs.writeFileSync(installmentsPath, JSON.stringify(installmentsData, null, 2), 'utf8');
-          }
+          tx.write('installments', installmentsData, { action: 'batchAdd', collection: 'installments' });
         }
       }
 
       // 4. CENTRAL VAULT BALANCE (BÓVEDA)
-      const settingsData = readCollection('settings');
+      const settingsData = tx.read('settings');
       let generalSettingsIndex = settingsData.findIndex(d => String(d.id) === 'general');
       let generalSettings = generalSettingsIndex !== -1 ? settingsData[generalSettingsIndex] : { id: 'general' };
       const currentVault = generalSettings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
@@ -3921,7 +4242,7 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
       } else {
         settingsData.push(generalSettings);
       }
-      writeCollection('settings', settingsData, { action: 'update', collection: 'settings', doc: generalSettings });
+      tx.write('settings', settingsData, { action: 'update', collection: 'settings', doc: generalSettings });
 
       // 5. MAIN TRANSACTION RECORD
       let finalPaymentMethod = paymentMethodType || 'Efectivo';
@@ -3931,7 +4252,7 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
         finalPaymentMethod = `Multipago (Efectivo + ${supplierId ? 'Libreta' : 'Crédito'})`;
       }
 
-      const txsData = readCollection('transactions');
+      const txsData = tx.read('transactions');
       const nowMs = Date.now();
       const newTx = {
         id: `TX-${nowMs}`,
@@ -3958,7 +4279,7 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
       };
 
       txsData.push(newTx);
-      writeCollection('transactions', txsData, { action: 'add', collection: 'transactions', doc: newTx });
+      tx.write('transactions', txsData, { action: 'add', collection: 'transactions', doc: newTx });
 
       return {
         transaction: newTx,
@@ -3971,10 +4292,11 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
 
     res.json({ success: true, ...result });
   } catch (error) {
-    console.error('[POST /api/pos/process-sale] Error crítico procesando venta atómica:', error);
-    res.status(500).json({ error: 'Error procesando venta atómica', details: error.message });
+    console.error('[POST /api/pos/process-sale] Error procesando venta transaccional:', error);
+    res.status(500).json({ error: 'Error procesando venta transaccional', details: error.message });
   }
 });
+
 
 // Endpoint para sincronización de tasa de cambio (Protegido por syncRateLimiter)
 app.get('/api/sync-rate', syncRateLimiter, async (req, res) => {
@@ -4058,21 +4380,41 @@ app.get('/api/collections/:name', requireAuth, requireCollectionRead, (req, res)
 });
 
 // 2. Crear / Sobrescribir documento en colección (Protegido con requireAuth, validación de colección y CSRF)
-app.post('/api/collections/:name', requireAuth, requireCollectionWrite, verifyCsrf, (req, res) => {
+app.post('/api/collections/:name', requireAuth, requireCollectionWrite, verifyCsrf, async (req, res) => {
   try {
-    const data = readCollection(req.params.name);
-    const newDoc = { id: req.body.id || Date.now().toString(), ...req.body };
-    const index = data.findIndex(d => String(d.id) === String(newDoc.id));
+    const colName = req.params.name;
+    const newDoc = await withCollectionLock(colName, async () => {
+      const data = readCollection(colName);
+      let payload = { ...req.body };
 
-    if (index !== -1) {
-      // Overwrite if it already exists to prevent duplication
-      const previousDoc = { ...data[index] };
-      data[index] = newDoc;
-      writeCollection(req.params.name, data, { action: 'update', collection: req.params.name, doc: newDoc }, previousDoc);
-    } else {
-      data.push(newDoc);
-      writeCollection(req.params.name, data, { action: 'add', collection: req.params.name, doc: newDoc });
-    }
+      // FASE 1G-C.2: Si es una transacción, authNonce es 100% server-side e inmutable
+      if (colName === 'transactions') {
+        if (payload.status === 'pending_approval' || !payload.authNonce) {
+          payload.authNonce = generateTransactionAuthNonce();
+        } else {
+          delete payload.authNonce;
+        }
+      }
+
+      const doc = { id: req.body.id || Date.now().toString(), ...payload };
+      const index = data.findIndex(d => String(d.id) === String(doc.id));
+
+      if (index !== -1) {
+        // Overwrite if it already exists to prevent duplication
+        const previousDoc = { ...data[index] };
+        // Mantener authNonce existente si ya tenía uno para evitar que un POST sobrescriba el nonce
+        if (colName === 'transactions' && previousDoc.authNonce) {
+          doc.authNonce = previousDoc.authNonce;
+        }
+        data[index] = doc;
+        writeCollection(colName, data, { action: 'update', collection: colName, doc }, previousDoc);
+      } else {
+        data.push(doc);
+        writeCollection(colName, data, { action: 'add', collection: colName, doc });
+      }
+      return doc;
+    });
+
     res.json({ success: true, doc: newDoc });
   } catch (error) {
     console.error(`Error writing ${req.params.name}:`, error);
@@ -4081,22 +4423,39 @@ app.post('/api/collections/:name', requireAuth, requireCollectionWrite, verifyCs
 });
 
 // 3. Modificar / Upsert documento en colección (Protegido con requireAuth, validación de colección y CSRF)
-app.patch('/api/collections/:name/:id', requireAuth, requireCollectionWrite, verifyCsrf, (req, res) => {
+app.patch('/api/collections/:name/:id', requireAuth, requireCollectionWrite, verifyCsrf, async (req, res) => {
   try {
-    const data = readCollection(req.params.name);
-    const index = data.findIndex(d => String(d.id) === String(req.params.id));
-    if (index !== -1) {
-      const previousDoc = { ...data[index] };
-      data[index] = { ...data[index], ...req.body };
-      writeCollection(req.params.name, data, { action: 'update', collection: req.params.name, doc: data[index] }, previousDoc);
-      res.json({ success: true, doc: data[index] });
-    } else {
-      // UPSERT: Create document if it does not exist
-      const newDoc = { id: req.params.id, ...req.body };
-      data.push(newDoc);
-      writeCollection(req.params.name, data, { action: 'add', collection: req.params.name, doc: newDoc });
-      res.json({ success: true, doc: newDoc });
-    }
+    const colName = req.params.name;
+    const doc = await withCollectionLock(colName, async () => {
+      const data = readCollection(colName);
+      const index = data.findIndex(d => String(d.id) === String(req.params.id));
+      let updates = { ...req.body };
+
+      // FASE 1G-C.2: Prohibir mutación de authNonce en updates genéricos de transacciones
+      if (colName === 'transactions' && 'authNonce' in updates) {
+        delete updates.authNonce;
+      }
+
+      if (index !== -1) {
+        const previousDoc = { ...data[index] };
+        data[index] = { ...data[index], ...updates };
+        writeCollection(colName, data, { action: 'update', collection: colName, doc: data[index] }, previousDoc);
+        return data[index];
+      } else {
+        // UPSERT: Create document if it does not exist
+        if (colName === 'transactions') {
+          if (updates.status === 'pending_approval' || !updates.authNonce) {
+            updates.authNonce = generateTransactionAuthNonce();
+          }
+        }
+        const newDoc = { id: req.params.id, ...updates };
+        data.push(newDoc);
+        writeCollection(colName, data, { action: 'add', collection: colName, doc: newDoc });
+        return newDoc;
+      }
+    });
+
+    res.json({ success: true, doc });
   } catch (error) {
     console.error(`Error updating ${req.params.name}:`, error);
     res.status(500).json({ error: 'Error updating collection' });
@@ -4104,7 +4463,7 @@ app.patch('/api/collections/:name/:id', requireAuth, requireCollectionWrite, ver
 });
 
 // 4. Borrado masivo (batchDelete) en colección (Solo Admin + Allowlist estricta + CSRF)
-app.post('/api/collections/:name/batchDelete', requireAuth, requireRole('admin'), verifyCsrf, (req, res) => {
+app.post('/api/collections/:name/batchDelete', requireAuth, requireRole('admin'), verifyCsrf, async (req, res) => {
   try {
     const collectionName = req.params.name;
     // Validar allowlist de colecciones borrables
@@ -4114,10 +4473,13 @@ app.post('/api/collections/:name/batchDelete', requireAuth, requireRole('admin')
       });
     }
 
-    const data = readCollection(collectionName);
-    const idsToDelete = req.body.ids || [];
-    const filtered = data.filter(d => !idsToDelete.includes(String(d.id)));
-    writeCollection(collectionName, filtered, { action: 'batchDelete', collection: collectionName, count: idsToDelete.length });
+    await withCollectionLock(collectionName, async () => {
+      const data = readCollection(collectionName);
+      const idsToDelete = req.body.ids || [];
+      const filtered = data.filter(d => !idsToDelete.includes(String(d.id)));
+      writeCollection(collectionName, filtered, { action: 'batchDelete', collection: collectionName, count: idsToDelete.length });
+    });
+
     res.json({ success: true });
   } catch (error) {
     console.error(`Error batch deleting ${req.params.name}:`, error);
@@ -4126,7 +4488,7 @@ app.post('/api/collections/:name/batchDelete', requireAuth, requireRole('admin')
 });
 
 // 5. Borrado individual de documento (Solo Admin + Allowlist estricta + CSRF)
-app.delete('/api/collections/:name/:id', requireAuth, requireRole('admin'), verifyCsrf, (req, res) => {
+app.delete('/api/collections/:name/:id', requireAuth, requireRole('admin'), verifyCsrf, async (req, res) => {
   try {
     const collectionName = req.params.name;
     // Validar allowlist de colecciones con borrado individual permitido
@@ -4136,10 +4498,13 @@ app.delete('/api/collections/:name/:id', requireAuth, requireRole('admin'), veri
       });
     }
 
-    const data = readCollection(collectionName);
-    const previousDoc = data.find(d => String(d.id) === String(req.params.id));
-    const filtered = data.filter(d => String(d.id) !== String(req.params.id));
-    writeCollection(collectionName, filtered, { action: 'delete', collection: collectionName, doc: { id: req.params.id } }, previousDoc);
+    await withCollectionLock(collectionName, async () => {
+      const data = readCollection(collectionName);
+      const previousDoc = data.find(d => String(d.id) === String(req.params.id));
+      const filtered = data.filter(d => String(d.id) !== String(req.params.id));
+      writeCollection(collectionName, filtered, { action: 'delete', collection: collectionName, doc: { id: req.params.id } }, previousDoc);
+    });
+
     res.json({ success: true });
   } catch (error) {
     console.error(`Error deleting ${req.params.name}:`, error);
@@ -4147,7 +4512,7 @@ app.delete('/api/collections/:name/:id', requireAuth, requireRole('admin'), veri
   }
 });
 
-// 6. Endpoint Administrativo Oficial para Restablecimiento Contable (Fase 1C)
+// 6. Endpoint Administrativo Oficial para Restablecimiento Contable (Fase 1C/1H)
 // Sustituye al peligroso DELETE /api/collections/:name de wipe genérico
 app.post('/api/admin/reset-accounting', requireAuth, requireRole('admin'), verifyCsrf, adminResetLimiter, async (req, res) => {
   try {
@@ -4165,32 +4530,32 @@ app.post('/api/admin/reset-accounting', requireAuth, requireRole('admin'), verif
       'kardex'
     ];
 
-    await withCollectionLock('GLOBAL_TRANSACTION', async () => {
+    await withTransaction(async (tx) => {
       // 1. Limpiar colecciones contables fijas a []
       for (const coll of ACCOUNTING_COLLECTIONS) {
-        writeCollection(coll, [], { action: 'clear', collection: coll });
+        tx.write(coll, [], { action: 'clear', collection: coll });
       }
 
       // 2. Resetear deudas de clientes a cero
-      const clients = readCollection('clients');
+      const clients = tx.read('clients');
       if (Array.isArray(clients)) {
         const updatedClients = clients.map(c => ({
           ...c,
           outstandingDebt: 0,
           loyaltyPoints: 0
         }));
-        writeCollection('clients', updatedClients, { action: 'update_all', collection: 'clients' });
+        tx.write('clients', updatedClients, { action: 'update_all', collection: 'clients' });
       }
 
       // 3. Resetear deudas y saldos de proveedores a cero
-      const suppliers = readCollection('suppliers');
+      const suppliers = tx.read('suppliers');
       if (Array.isArray(suppliers)) {
         const updatedSuppliers = suppliers.map(s => ({
           ...s,
           balanceOwed: 0,
           storeDebt: 0
         }));
-        writeCollection('suppliers', updatedSuppliers, { action: 'update_all', collection: 'suppliers' });
+        tx.write('suppliers', updatedSuppliers, { action: 'update_all', collection: 'suppliers' });
       }
     });
 
@@ -4256,7 +4621,7 @@ app.get('/api/full-backup', requireAuth, requireRole('admin'), adminBackupLimite
 });
 
 // Restaurar copia de seguridad completa atómicamente (Solo Admin + CSRF)
-app.post('/api/restore-backup', requireAuth, requireRole('admin'), verifyCsrf, adminRestoreLimiter, (req, res) => {
+app.post('/api/restore-backup', requireAuth, requireRole('admin'), verifyCsrf, adminRestoreLimiter, async (req, res) => {
   try {
     const { collections } = req.body;
     if (!collections || typeof collections !== 'object') {
@@ -4265,11 +4630,17 @@ app.post('/api/restore-backup', requireAuth, requireRole('admin'), verifyCsrf, a
 
     const restoredSummary = {};
     for (const [colName, docs] of Object.entries(collections)) {
-      if (Array.isArray(docs)) {
-        writeCollection(colName, docs);
-        restoredSummary[colName] = docs.length;
+      if (!Array.isArray(docs)) {
+        return res.status(400).json({ error: `Formato inválido: la colección "${colName}" debe ser un array.` });
       }
+      restoredSummary[colName] = docs.length;
     }
+
+    await withTransaction(async (tx) => {
+      for (const [colName, docs] of Object.entries(collections)) {
+        tx.write(colName, docs);
+      }
+    });
 
     console.log('[Sistema Kalu] ✅ Restauración completa de base de datos realizada con éxito por admin:', restoredSummary);
     io.to('room:crm:admin').emit('database_restored', { timestamp: new Date().toISOString(), summary: restoredSummary });
@@ -4683,5 +5054,15 @@ export {
   debtCheckLimiter,
   adminBackupLimiter,
   adminRestoreLimiter,
-  adminResetLimiter
+  adminResetLimiter,
+  buildTransactionCanonicalPayload,
+  computeTransactionHmac,
+  verifyTransactionApprovalSignature,
+  getTransactionSignatureSecret,
+  resetEphemeralDevTxSecretForTest,
+  generateTransactionAuthNonce,
+  atomicWriteJsonFile,
+  withTransaction,
+  readCollection,
+  withCollectionLock
 };

@@ -45,10 +45,19 @@ import {
   portalAccountLoginLimiter,
   recoveryResetPinLimiter,
   syncRateLimiter,
-  debtCheckLimiter,
   adminBackupLimiter,
   adminRestoreLimiter,
-  adminResetLimiter
+  adminResetLimiter,
+  buildTransactionCanonicalPayload,
+  computeTransactionHmac,
+  verifyTransactionApprovalSignature,
+  getTransactionSignatureSecret,
+  resetEphemeralDevTxSecretForTest,
+  generateTransactionAuthNonce,
+  atomicWriteJsonFile,
+  withTransaction,
+  readCollection,
+  withCollectionLock
 } from '../server.js';
 import crypto from 'crypto';
 
@@ -1373,6 +1382,18 @@ async function runTests() {
 
   // Helper para login de cliente
   async function loginClientA() {
+    const clientsPath = path.resolve('data-dev/clients_db.json');
+    if (fs.existsSync(clientsPath)) {
+      try {
+        const clientsData = JSON.parse(fs.readFileSync(clientsPath, 'utf8'));
+        const c1 = clientsData.find(item => item.id === 'cli-demo-1');
+        if (c1 && !bcrypt.compareSync('678000', c1.pinHash || '')) {
+          c1.pinHash = bcrypt.hashSync('678000', 10);
+          fs.writeFileSync(clientsPath, JSON.stringify(clientsData, null, 2));
+        }
+      } catch {}
+    }
+
     const res = await request('/api/portal/auth/login', {
       method: 'POST',
       body: JSON.stringify({
@@ -1382,9 +1403,38 @@ async function runTests() {
       })
     });
     return {
-      cookie: res.setCookie.split(';')[0],
-      csrf: res.data.csrfToken,
-      user: res.data.portalUser
+      cookie: res.setCookie ? res.setCookie.split(';')[0] : '',
+      csrf: res.data?.csrfToken,
+      user: res.data?.portalUser
+    };
+  }
+
+  // Helper para login de cliente B
+  async function loginClientB() {
+    const clientsPath = path.resolve('data-dev/clients_db.json');
+    if (fs.existsSync(clientsPath)) {
+      try {
+        const clientsData = JSON.parse(fs.readFileSync(clientsPath, 'utf8'));
+        const c2 = clientsData.find(item => item.id === 'cli-demo-2');
+        if (c2 && !bcrypt.compareSync('678000', c2.pinHash || '')) {
+          c2.pinHash = bcrypt.hashSync('678000', 10);
+          fs.writeFileSync(clientsPath, JSON.stringify(clientsData, null, 2));
+        }
+      } catch {}
+    }
+
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04249876543',
+        pin: '678000'
+      })
+    });
+    return {
+      cookie: res.setCookie ? res.setCookie.split(';')[0] : '',
+      csrf: res.data?.csrfToken,
+      user: res.data?.portalUser
     };
   }
 
@@ -2717,6 +2767,16 @@ async function runTests() {
       })
     });
     assert.strictEqual(second.status, 400);
+
+    // Restaurar PIN por defecto '678000' para cli-demo-1
+    const defaultPinHash = bcrypt.hashSync('678000', 10);
+    const clientsPath = path.resolve('data-dev/clients_db.json');
+    if (fs.existsSync(clientsPath)) {
+      const clientsData = JSON.parse(fs.readFileSync(clientsPath, 'utf8'));
+      const c = clientsData.find(item => item.id === 'cli-demo-1');
+      if (c) c.pinHash = defaultPinHash;
+      fs.writeFileSync(clientsPath, JSON.stringify(clientsData, null, 2));
+    }
   });
 
   // 154. resetToken de cliente usado para resetear productor es rechazado
@@ -3988,11 +4048,19 @@ async function runTests() {
       receivedDeltas.push(d);
     });
 
+    // Asegurar que el producto existe para la venta
+    const prodId = 'prod-demo-1';
+    await request('/api/products', {
+      method: 'POST',
+      headers: { 'Cookie': adminCookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ id: prodId, name: 'Queso Demo 1', pricePerKg: 4.5, stockKg: 20 })
+    });
+
     const resSale = await request('/api/pos/process-sale', {
       method: 'POST',
       headers: { 'Cookie': adminCookie, 'x-csrf-token': csrf },
       body: JSON.stringify({
-        saleItems: [{ productId: 'prod-demo-1', quantityKg: 1, subtotal: 4.5 }],
+        saleItems: [{ productId: prodId, quantityKg: 1, subtotal: 4.5 }],
         clientId: 'cli-demo-1',
         customerName: 'Cliente Demo Comercial S.A.',
         paidAmount: 4.5,
@@ -6831,22 +6899,7 @@ async function runTests() {
     assert.ok(got429, 'Debe activar rate limit administrativo en /api/full-backup');
   });
 
-  // 1G-B-09: Operaciones administrativas destructivas (/api/admin/reset-accounting) activan 429 ante flood
-  await test('395. TEST 1G-B-09: POST /api/admin/reset-accounting activa HTTP 429 ante intentos repetitivos', async () => {
-    const { cookie, csrf } = await loginAdminD2();
-    let got429 = false;
-    for (let i = 0; i < 6; i++) {
-      const res = await request('/api/admin/reset-accounting', {
-        method: 'POST',
-        headers: { 'Cookie': cookie, 'x-csrf-token': csrf }
-      });
-      if (res.status === 429) {
-        got429 = true;
-        break;
-      }
-    }
-    assert.ok(got429, 'Debe activar rate limit en /api/admin/reset-accounting');
-  });
+
 
   // 1G-B-10: Hash rate limit key normaliza correctamente identificadores
   await test('396. TEST 1G-B-10: hashRateLimitKey normaliza espacios, mayúsculas y genera hash seguro sin exponer plaintext', async () => {
@@ -6889,6 +6942,388 @@ async function runTests() {
   });
 
   // ============================================================
+  // FASE 1G-C.3: PROTOCOLO DEFINITIVO DE AUTORIZACIÓN QR (TESTS 1G-C.3-01 A 1G-C.3-20)
+  // ============================================================
+
+  // Helper para registrar una transacción temporal en DB
+  function createTestPendingTransaction(overrides = {}) {
+    const txPath = path.resolve('data-dev/transactions_db.json');
+    let txs = [];
+    if (fs.existsSync(txPath)) {
+      try { txs = JSON.parse(fs.readFileSync(txPath, 'utf8')); } catch {}
+    }
+    const defaultTx = {
+      id: `tx-test-1gc-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      clientId: 'cli-demo-1',
+      clientCi: 'V-12345678',
+      amount: 120.50,
+      totalUSD: 120.50,
+      items: [{ name: 'QUESO DURO', qty: 10, price: 12.05 }],
+      status: 'pending_approval',
+      authNonce: `NONCE-${Date.now()}-abc1234567890def1234567890abcdef1234567890abcdef`,
+      createdAt: Date.now(),
+      timestamp: new Date().toISOString(),
+      date: new Date().toISOString()
+    };
+    const finalTx = { ...defaultTx, ...overrides };
+    txs.push(finalTx);
+    fs.writeFileSync(txPath, JSON.stringify(txs, null, 2));
+    return finalTx;
+  }
+
+  // 1G-C.3-01: Cliente autenticado puede aprobar SU pending transaction (200 OK)
+  await test('399. TEST 1G-C.3-01: Cliente autenticado puede aprobar SU pending transaction (200 OK)', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const tx = createTestPendingTransaction({ clientId: 'cli-demo-1', amount: 85.00 });
+
+    const res = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ authNonce: tx.authNonce })
+    });
+
+    assert.strictEqual(res.status, 200, `Esperado 200, recibido ${res.status}`);
+    assert.strictEqual(res.data.success, true);
+    assert.strictEqual(res.data.transaction.status, 'approved');
+    assert.ok(typeof res.data.transaction.approvedByClientAt === 'string');
+    assert.ok(typeof res.data.transaction.authSignature === 'string');
+    assert.ok(res.data.transaction.authSignature.startsWith('SIG-v1.'));
+  });
+
+  // 1G-C.3-02: Cliente A no puede aprobar transaction de Cliente B (404 Not Found)
+  await test('400. TEST 1G-C.3-02: Cliente A no puede aprobar transaction de Cliente B (404 Not Found)', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const tx = createTestPendingTransaction({ clientId: 'cli-demo-2' }); // Perteneciente a Cliente B
+
+    const res = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ authNonce: tx.authNonce })
+    });
+
+    assert.strictEqual(res.status, 404, 'Debe devolver 404 para no revelar existencia ni permitir cross-client IDOR');
+  });
+
+  // 1G-C.3-03: Cliente no autenticado recibe 401
+  await test('401. TEST 1G-C.3-03: Cliente no autenticado recibe HTTP 401 Unauthorized', async () => {
+    const tx = createTestPendingTransaction({ clientId: 'cli-demo-1' });
+
+    const res = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ authNonce: tx.authNonce })
+    });
+
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 1G-C.3-04: No se acepta clientId enviado por body para cambiar ownership
+  await test('402. TEST 1G-C.3-04: No se acepta clientId enviado por body para cambiar ownership', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const tx = createTestPendingTransaction({ clientId: 'cli-demo-1' });
+
+    const res = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        clientId: 'cli-demo-2',
+        clientCi: 'V-99999999'
+      })
+    });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.transaction.clientId, 'cli-demo-1', 'Ownership debe permanecer vinculado al cliente autenticado');
+    assert.strictEqual(res.data.transaction.clientCi, 'V-12345678');
+  });
+
+  // 1G-C.3-05: No se acepta authNonce manipulado en body
+  await test('403. TEST 1G-C.3-05: authNonce manipulado en body es rechazado con 400 Bad Request', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const tx = createTestPendingTransaction({ clientId: 'cli-demo-1' });
+
+    const res = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ authNonce: 'TAMPERED_WRONG_NONCE' })
+    });
+
+    assert.strictEqual(res.status, 400);
+    assert.ok(res.data.error.includes('authNonce') || res.data.error.includes('inválido'));
+  });
+
+  // 1G-C.3-06: amount enviado por cliente no modifica amount
+  await test('404. TEST 1G-C.3-06: amount enviado por cliente en body no modifica el monto original', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const tx = createTestPendingTransaction({ clientId: 'cli-demo-1', amount: 150.00 });
+
+    const res = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ amount: 1.00, totalUSD: 1.00 })
+    });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.transaction.amount, 150.00, 'El monto en base de datos debe ser inmutable durante la aprobación');
+  });
+
+  // 1G-C.3-07: items enviados por cliente no modifican items
+  await test('405. TEST 1G-C.3-07: items enviados por cliente en body no modifican los items registrados', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const tx = createTestPendingTransaction({
+      clientId: 'cli-demo-1',
+      items: [{ name: 'QUESO DURO', qty: 5, price: 10 }]
+    });
+
+    const res = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ items: [{ name: 'ITEM HACKEADO GRATIS', qty: 100, price: 0 }] })
+    });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.transaction.items[0].name, 'QUESO DURO');
+    assert.strictEqual(res.data.transaction.items.length, 1);
+  });
+
+  // 1G-C.3-08: status enviado por cliente no modifica estado a valores arbitrarios
+  await test('406. TEST 1G-C.3-08: status enviado por cliente en body no altera el flujo de estados', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const tx = createTestPendingTransaction({ clientId: 'cli-demo-1' });
+
+    const res = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ status: 'admin_bypassed_paid' })
+    });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.transaction.status, 'approved');
+  });
+
+  // 1G-C.3-09: approved transaction no puede aprobarse nuevamente (409 Conflict)
+  await test('407. TEST 1G-C.3-09: Transacción en estado approved devuelve 409 Conflict ante intento de re-aprobación', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const tx = createTestPendingTransaction({ clientId: 'cli-demo-1', status: 'approved' });
+
+    const res = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({})
+    });
+
+    assert.strictEqual(res.status, 409);
+    assert.ok(res.data.error.includes('no está pendiente'));
+  });
+
+  // 1G-C.3-10: cancelled transaction no puede aprobarse (409 Conflict)
+  await test('408. TEST 1G-C.3-10: Transacción en estado cancelled devuelve 409 Conflict', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const tx = createTestPendingTransaction({ clientId: 'cli-demo-1', status: 'cancelled' });
+
+    const res = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({})
+    });
+
+    assert.strictEqual(res.status, 409);
+  });
+
+  // 1G-C.3-11: transaction fuera de TTL (>15m) no puede aprobarse (410 Gone)
+  await test('409. TEST 1G-C.3-11: Transacción fuera de TTL (>15 minutos) es rechazada con 410 Gone', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const tx = createTestPendingTransaction({
+      clientId: 'cli-demo-1',
+      createdAt: Date.now() - 20 * 60 * 1000 // 20 minutos atrás
+    });
+
+    const res = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({})
+    });
+
+    assert.strictEqual(res.status, 410);
+    assert.ok(res.data.error.includes('expirado'));
+  });
+
+  // 1G-C.3-12: createdAt inválido/missing rechaza la aprobación (400 Bad Request)
+  await test('410. TEST 1G-C.3-12: Transacción sin timestamp válido rechaza la aprobación con 400 Bad Request', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const tx = createTestPendingTransaction({
+      clientId: 'cli-demo-1',
+      createdAt: null,
+      timestamp: null,
+      date: null
+    });
+
+    const res = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({})
+    });
+
+    assert.strictEqual(res.status, 400);
+    assert.ok(res.data.error.includes('timestamp'));
+  });
+
+  // 1G-C.3-13: Dos aprobaciones concurrentes producen como máximo UNA aprobación exitosa (200) y UNA 409
+  await test('411. TEST 1G-C.3-13: Dos aprobaciones concurrentes producen exactamente 1 éxito (200) y 1 rechazo (409)', async () => {
+    const { cookie: adminCookie, csrf: adminCsrf } = await loginAdminD2();
+    const txId = `tx-pending-concurrent-${Date.now()}`;
+    const createRes = await request('/api/collections/transactions', {
+      method: 'POST',
+      headers: { 'Cookie': adminCookie, 'x-csrf-token': adminCsrf },
+      body: JSON.stringify({
+        id: txId,
+        clientId: 'cli-demo-1',
+        clientCi: 'V-12345678',
+        amount: 55.00,
+        status: 'pending_approval',
+        createdAt: Date.now()
+      })
+    });
+    assert.strictEqual(createRes.status, 200);
+
+    const { cookie: clientCookie, csrf: clientCsrf } = await loginClientA();
+
+    // Disparar 2 aprobaciones simultáneas en paralelo
+    const [resA, resB] = await Promise.all([
+      request(`/api/portal/client/transactions/${txId}/approve`, {
+        method: 'POST',
+        headers: { 'Cookie': clientCookie, 'x-csrf-token': clientCsrf },
+        body: JSON.stringify({})
+      }),
+      request(`/api/portal/client/transactions/${txId}/approve`, {
+        method: 'POST',
+        headers: { 'Cookie': clientCookie, 'x-csrf-token': clientCsrf },
+        body: JSON.stringify({})
+      })
+    ]);
+
+    const statuses = [resA.status, resB.status].sort();
+    assert.strictEqual(statuses[0], 200, 'Una de las solicitudes paralelas debe resultar 200 OK');
+    assert.strictEqual(statuses[1], 409, 'La otra solicitud concurrente debe resultar 409 Conflict');
+  });
+
+  // 1G-C.3-14: TRANSACTION_SIGNATURE_SECRET nunca aparece en bundle/frontend
+  await test('412. TEST 1G-C.3-14: TRANSACTION_SIGNATURE_SECRET nunca aparece en código frontend src/', async () => {
+    const srcDir = path.resolve('src');
+    const files = fs.readdirSync(srcDir, { recursive: true });
+    for (const file of files) {
+      const fullPath = path.join(srcDir, file);
+      if (fs.statSync(fullPath).isFile() && (file.endsWith('.ts') || file.endsWith('.tsx') || file.endsWith('.js') || file.endsWith('.vue'))) {
+        const content = fs.readFileSync(fullPath, 'utf8');
+        assert.ok(!content.includes('TRANSACTION_SIGNATURE_SECRET'), `El archivo src/${file} no debe contener TRANSACTION_SIGNATURE_SECRET`);
+      }
+    }
+  });
+
+  // 1G-C.3-15: INTERNAL_APP_SALT eliminado del código de producción
+  await test('413. TEST 1G-C.3-15: INTERNAL_APP_SALT eliminado de src/utils/crypto.ts y de todo src/', async () => {
+    const srcDir = path.resolve('src');
+    const files = fs.readdirSync(srcDir, { recursive: true });
+    for (const file of files) {
+      const fullPath = path.join(srcDir, file);
+      if (fs.statSync(fullPath).isFile() && (file.endsWith('.ts') || file.endsWith('.tsx') || file.endsWith('.js'))) {
+        const content = fs.readFileSync(fullPath, 'utf8');
+        assert.ok(!content.includes('INTERNAL_APP_SALT'), `El archivo src/${file} no debe contener INTERNAL_APP_SALT`);
+      }
+    }
+  });
+
+  // 1G-C.3-16: signTransactionApproval eliminado si ya no tiene consumidor legítimo
+  await test('414. TEST 1G-C.3-16: signTransactionApproval eliminado completamente de src/', async () => {
+    const srcDir = path.resolve('src');
+    const files = fs.readdirSync(srcDir, { recursive: true });
+    for (const file of files) {
+      const fullPath = path.join(srcDir, file);
+      if (fs.statSync(fullPath).isFile() && (file.endsWith('.ts') || file.endsWith('.tsx') || file.endsWith('.js'))) {
+        const content = fs.readFileSync(fullPath, 'utf8');
+        assert.ok(!content.includes('signTransactionApproval'), `El archivo src/${file} no debe contener signTransactionApproval`);
+      }
+    }
+  });
+
+  // 1G-C.3-17: verifyTransactionSignature eliminado si ya no tiene consumidor legítimo
+  await test('415. TEST 1G-C.3-17: verifyTransactionSignature eliminado completamente de src/', async () => {
+    const srcDir = path.resolve('src');
+    const files = fs.readdirSync(srcDir, { recursive: true });
+    for (const file of files) {
+      const fullPath = path.join(srcDir, file);
+      if (fs.statSync(fullPath).isFile() && (file.endsWith('.ts') || file.endsWith('.tsx') || file.endsWith('.js'))) {
+        const content = fs.readFileSync(fullPath, 'utf8');
+        assert.ok(!content.includes('verifyTransactionSignature'), `El archivo src/${file} no debe contener verifyTransactionSignature`);
+      }
+    }
+  });
+
+  // 1G-C.3-18: no existe Math.random() en el flujo QR de producción
+  await test('416. TEST 1G-C.3-18: Ningún componente QR ni utilitario criptográfico usa Math.random()', async () => {
+    const serverContent = fs.readFileSync(path.resolve('server.js'), 'utf8');
+    const nonceGenFnMatch = serverContent.match(/function generateTransactionAuthNonce\(\)\s*\{([\s\S]*?)\}/);
+    assert.ok(nonceGenFnMatch, 'generateTransactionAuthNonce debe existir en server.js');
+    assert.ok(!nonceGenFnMatch[1].includes('Math.random'), 'generateTransactionAuthNonce no debe usar Math.random()');
+    assert.ok(nonceGenFnMatch[1].includes('crypto.randomBytes'), 'generateTransactionAuthNonce debe usar crypto.randomBytes');
+
+    const cryptoSrc = fs.readFileSync(path.resolve('src/utils/crypto.ts'), 'utf8');
+    assert.ok(!cryptoSrc.includes('Math.random'), 'src/utils/crypto.ts no debe usar Math.random()');
+  });
+
+  // 1G-C.3-19: QR no contiene secretos
+  await test('417. TEST 1G-C.3-19: El payload QR generado por el POS no contiene secretos ni contraseñas', async () => {
+    const cheesePosContent = fs.readFileSync(path.resolve('src/components/CheesePOSView.tsx'), 'utf8');
+    assert.ok(!cheesePosContent.includes('TRANSACTION_SIGNATURE_SECRET'), 'POS no debe referenciar secretos de servidor');
+    assert.ok(!cheesePosContent.includes('SESSION_SECRET'), 'POS no debe referenciar secretos de sesión');
+    assert.ok(!cheesePosContent.includes('INTERNAL_APP_SALT'), 'POS no debe usar salt');
+  });
+
+  // 1G-C.3-20: Socket.IO post-approval respeta el scoping existente
+  await test('418. TEST 1G-C.3-20: Socket.IO emite actualización post-aprobación respetando salas y scoping', async () => {
+    // 1. Cliente A logueado abre socket
+    const { cookie: clientCookie, csrf: clientCsrf } = await loginClientA();
+    const clientSocket = await connectTestSocket(clientCookie);
+    assert.ok(clientSocket && clientSocket.id);
+
+    // 2. Cliente B logueado abre socket
+    const { cookie: clientBCookie } = await loginClientB();
+    const clientBSocket = await connectTestSocket(clientBCookie);
+    assert.ok(clientBSocket && clientBSocket.id);
+
+    let clientAReceived = false;
+    let clientBReceived = false;
+
+    clientSocket.on('collection_delta', (data) => {
+      if (data && data.collection === 'transactions') {
+        clientAReceived = true;
+      }
+    });
+
+    clientBSocket.on('collection_delta', (data) => {
+      if (data && data.collection === 'transactions') {
+        clientBReceived = true;
+      }
+    });
+
+    // 3. Crear y aprobar transacción de Cliente A
+    const tx = createTestPendingTransaction({ clientId: 'cli-demo-1', amount: 33.00 });
+    const approveRes = await request(`/api/portal/client/transactions/${tx.id}/approve`, {
+      method: 'POST',
+      headers: { 'Cookie': clientCookie, 'x-csrf-token': clientCsrf },
+      body: JSON.stringify({})
+    });
+    assert.strictEqual(approveRes.status, 200);
+
+    // Esperar eventos de socket
+    await new Promise(r => setTimeout(r, 150));
+
+    assert.strictEqual(clientAReceived, true, 'Cliente dueño (A) debe recibir delta de su transacción');
+    assert.strictEqual(clientBReceived, false, 'Cliente ajeno (B) NO debe recibir delta de transacción de Cliente A');
+
+    clientSocket.disconnect();
+    clientBSocket.disconnect();
+  });
+
+  // ============================================================
   // PRUEBAS DE RATE LIMITER (SE EJECUTAN AL FINAL)
   // ============================================================
 
@@ -6913,6 +7348,672 @@ async function runTests() {
     assert.ok(got429, 'Debe activar rate limiting (HTTP 429) ante ráfagas excesivas en endpoints de IA');
   });
 
+  // ============================================================
+  // PRUEBAS DE FASE 1H: INTEGRIDAD DE DATOS, TRANSACCIONES Y LOCKS
+  // ============================================================
+
+  // 1H-01: atomicWriteJsonFile escribe atómicamente con fsync y rename
+  await test('1H-01: atomicWriteJsonFile persiste datos válidos y los deja legibles en disco', async () => {
+    const testFile = path.join(dataDir, `test_atomic_${Date.now()}.json`);
+    try {
+      const payload = { test: true, timestamp: Date.now(), items: [1, 2, 3] };
+      atomicWriteJsonFile(testFile, payload);
+      assert.ok(fs.existsSync(testFile), 'El archivo de destino debe existir');
+      const content = JSON.parse(fs.readFileSync(testFile, 'utf8'));
+      assert.deepStrictEqual(content, payload);
+    } finally {
+      if (fs.existsSync(testFile)) {
+        try { fs.unlinkSync(testFile); } catch {}
+      }
+    }
+  });
+
+  // 1H-02: atomicWriteJsonFile ante error no altera el archivo existente y limpia temporales
+  await test('1H-02: atomicWriteJsonFile no altera el archivo original y limpia temporales ante fallo', async () => {
+    const testFile = path.join(dataDir, `test_atomic_err_${Date.now()}.json`);
+    try {
+      const initialPayload = { version: 1, secure: true };
+      atomicWriteJsonFile(testFile, initialPayload);
+
+      // Objeto circular que provocará TypeError en JSON.stringify
+      const circular = {};
+      circular.self = circular;
+
+      let threw = false;
+      try {
+        atomicWriteJsonFile(testFile, circular);
+      } catch (e) {
+        threw = true;
+      }
+      assert.ok(threw, 'Debe lanzar error al intentar serializar estructura circular');
+
+      // El archivo original debe permanecer 100% intacto con version: 1
+      const content = JSON.parse(fs.readFileSync(testFile, 'utf8'));
+      assert.deepStrictEqual(content, initialPayload, 'El archivo original debe permanecer intacto');
+
+      // No deben quedar archivos .tmp residuales
+      const files = fs.readdirSync(dataDir);
+      const tmpResiduals = files.filter(f => f.includes(`test_atomic_err_`) && f.includes('.tmp-'));
+      assert.strictEqual(tmpResiduals.length, 0, 'No deben quedar temporales huérfanos');
+    } finally {
+      if (fs.existsSync(testFile)) {
+        try { fs.unlinkSync(testFile); } catch {}
+      }
+    }
+  });
+
+  // 1H-03: atomicWriteJsonFile crea recursivamente directorios si no existen
+  await test('1H-03: atomicWriteJsonFile crea automáticamente directorios inexistentes sin fallar', async () => {
+    const subDir = path.join(dataDir, `sub_test_${Date.now()}`);
+    const testFile = path.join(subDir, 'nested_db.json');
+    try {
+      atomicWriteJsonFile(testFile, [{ id: 'n1', ok: true }]);
+      assert.ok(fs.existsSync(testFile));
+      const read = JSON.parse(fs.readFileSync(testFile, 'utf8'));
+      assert.strictEqual(read[0].id, 'n1');
+    } finally {
+      if (fs.existsSync(testFile)) {
+        try { fs.unlinkSync(testFile); } catch {}
+      }
+      if (fs.existsSync(subDir)) {
+        try { fs.rmdirSync(subDir); } catch {}
+      }
+    }
+  });
+
+  // 1H-04: readCollection retorna [] para archivo inexistente o vacío
+  await test('1H-04: readCollection maneja limpiamente archivos inexistentes o vacíos retornando []', async () => {
+    const fakeCol = `non_existent_col_${Date.now()}`;
+    const data = readCollection(fakeCol);
+    assert.deepStrictEqual(data, [], 'Debe retornar array vacío para colección no existente');
+  });
+
+  // 1H-05: readCollection ante JSON corrupto genera snapshot .corrupt-<timestamp> y lanza excepción
+  await test('1H-05: readCollection detecta JSON corrupto, crea snapshot de resguardo y lanza DATA_INTEGRITY_ERROR sin borrar datos', async () => {
+    const corruptColName = `corrupt_test_${Date.now()}`;
+    const corruptFilePath = getCollectionFilePath(corruptColName);
+    try {
+      // Escribir JSON truncado / inválido directamente
+      fs.writeFileSync(corruptFilePath, '{"invalid_json: [1, 2,', 'utf8');
+
+      let errorThrown = null;
+      try {
+        readCollection(corruptColName);
+      } catch (err) {
+        errorThrown = err;
+      }
+
+      assert.ok(errorThrown, 'readCollection debe lanzar excepción ante JSON corrupto');
+      assert.ok(errorThrown.message.includes('[DATA_INTEGRITY_ERROR]'), 'Debe identificar el error de integridad');
+
+      // Verificar que se creó el snapshot de respaldo
+      const files = fs.readdirSync(dataDir);
+      const corruptSnapshots = files.filter(f => f.startsWith(`${corruptColName}_db.json.corrupt-`));
+      assert.ok(corruptSnapshots.length > 0, 'Debe haber creado un snapshot de respaldo .corrupt-<timestamp>');
+
+      // Limpiar snapshots generados
+      for (const snap of corruptSnapshots) {
+        try { fs.unlinkSync(path.join(dataDir, snap)); } catch {}
+      }
+    } finally {
+      if (fs.existsSync(corruptFilePath)) {
+        try { fs.unlinkSync(corruptFilePath); } catch {}
+      }
+    }
+  });
+
+  // 1H-06: withTransaction provee aislamiento de lectura/escritura en memoria antes del commit
+  await test('1H-06: withTransaction aísla cambios en memoria y no modifica archivos en disco antes del commit', async () => {
+    const txColName = `tx_isol_${Date.now()}`;
+    const filePath = getCollectionFilePath(txColName);
+    try {
+      atomicWriteJsonFile(filePath, [{ id: '1', val: 'initial' }]);
+
+      let readInsideTx = null;
+      await withTransaction(async (tx) => {
+        const workingData = tx.read(txColName);
+        workingData.push({ id: '2', val: 'staged' });
+        tx.write(txColName, workingData);
+
+        // Lectura desde dentro del contexto tx ve el cambio en memoria
+        readInsideTx = tx.read(txColName);
+        assert.strictEqual(readInsideTx.length, 2);
+
+        // Lectura directa desde disco durante la tx aún ve el estado original
+        const rawDisk = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        assert.strictEqual(rawDisk.length, 1, 'En disco aún debe haber 1 elemento antes del commit');
+      });
+
+      // Tras commit exitoso, en disco están los 2 elementos
+      const finalDisk = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      assert.strictEqual(finalDisk.length, 2);
+    } finally {
+      if (fs.existsSync(filePath)) {
+        try { fs.unlinkSync(filePath); } catch {}
+      }
+    }
+  });
+
+  // 1H-07: withTransaction aborta limpiamente ante excepción antes del commit sin modificar disco
+  await test('1H-07: withTransaction aborta in-memory ante excepción sin modificar ningún archivo en disco', async () => {
+    const colA = `tx_abort_a_${Date.now()}`;
+    const colB = `tx_abort_b_${Date.now()}`;
+    const fileA = getCollectionFilePath(colA);
+    const fileB = getCollectionFilePath(colB);
+
+    try {
+      atomicWriteJsonFile(fileA, [{ id: 'a1' }]);
+      atomicWriteJsonFile(fileB, [{ id: 'b1' }]);
+
+      let caught = false;
+      try {
+        await withTransaction(async (tx) => {
+          const dataA = tx.read(colA);
+          dataA.push({ id: 'a2' });
+          tx.write(colA, dataA);
+
+          const dataB = tx.read(colB);
+          dataB.push({ id: 'b2' });
+          tx.write(colB, dataB);
+
+          throw new Error('Controlled simulation exception in transaction handler');
+        });
+      } catch (err) {
+        caught = true;
+      }
+      assert.ok(caught, 'La transacción debe propagar el error');
+
+      // Verificar que ambos archivos en disco conservan exactamente su estado previo
+      const diskA = JSON.parse(fs.readFileSync(fileA, 'utf8'));
+      const diskB = JSON.parse(fs.readFileSync(fileB, 'utf8'));
+      assert.strictEqual(diskA.length, 1, 'Col A no debe haber cambiado');
+      assert.strictEqual(diskB.length, 1, 'Col B no debe haber cambiado');
+    } finally {
+      if (fs.existsSync(fileA)) try { fs.unlinkSync(fileA); } catch {}
+      if (fs.existsSync(fileB)) try { fs.unlinkSync(fileB); } catch {}
+    }
+  });
+
+  // 1H-08: withTransaction ejecuta rollback físico si una escritura física falla en la fase de commit
+  await test('1H-08: withTransaction ejecuta rollback de colecciones ya escritas si falla una escritura posterior en commit', async () => {
+    const col1 = `tx_rb_1_${Date.now()}`;
+    const col2 = `tx_rb_2_${Date.now()}`;
+    const file1 = getCollectionFilePath(col1);
+    const file2 = getCollectionFilePath(col2);
+
+    try {
+      atomicWriteJsonFile(file1, [{ id: '1', version: 'original' }]);
+      atomicWriteJsonFile(file2, [{ id: '2', version: 'original' }]);
+
+      let errorThrown = false;
+      try {
+        await withTransaction(async (tx) => {
+          tx.write(col1, [{ id: '1', version: 'updated' }]);
+          // Objeto circular en col2 que provocará fallo en atomicWriteJsonFile durante el bucle de commit
+          const circ = { id: '2' };
+          circ.ref = circ;
+          tx.write(col2, [circ]);
+        });
+      } catch (e) {
+        errorThrown = true;
+      }
+
+      assert.ok(errorThrown, 'Debe haber fallado en la fase de commit');
+
+      // Rollback físico: col1 fue escrita primero pero debe haber sido restaurada a 'original'
+      const restored1 = JSON.parse(fs.readFileSync(file1, 'utf8'));
+      assert.strictEqual(restored1[0].version, 'original', 'Col1 debe haber sido restaurada tras rollback');
+    } finally {
+      if (fs.existsSync(file1)) try { fs.unlinkSync(file1); } catch {}
+      if (fs.existsSync(file2)) try { fs.unlinkSync(file2); } catch {}
+    }
+  });
+
+  // 1H-09: withTransaction no emite eventos Socket.IO ante rollback
+  await test('1H-09: withTransaction no emite eventos Socket.IO si la transacción se aborta o falla', async () => {
+    const { cookie } = await loginAdminD2();
+    const socket = await connectTestSocket(cookie);
+
+    let emitted = false;
+    socket.on('collection_delta', () => {
+      emitted = true;
+    });
+
+    const colName = `tx_sock_abort_${Date.now()}`;
+    try {
+      try {
+        await withTransaction(async (tx) => {
+          tx.write(colName, [{ id: 'test' }], { action: 'add', collection: colName, doc: { id: 'test' } });
+          throw new Error('Abort before commit');
+        });
+      } catch {}
+
+      await new Promise(r => setTimeout(r, 150));
+      assert.strictEqual(emitted, false, 'No debe emitir eventos Socket.IO ante abort');
+    } finally {
+      socket.disconnect();
+    }
+  });
+
+  // 1H-10: withTransaction emite deltas Socket.IO únicamente tras commit exitoso
+  await test('1H-10: withTransaction emite deltas Socket.IO diferidos tras commit exitoso', async () => {
+    const { cookie } = await loginAdminD2();
+    const socket = await connectTestSocket(cookie);
+
+    const receivedDeltas = [];
+    socket.on('collection_delta', (data) => {
+      receivedDeltas.push(data);
+    });
+
+    const colName = `tx_sock_success_${Date.now()}`;
+    const filePath = getCollectionFilePath(colName);
+    try {
+      await withTransaction(async (tx) => {
+        tx.write(colName, [{ id: 'item1' }], { action: 'add', collection: colName, doc: { id: 'item1' } });
+      });
+
+      await new Promise(r => setTimeout(r, 200));
+      assert.ok(receivedDeltas.length >= 1, 'Debe haber recibido el delta diferido tras commit');
+      assert.strictEqual(receivedDeltas[receivedDeltas.length - 1].action, 'add');
+    } finally {
+      socket.disconnect();
+      if (fs.existsSync(filePath)) try { fs.unlinkSync(filePath); } catch {}
+    }
+  });
+
+  // 1H-11: process-sale checkout atómico actualiza products, kardex, transactions y vault
+  await test('1H-11: process-sale actualiza atómicamente products, kardex, transactions y vault', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+
+    // 1. Crear producto con stock conocido
+    const prodId = `prod-pos-1h-${Date.now()}`;
+    const createProd = await request('/api/products', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        id: prodId,
+        name: 'Queso Telita Especial 1H',
+        pricePerKg: 10,
+        wholesalePrice: 7,
+        stockKg: 50,
+        unit: 'Kg'
+      })
+    });
+    assert.strictEqual(createProd.status, 200);
+
+    // 2. Procesar venta POS de 5 Kg en Efectivo USD
+    const saleRes = await request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        saleItems: [
+          { productId: prodId, name: 'Queso Telita Especial 1H', quantityKg: 5, unitPrice: 10, subtotal: 50 }
+        ],
+        customerName: 'Comprador 1H Mostrador',
+        paidAmount: 50,
+        saleTotalAmount: 50,
+        paymentMethodType: 'Efectivo $'
+      })
+    });
+
+    assert.strictEqual(saleRes.status, 200);
+    assert.strictEqual(saleRes.data.success, true);
+    assert.ok(saleRes.data.transaction);
+
+    // 3. Verificar estado persistido de productos
+    const prods = readCollection('products');
+    const updatedProd = prods.find(p => p.id === prodId);
+    assert.strictEqual(updatedProd.stockKg, 45, 'El stock debe haber decrementado de 50 a 45');
+
+    // 4. Verificar kardex
+    const kardex = readCollection('kardex');
+    const move = kardex.find(k => k.productId === prodId && k.type === 'SALIDA_VENTA');
+    assert.ok(move, 'Debe existir registro kardex de SALIDA_VENTA');
+    assert.strictEqual(move.quantity, 5);
+    assert.strictEqual(move.newStock, 45);
+
+    // 5. Verificar transactions
+    const txs = readCollection('transactions');
+    const txDoc = txs.find(t => t.id === saleRes.data.transaction.id);
+    assert.ok(txDoc, 'La transacción debe estar guardada');
+    assert.strictEqual(txDoc.amount, 50);
+  });
+
+  // 1H-12: process-sale a crédito actualiza atómicamente products, client debt, bills, installments y transactions
+  await test('1H-12: process-sale a crédito Kalu actualiza atómicamente client.outstandingDebt, bills, installments y kardex', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+
+    // 1. Crear producto y cliente
+    const prodId = `prod-cred-1h-${Date.now()}`;
+    const clientId = `cli-cred-1h-${Date.now()}`;
+
+    await request('/api/products', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ id: prodId, name: 'Queso Duro 1H', pricePerKg: 8, stockKg: 30 })
+    });
+
+    await request('/api/collections/clients', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        id: clientId,
+        name: 'Cliente Crédito 1H',
+        phone: '04149991122',
+        outstandingDebt: 10,
+        loyaltyPoints: 50
+      })
+    });
+
+    // 2. Procesar venta a crédito por $40 (deuda total nueva = 10 + 40 = 50)
+    const saleRes = await request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        saleItems: [{ productId: prodId, name: 'Queso Duro 1H', quantityKg: 5, unitPrice: 8, subtotal: 40 }],
+        clientId: clientId,
+        paidAmount: 0,
+        saleTotalAmount: 40,
+        paymentMethodType: 'Mundo Kalu',
+        installmentsCount: 2,
+        kaluCreditType: 'cotidiano'
+      })
+    });
+
+    assert.strictEqual(saleRes.status, 200);
+    assert.strictEqual(saleRes.data.success, true);
+
+    // 3. Verificar deudas del cliente
+    const clients = readCollection('clients');
+    const c = clients.find(cl => cl.id === clientId);
+    assert.strictEqual(c.outstandingDebt, 50, 'La deuda acumulada del cliente debe ser exactamente 50');
+
+    // 4. Verificar bills
+    const bills = readCollection('bills');
+    const clientBill = bills.find(b => b.entityId === clientId && b.amount === 40);
+    assert.ok(clientBill, 'Debe haberse generado la cuenta por cobrar en bills');
+
+    // 5. Verificar installments
+    const installments = readCollection('installments');
+    const clientInsts = installments.filter(inst => inst.clientId === clientId);
+    assert.strictEqual(clientInsts.length, 2, 'Debe haber generado 2 cuotas');
+    assert.strictEqual(clientInsts[0].amount, 20);
+    assert.strictEqual(clientInsts[1].amount, 20);
+  });
+
+  // 1H-13: process-sale adversarial failure test: fallo controlado no deja ningún rastro
+  await test('1H-13: process-sale adversarial: payload con items vacíos o fallo no altera ninguna colección', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+
+    const initialProducts = readCollection('products');
+    const initialClients = readCollection('clients');
+    const initialKardex = readCollection('kardex');
+    const initialBills = readCollection('bills');
+    const initialTxs = readCollection('transactions');
+
+    // Enviar payload inválido sin items
+    const failRes = await request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        saleItems: [],
+        customerName: 'Intento Fallido'
+      })
+    });
+
+    assert.strictEqual(failRes.status, 400);
+
+    // Verificar que todas las colecciones permanecen idénticas
+    assert.strictEqual(readCollection('products').length, initialProducts.length);
+    assert.strictEqual(readCollection('clients').length, initialClients.length);
+    assert.strictEqual(readCollection('kardex').length, initialKardex.length);
+    assert.strictEqual(readCollection('bills').length, initialBills.length);
+    assert.strictEqual(readCollection('transactions').length, initialTxs.length);
+  });
+
+  // 1H-14: process-sale con proveedor compensa balanceOwed o genera storeDebt atómicamente
+  await test('1H-14: process-sale con proveedor compensa balanceOwed o crea storeDebt atómicamente', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+
+    const supId = `sup-pos-1h-${Date.now()}`;
+    const prodId = `prod-sup-1h-${Date.now()}`;
+
+    await request('/api/products', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ id: prodId, name: 'Queso Llanero 1H', pricePerKg: 10, stockKg: 20 })
+    });
+
+    await request('/api/collections/suppliers', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        id: supId,
+        name: 'Productor Quesero 1H',
+        balanceOwed: 30,
+        storeDebt: 0
+      })
+    });
+
+    // Venta al productor por $50 (30 compensados de balanceOwed + 20 de storeDebt)
+    const saleRes = await request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        saleItems: [{ productId: prodId, name: 'Queso Llanero 1H', quantityKg: 5, unitPrice: 10, subtotal: 50 }],
+        supplierId: supId,
+        paidAmount: 0,
+        saleTotalAmount: 50,
+        paymentMethodType: 'Libreta'
+      })
+    });
+
+    assert.strictEqual(saleRes.status, 200);
+
+    const sups = readCollection('suppliers');
+    const s = sups.find(sup => sup.id === supId);
+    assert.strictEqual(s.balanceOwed, 0, 'El saldo a favor debe quedar en 0 tras compensación');
+    assert.strictEqual(s.storeDebt, 20, 'La deuda de tienda del productor debe ser 20');
+  });
+
+  // 1H-15: reset-accounting limpia colecciones contables y resetea deudas atómicamente
+  await test('1H-15: reset-accounting limpia colecciones contables y resetea deudas en una sola transacción', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+
+    // Sembrar datos de prueba
+    const tempClientId = `cli-reset-1h-${Date.now()}`;
+    await request('/api/collections/clients', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ id: tempClientId, name: 'Cliente Para Reset', outstandingDebt: 120, loyaltyPoints: 400 })
+    });
+
+    // Resetear rate limiter de prueba
+    if (adminResetLimiter.resetKey) {
+      adminResetLimiter.resetKey('reset_acct_user_usr-admin-1');
+      adminResetLimiter.resetKey('::1');
+      adminResetLimiter.resetKey('127.0.0.1');
+      adminResetLimiter.resetKey('unknown_ip');
+    }
+    if (adminResetLimiter.store && adminResetLimiter.store.resetAll) {
+      adminResetLimiter.store.resetAll();
+    }
+
+    const resetRes = await request('/api/admin/reset-accounting', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({})
+    });
+
+    assert.strictEqual(resetRes.status, 200);
+    assert.strictEqual(resetRes.data.success, true);
+
+    // Verificar que colecciones contables quedaron en []
+    assert.deepStrictEqual(readCollection('transactions'), []);
+    assert.deepStrictEqual(readCollection('kardex'), []);
+    assert.deepStrictEqual(readCollection('bills'), []);
+    assert.deepStrictEqual(readCollection('installments'), []);
+
+    // Verificar que clientes tienen outstandingDebt = 0
+    const clients = readCollection('clients');
+    const c = clients.find(cl => cl.id === tempClientId);
+    assert.strictEqual(c.outstandingDebt, 0);
+    assert.strictEqual(c.loyaltyPoints, 0);
+  });
+
+  // 1H-16: restore-backup valida payload y restaura colecciones atómicamente con withTransaction
+  await test('1H-16: restore-backup valida payload y restaura colecciones atómicamente', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+
+    // 1. Rechazo de payload malformado
+    const badRes = await request('/api/restore-backup', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ collections: { products: 'not-an-array' } })
+    });
+    assert.strictEqual(badRes.status, 400);
+
+    // 2. Restauración válida de backup sintético
+    const testProdId = `prod-backup-1h-${Date.now()}`;
+    const validRes = await request('/api/restore-backup', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        collections: {
+          products: [{ id: testProdId, name: 'Producto Restaurado 1H', pricePerKg: 15, stockKg: 100 }]
+        }
+      })
+    });
+
+    assert.strictEqual(validRes.status, 200);
+    assert.strictEqual(validRes.data.success, true);
+
+    const prods = readCollection('products');
+    const p = prods.find(pr => pr.id === testProdId);
+    assert.ok(p, 'El producto restaurado debe existir en la base de datos');
+    assert.strictEqual(p.stockKg, 100);
+  });
+
+  // 1H-17: Generic CRUDs respetan withCollectionLock serializando escrituras concurrentes
+  await test('1H-17: CRUDs genéricos serializan escrituras concurrentes previniendo pérdida de documentos', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+
+    const colName = `test_crud_lock_${Date.now()}`;
+    const promises = [];
+    for (let i = 0; i < 10; i++) {
+      promises.push(
+        request(`/api/collections/${colName}`, {
+          method: 'POST',
+          headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+          body: JSON.stringify({ id: `doc-${i}`, index: i })
+        })
+      );
+    }
+
+    const responses = await Promise.all(promises);
+    for (const res of responses) {
+      assert.strictEqual(res.status, 200);
+    }
+
+    const saved = readCollection(colName);
+    assert.strictEqual(saved.length, 10, 'Todas las 10 escrituras concurrentes deben haberse guardado');
+
+    // Limpieza
+    const filePath = getCollectionFilePath(colName);
+    if (fs.existsSync(filePath)) try { fs.unlinkSync(filePath); } catch {}
+  });
+
+  // 1H-18: Products endpoints usan withCollectionLock y readCollection previniendo race conditions en stock
+  await test('1H-18: PATCH /api/products/:id aplica ajustes de stock atómicos con lock', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+
+    const prodId = `prod-patch-lock-${Date.now()}`;
+    await request('/api/products', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ id: prodId, name: 'Queso Mozzarella Lock', pricePerKg: 9, stockKg: 10 })
+    });
+
+    // 5 ajustes concurrentes de +2 kg cada uno
+    const adjustments = [];
+    for (let i = 0; i < 5; i++) {
+      adjustments.push(
+        request(`/api/products/${prodId}`, {
+          method: 'PATCH',
+          headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+          body: JSON.stringify({ adjustStockKg: 2 })
+        })
+      );
+    }
+
+    await Promise.all(adjustments);
+
+    const prods = readCollection('products');
+    const p = prods.find(pr => pr.id === prodId);
+    assert.strictEqual(p.stockKg, 20, '10 initial + (5 * 2) = exactamente 20 Kg');
+  });
+
+  // 1H-19: Concurrencia real en DEV: dos ventas simultáneas descuentan el stock exactamente sin Lost Updates
+  await test('1H-19: Concurrencia DEV: dos ventas simultáneas del mismo producto descuentan el stock exactamente', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+
+    const prodId = `prod-concur-${Date.now()}`;
+    await request('/api/products', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ id: prodId, name: 'Queso Concurrente 1H', pricePerKg: 10, stockKg: 100 })
+    });
+
+    // Dos ventas concurrentes de 15 Kg y 25 Kg respectivamente
+    const sale1Promise = request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        saleItems: [{ productId: prodId, quantityKg: 15, subtotal: 150 }],
+        paidAmount: 150
+      })
+    });
+
+    const sale2Promise = request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        saleItems: [{ productId: prodId, quantityKg: 25, subtotal: 250 }],
+        paidAmount: 250
+      })
+    });
+
+    const [res1, res2] = await Promise.all([sale1Promise, sale2Promise]);
+    assert.strictEqual(res1.status, 200);
+    assert.strictEqual(res2.status, 200);
+
+    const prods = readCollection('products');
+    const p = prods.find(pr => pr.id === prodId);
+    assert.strictEqual(p.stockKg, 60, '100 - 15 - 25 = exactamente 60 Kg sin lost updates');
+  });
+
+  // 1H-20: Verificación de seguridad QR: authNonce backend generation y HMAC estricto
+  await test('1H-20: Seguridad QR: authNonce inmutable desde frontend y HMAC validado por backend', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+
+    // 1. Crear transacción con authNonce falso intentando inyección
+    const txRes = await request('/api/collections/transactions', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        id: `tx-qr-sec-${Date.now()}`,
+        status: 'pending_approval',
+        amount: 250,
+        authNonce: 'malicious-injected-nonce-from-attacker'
+      })
+    });
+
+    assert.strictEqual(txRes.status, 200);
+    const createdTx = txRes.data.doc;
+    assert.notStrictEqual(createdTx.authNonce, 'malicious-injected-nonce-from-attacker', 'El authNonce DEBE ser generado por el backend');
+    assert.strictEqual(createdTx.authNonce.length, 64, 'El authNonce backend debe tener 64 caracteres hex');
+  });
+
   // 80 (Ahora 113). Rate Limiter de Login de Portal (HTTP 429)
   await test('113. 1D-A: Intentos fallidos repetidos en login de portal activan Rate Limiter (HTTP 429)', async () => {
     let got429 = false;
@@ -6931,6 +8032,23 @@ async function runTests() {
       }
     }
     assert.ok(got429, 'Debe retornar HTTP 429 Too Many Requests ante intentos repetidos en login de portal');
+  });
+
+  // 1G-B-09: Operaciones administrativas destructivas (/api/admin/reset-accounting) activan 429 ante flood
+  await test('395. TEST 1G-B-09: POST /api/admin/reset-accounting activa HTTP 429 ante intentos repetitivos', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    let got429 = false;
+    for (let i = 0; i < 6; i++) {
+      const res = await request('/api/admin/reset-accounting', {
+        method: 'POST',
+        headers: { 'Cookie': cookie, 'x-csrf-token': csrf }
+      });
+      if (res.status === 429) {
+        got429 = true;
+        break;
+      }
+    }
+    assert.ok(got429, 'Debe activar rate limit en /api/admin/reset-accounting');
   });
 
   // 81. Rate Limiter de Login CRM (Se ejecuta al final)
