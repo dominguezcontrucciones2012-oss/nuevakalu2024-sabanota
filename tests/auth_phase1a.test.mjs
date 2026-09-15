@@ -39,7 +39,16 @@ import {
   isWebhookEventProcessed,
   markWebhookEventProcessed,
   extractWebhookEventIds,
-  resetProcessedWebhookEventsForTest
+  resetProcessedWebhookEventsForTest,
+  hashRateLimitKey,
+  loginAccountLimiter,
+  portalAccountLoginLimiter,
+  recoveryResetPinLimiter,
+  syncRateLimiter,
+  debtCheckLimiter,
+  adminBackupLimiter,
+  adminRestoreLimiter,
+  adminResetLimiter
 } from '../server.js';
 import crypto from 'crypto';
 
@@ -6704,6 +6713,179 @@ async function runTests() {
 
     // No debe ser rechazado con 413 (responderá 200 o 400 por formato, pero nunca 413)
     assert.notStrictEqual(res.status, 413, 'El endpoint global no debe verse limitado a 2MB');
+  });
+
+  // ============================================================
+  // FASE 1G-B: RATE LIMITING, ABUSE CONTROLS Y SUPERFICIE RESIDUAL (TESTS 1G-B-01 A 1G-B-12)
+  // ============================================================
+
+  // 1G-B-01: Neutralización de Webhooks Legacy con HTTP 410 Gone
+  await test('387. TEST 1G-B-01: GET /api/webhook y GET /webhook devuelven 410 Gone', async () => {
+    const res1 = await request('/api/webhook?hub.mode=subscribe&hub.challenge=123');
+    assert.strictEqual(res1.status, 410, 'GET /api/webhook debe retornar 410 Gone');
+    const res2 = await request('/webhook?hub.mode=subscribe&hub.challenge=123');
+    assert.strictEqual(res2.status, 410, 'GET /webhook debe retornar 410 Gone');
+  });
+
+  // 1G-B-02: Neutralización de POST /api/webhook y POST /webhook con HTTP 410 Gone
+  await test('388. TEST 1G-B-02: POST /api/webhook y POST /webhook devuelven 410 Gone sin procesar lógica antigua', async () => {
+    const dummyPayload = JSON.stringify({ object: 'whatsapp_business_account', entry: [] });
+    const res1 = await request('/api/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: dummyPayload
+    });
+    assert.strictEqual(res1.status, 410, 'POST /api/webhook debe retornar 410 Gone');
+    assert.ok(res1.data.error.includes('legacy'), 'Debe documentar deshabilitación');
+
+    const res2 = await request('/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: dummyPayload
+    });
+    assert.strictEqual(res2.status, 410, 'POST /webhook debe retornar 410 Gone');
+  });
+
+  // 1G-B-03: Rate limiter en POST /api/portal/auth/recovery/reset-pin ante intentos fallidos
+  await test('389. TEST 1G-B-03: POST /api/portal/auth/recovery/reset-pin está protegido por recoveryResetPinLimiter', async () => {
+    let got429 = false;
+    for (let i = 0; i < 55; i++) {
+      const res = await request('/api/portal/auth/recovery/reset-pin', {
+        method: 'POST',
+        body: JSON.stringify({
+          portalType: 'client',
+          identifier: '04141234567',
+          resetToken: `invalid_token_${i}`,
+          newPin: '654321'
+        })
+      });
+      if (res.status === 429) {
+        got429 = true;
+        break;
+      }
+    }
+    assert.ok(got429, 'Debe activar rate limit (HTTP 429) tras intentos fallidos de reseteo de PIN');
+  });
+
+  // 1G-B-04: /api/sync-rate responde normalmente a llamadas legítimas
+  await test('390. TEST 1G-B-04: GET /api/sync-rate funciona correctamente bajo flujo normal', async () => {
+    const res = await request('/api/sync-rate');
+    // Puede ser 200 o 500 si falla fetch externo en sandbox, pero no 429 en la primera llamada
+    assert.notStrictEqual(res.status, 429, 'No debe responder 429 en primer intento');
+  });
+
+  // 1G-B-05: /api/sync-rate activa 429 ante ráfagas excesivas
+  await test('391. TEST 1G-B-05: GET /api/sync-rate activa HTTP 429 ante ráfaga excesiva de peticiones', async () => {
+    let got429 = false;
+    for (let i = 0; i < 20; i++) {
+      const res = await request('/api/sync-rate');
+      if (res.status === 429) {
+        got429 = true;
+        break;
+      }
+    }
+    assert.ok(got429, 'Debe retornar HTTP 429 ante abuso de solicitudes a sync-rate');
+  });
+
+  // 1G-B-06: /api/run-debt-check requiere autenticación y responde normalmente a Admin/Staff
+  await test('392. TEST 1G-B-06: POST /api/run-debt-check ejecuta normalmente con sesión autenticada y CSRF', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/run-debt-check', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 1G-B-07: /api/run-debt-check activa 429 ante ejecuciones repetitivas excesivas
+  await test('393. TEST 1G-B-07: POST /api/run-debt-check activa HTTP 429 ante ráfaga de ejecuciones', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    let got429 = false;
+    for (let i = 0; i < 8; i++) {
+      const res = await request('/api/run-debt-check', {
+        method: 'POST',
+        headers: { 'Cookie': cookie, 'x-csrf-token': csrf }
+      });
+      if (res.status === 429) {
+        got429 = true;
+        break;
+      }
+    }
+    assert.ok(got429, 'Debe retornar HTTP 429 tras superar el umbral de revisiones de cobranzas');
+  });
+
+  // 1G-B-08: Operaciones administrativas críticas (/api/full-backup) activan 429 ante flood
+  await test('394. TEST 1G-B-08: GET /api/full-backup activa HTTP 429 ante ráfaga excesiva de solicitudes de respaldo', async () => {
+    const { cookie } = await loginAdminD2();
+    let got429 = false;
+    for (let i = 0; i < 15; i++) {
+      const res = await request('/api/full-backup', {
+        headers: { 'Cookie': cookie }
+      });
+      if (res.status === 429) {
+        got429 = true;
+        break;
+      }
+    }
+    assert.ok(got429, 'Debe activar rate limit administrativo en /api/full-backup');
+  });
+
+  // 1G-B-09: Operaciones administrativas destructivas (/api/admin/reset-accounting) activan 429 ante flood
+  await test('395. TEST 1G-B-09: POST /api/admin/reset-accounting activa HTTP 429 ante intentos repetitivos', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    let got429 = false;
+    for (let i = 0; i < 6; i++) {
+      const res = await request('/api/admin/reset-accounting', {
+        method: 'POST',
+        headers: { 'Cookie': cookie, 'x-csrf-token': csrf }
+      });
+      if (res.status === 429) {
+        got429 = true;
+        break;
+      }
+    }
+    assert.ok(got429, 'Debe activar rate limit en /api/admin/reset-accounting');
+  });
+
+  // 1G-B-10: Hash rate limit key normaliza correctamente identificadores
+  await test('396. TEST 1G-B-10: hashRateLimitKey normaliza espacios, mayúsculas y genera hash seguro sin exponer plaintext', async () => {
+    const key1 = hashRateLimitKey('crm_acct', ' Admin@Kalu.local ');
+    const key2 = hashRateLimitKey('crm_acct', 'admin@kalu.local');
+    assert.strictEqual(key1, key2, 'Mismo identificador con distintas mayúsculas o espacios debe coincidir');
+    assert.ok(!key1.includes('admin@kalu.local'), 'La clave no debe contener el texto plano de la cuenta');
+    assert.ok(key1.startsWith('crm_acct_'));
+  });
+
+  // 1G-B-11: Dos cuentas distintas generan claves de rate limit aisladas
+  await test('397. TEST 1G-B-11: Dos identificadores distintos generan claves de rate limit aisladas', async () => {
+    const keyA = hashRateLimitKey('portal_client', '04141111111');
+    const keyB = hashRateLimitKey('portal_client', '04142222222');
+    assert.notStrictEqual(keyA, keyB, 'Cuentas distintas deben tener claves separadas');
+  });
+
+  // 1G-B-12: Endpoints protegidos en 1G-A (POST /api/webhook/whatsapp) siguen operando normalmente
+  await test('398. TEST 1G-B-12: Webhook oficial /api/webhook/whatsapp mantiene verificación HMAC y SLA 200 sin regresión', async () => {
+    const testMsgId = `wamid.test_1gb_regression_${Date.now()}`;
+    const payload = JSON.stringify({
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: '1344089325449515',
+        changes: [{
+          value: { messages: [{ id: testMsgId, text: { body: 'hola' } }] },
+          field: 'messages'
+        }]
+      }]
+    });
+    const sig = 'sha256=' + crypto.createHmac('sha256', TEST_WHATSAPP_SECRET).update(Buffer.from(payload, 'utf8')).digest('hex');
+
+    const res = await request('/api/webhook/whatsapp', {
+      method: 'POST',
+      headers: { 'X-Hub-Signature-256': sig },
+      body: payload
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.status, 'EVENT_RECEIVED');
   });
 
   // ============================================================

@@ -15,7 +15,8 @@ const serverProc = spawn('node', ['server.js'], {
     ...process.env,
     NODE_ENV: 'development',
     PORT: '3001',
-    UPLOAD_DIR: './data-dev',
+    DATA_DIR: './data-dev',
+    UPLOAD_DIR: './data-dev/uploads',
     MAIL_MODE: 'development',
     WHATSAPP_MODE: 'simulation'
   },
@@ -24,7 +25,7 @@ const serverProc = spawn('node', ['server.js'], {
 
 async function main() {
   // Esperar a que el servidor inicialice
-  await new Promise(r => setTimeout(r, 2000));
+  await new Promise(r => setTimeout(r, 2500));
 
   let exitCode = 0;
   try {

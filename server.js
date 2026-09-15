@@ -613,7 +613,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// Rate limiter específico para Login (10 intentos fallidos por cada ventana de 15 minutos)
+// Rate limiter específico para Login por IP (10 intentos fallidos por cada ventana de 15 minutos)
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -622,6 +622,32 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
   message: {
     error: 'Demasiados intentos de autenticación fallidos. Por favor espere 15 minutos antes de intentar de nuevo.'
+  }
+});
+
+// Helper para generar claves de rate limit hash seguras a partir de identificadores normalizados
+function hashRateLimitKey(prefix, identifier) {
+  const normalized = String(identifier || '').trim().toLowerCase();
+  if (!normalized) return null;
+  const hash = crypto.createHash('sha256').update(normalized).digest('hex').substring(0, 32);
+  return `${prefix}_${hash}`;
+}
+
+// Rate limiter específico para Login por Identificador de Cuenta (Anti-Password Spraying: 10 fallos / 15 min por cuenta)
+const loginAccountLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { default: false },
+  keyGenerator: (req) => {
+    const { loginMode = 'admin', email, cedula } = req.body || {};
+    const rawId = loginMode === 'admin' ? (email || '') : (cedula || '');
+    return hashRateLimitKey('crm_acct', rawId) || (req.ip || 'unknown_ip');
+  },
+  message: {
+    error: 'Demasiados intentos de autenticación fallidos para esta cuenta. Por favor espere 15 minutos.'
   }
 });
 
@@ -704,7 +730,7 @@ function requireRole(...allowedRoles) {
   };
 }
 
-// Rate limiter específico para Login de Portal (10 intentos fallidos por cada 15 minutos)
+// Rate limiter específico para Login de Portal por IP (10 intentos fallidos por cada 15 minutos)
 const portalLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -713,6 +739,23 @@ const portalLoginLimiter = rateLimit({
   legacyHeaders: false,
   message: {
     error: 'Demasiados intentos de acceso al portal. Por favor espere 15 minutos.'
+  }
+});
+
+// Rate limiter específico para Login de Portal por Identificador (Anti-PIN Spraying: 10 fallos / 15 min por cuenta)
+const portalAccountLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { default: false },
+  keyGenerator: (req) => {
+    const { portalType = 'client', identifier = '' } = req.body || {};
+    return hashRateLimitKey(`portal_${portalType}`, identifier) || (req.ip || 'unknown_ip');
+  },
+  message: {
+    error: 'Demasiados intentos de acceso para esta cuenta de portal. Por favor espere 15 minutos.'
   }
 });
 
@@ -1023,6 +1066,17 @@ const recoveryVerifyLimiter = rateLimit({
   }
 });
 
+const recoveryResetPinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 50, // Máximo 50 intentos fallidos de reseteo de PIN por IP en 15 minutos (Previene flood y bcrypt abuse sin bloquear flujos normales)
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'Demasiados intentos de restablecimiento de PIN. Por favor espere 15 minutos.'
+  }
+});
+
 /**
  * Middleware requirePortalAuth (Fase 1D-A):
  * Verifica que exista una identidad portal activa en req.session.portalUser.
@@ -1175,8 +1229,8 @@ if (!isProd) {
   });
 }
 
-// 2. Login con verificación en backend y rotación de sesión
-app.post('/api/auth/login', loginLimiter, (req, res) => {
+// 2. Login con verificación en backend y rotación de sesión (Protegido por IP + Identificador de Cuenta)
+app.post('/api/auth/login', loginLimiter, loginAccountLimiter, (req, res) => {
   try {
     const { loginMode = 'admin', email, cedula, password, pin } = req.body;
 
@@ -1315,8 +1369,8 @@ app.post('/api/auth/logout', verifyCsrf, (req, res) => {
 // ENDPOINTS DE AUTENTICACIÓN SERVER-SIDE DE PORTALES (FASE 1D-A)
 // ============================================================
 
-// 1. Login de portal para cliente o productor
-app.post('/api/portal/auth/login', portalLoginLimiter, (req, res) => {
+// 1. Login de portal para cliente o productor (Protegido por IP + Identificador de Cuenta)
+app.post('/api/portal/auth/login', portalLoginLimiter, portalAccountLoginLimiter, (req, res) => {
   try {
     const { portalType, identifier, pin } = req.body || {};
 
@@ -1678,11 +1732,11 @@ app.post('/api/portal/auth/recovery/verify', recoveryVerifyLimiter, (req, res) =
 });
 
 /**
- * 6. Restablecer PIN con resetToken verificado
+ * 6. Restablecer PIN con resetToken verificado (Protegido por recoveryResetPinLimiter)
  * POST /api/portal/auth/recovery/reset-pin
  * Payload: { portalType: 'client'|'producer', identifier: string, resetToken: string, newPin: string }
  */
-app.post('/api/portal/auth/recovery/reset-pin', (req, res) => {
+app.post('/api/portal/auth/recovery/reset-pin', recoveryResetPinLimiter, (req, res) => {
   try {
     const { portalType, identifier, resetToken, newPin } = req.body || {};
 
@@ -2764,327 +2818,17 @@ async function dispatchRecoveryOtp({ channel = 'email', recipient, code, name })
 }
 
 
-// --- WHATSAPP BUSINESS WEBHOOK ENDPOINTS ---
-
-// 1. Verificación del Webhook por Meta (GET)
-app.get(['/api/webhook', '/webhook'], (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-
-  const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'kalu_sabanota_secure_token_2026';
-
-  console.log(`[WhatsApp Webhook GET] Verificando: mode=${mode}, token=${token}, challenge=${challenge}`);
-
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('[WhatsApp Webhook] ✅ Handshake de verificación completado con Meta.');
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    return res.status(200).send(String(challenge));
-  } else {
-    console.warn('[WhatsApp Webhook] ❌ Token o modo inválido:', { mode, token, expectedToken: VERIFY_TOKEN });
-    return res.status(403).send('Verification token mismatch');
-  }
-});
-
-// Funciones auxiliares del Robot Kalu para WhatsApp
-function normalizeWhatsAppPhone(phone) {
-  if (!phone) return '';
-  let cleaned = String(phone).replace(/\D/g, '');
-  if (cleaned.startsWith('0') && cleaned.length === 11) {
-    cleaned = '58' + cleaned.substring(1);
-  }
-  return cleaned;
-}
-
-function findClientByPhone(phone, clientsList) {
-  const normalizedInput = normalizeWhatsAppPhone(phone);
-  return clientsList.find(client => {
-    const clientPhone = normalizeWhatsAppPhone(client.phone || client.telefono || '');
-    return clientPhone === normalizedInput || clientPhone.endsWith(normalizedInput.slice(-10));
+// ============================================================
+// WEBHOOKS LEGACY NEUTRALIZADOS — FASE 1G-B
+// Los endpoints '/api/webhook' y '/webhook' antiguos carecían de verificación HMAC y control estricto.
+// Han sido neutralizados permanentemente para evitar cualquier bypass.
+// El único endpoint oficial de WhatsApp es: POST /api/webhook/whatsapp (Fase 1G-A).
+// ============================================================
+app.all(['/api/webhook', '/webhook'], (req, res) => {
+  console.warn(`[Legacy Webhook Neutralized] Petición ${req.method} a endpoint legacy '${req.originalUrl}' rechazada con 410 Gone.`);
+  return res.status(410).json({
+    error: 'Endpoint legacy de webhook deshabilitado y removido permanentemente. Utilice /api/webhook/whatsapp con firma HMAC-SHA256.'
   });
-}
-
-async function sendWhatsAppDirectMessage(toPhone, messageBody) {
-  const isDev = process.env.NODE_ENV === 'development' || process.env.WHATSAPP_MODE === 'simulation';
-  const token = process.env.WHATSAPP_API_KEY;
-  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || '1344089325449515';
-
-  if (isDev || !token || !phoneId) {
-    console.log(`[Robot Kalu WhatsApp (DEV/Simulado)] A: ${toPhone}\nMensaje:\n${messageBody}\n-----------------------------`);
-    return { success: true, simulated: true, recipient: toPhone };
-  }
-
-  try {
-    const response = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: toPhone,
-        type: 'text',
-        text: { body: messageBody }
-      })
-    });
-
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      console.error('[Robot Kalu WhatsApp] Error enviando respuesta:', data);
-    } else {
-      console.log(`[Robot Kalu WhatsApp] ✅ Respuesta despachada con éxito a ${toPhone}`);
-    }
-    return data;
-  } catch (error) {
-    console.error('[Robot Kalu WhatsApp] Excepción al enviar mensaje:', error.message);
-  }
-}
-
-async function downloadMetaMediaAsBase64(mediaId) {
-  const token = process.env.WHATSAPP_API_KEY;
-  if (!token || !mediaId) return null;
-
-  try {
-    // 1. Obtener la URL temporal de descarga del medio desde Meta Graph API
-    console.log(`[Robot Kalu Audio] 🔍 Consultando URL de descarga para mediaId: ${mediaId}...`);
-    const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
-    if (!mediaRes.ok) {
-      console.error('[Robot Kalu Audio] Error obteniendo URL de audio de Meta:', mediaRes.status);
-      return null;
-    }
-    const mediaData = await mediaRes.json();
-    const directUrl = mediaData.url;
-
-    if (!directUrl) {
-      console.error('[Robot Kalu Audio] No se encontró URL directa en la respuesta de Meta.');
-      return null;
-    }
-
-    // 2. Descargar el archivo binario del audio
-    console.log(`[Robot Kalu Audio] 📥 Descargando archivo binario de audio...`);
-    const fileRes = await fetch(directUrl, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
-    if (!fileRes.ok) {
-      console.error('[Robot Kalu Audio] Error descargando archivo de audio:', fileRes.status);
-      return null;
-    }
-
-    const arrayBuffer = await fileRes.arrayBuffer();
-    const base64Audio = Buffer.from(arrayBuffer).toString('base64');
-    console.log(`[Robot Kalu Audio] ✅ Audio descargado y convertido a Base64 (${base64Audio.length} caracteres).`);
-    return {
-      base64Audio,
-      mimeType: mediaData.mime_type || 'audio/ogg'
-    };
-  } catch (error) {
-    console.error('[Robot Kalu Audio] Excepción descargando audio:', error.message);
-    return null;
-  }
-}
-
-// --- CONTROL ANTI-SPAM Y ENFRIAMIENTO (BOT KALU) ---
-const userMessageHistory = new Map(); // phone -> Array de timestamps en ms
-const userCooldownMap = new Map();    // phone -> timestamp límite de enfriamiento
-
-function checkUserRateLimit(phone) {
-  const now = Date.now();
-  const TEN_MINUTES = 10 * 60 * 1000;
-
-  // 1. Si el usuario está en periodo de enfriamiento activo
-  if (userCooldownMap.has(phone)) {
-    const cooldownExpires = userCooldownMap.get(phone);
-    if (now < cooldownExpires) {
-      return { isRateLimited: true, inCooldown: true };
-    } else {
-      userCooldownMap.delete(phone);
-    }
-  }
-
-  // 2. Filtrar mensajes de los últimos 10 minutos
-  const timestamps = (userMessageHistory.get(phone) || []).filter(t => now - t < TEN_MINUTES);
-  timestamps.push(now);
-  userMessageHistory.set(phone, timestamps);
-
-  // 3. Activar enfriamiento si supera los 5 mensajes en menos de 10 minutos
-  if (timestamps.length > 5) {
-    const cooldownDuration = 15 * 60 * 1000; // 15 minutos de pausa
-    userCooldownMap.set(phone, now + cooldownDuration);
-    return { isRateLimited: true, justTriggered: true };
-  }
-
-  return { isRateLimited: false };
-}
-
-// 2. Recepción y Procesamiento de Mensajes Entrantes de WhatsApp (POST)
-app.post(['/api/webhook', '/webhook'], async (req, res) => {
-  console.log('\n====================================================');
-  console.log('⚡ [WEBHOOK ENTRANTE] Meta acaba de tocar POST /api/webhook a las', new Date().toISOString());
-  console.log('📦 PAYLOAD COMPLETO RECIBIDO:\n', JSON.stringify(req.body, null, 2));
-  console.log('====================================================\n');
-  try {
-    const body = req.body;
-
-    if (body.object === 'whatsapp_business_account' || body.object) {
-      // Responder 200 OK de inmediato a Meta para cumplir el SLA
-      res.status(200).send('EVENT_RECEIVED');
-
-      for (const entry of body.entry || []) {
-        for (const change of entry.changes || []) {
-          const value = change.value;
-          if (value && value.messages && value.messages.length > 0) {
-            const message = value.messages[0];
-            const fromPhone = message.from;
-            const messageType = message.type;
-
-            console.log(`[Robot Kalu] 📩 Mensaje recibido de ${fromPhone} (Tipo: ${messageType})`);
-
-            // 1. FILTRO DE MULTIMEDIA (IMÁGENES / CAPTURES / COMPROBANTES)
-            if (messageType === 'image' || messageType === 'document') {
-              const replyText = `¡Hola! 👋 Hemos recibido tu comprobante de pago con éxito.\n\nPara validar tu abono de forma inmediata en el sistema, por favor regístralo a través de tu portal oficial:\n👉 https://sistemakalu.com/?portal=cliente\n\nAllí podrás verificar tu saldo actualizado y el historial de tus facturas al instante.`;
-              await sendWhatsAppDirectMessage(fromPhone, replyText);
-              continue;
-            }
-
-            // 2. CONTROL ANTI-SPAM / ENFRIAMIENTO (MÁXIMO 5 MENSAJES EN 10 MINUTOS)
-            const rateLimit = checkUserRateLimit(fromPhone);
-            if (rateLimit.isRateLimited) {
-              if (rateLimit.justTriggered) {
-                const cooldownNotice = `Hemos detectado múltiples mensajes continuos. Por tu comodidad y para brindarte una atención personalizada, hemos transferido tu conversación a la bandeja de un asesor humano de nuestro equipo. En breve un operador se comunicará contigo. ¡Muchas gracias por tu paciencia!`;
-                await sendWhatsAppDirectMessage(fromPhone, cooldownNotice);
-              }
-              console.log(`[Robot Kalu Anti-Spam] Mensaje de ${fromPhone} silenciado por periodo de enfriamiento.`);
-              continue;
-            }
-
-            // 3. PROCESAMIENTO DE MENSAJES DE TEXTO Y NOTAS DE VOZ (AUDIO/OGG)
-            if (messageType === 'text' || messageType === 'audio' || messageType === 'voice') {
-              let userText = '';
-              let audioData = null;
-
-              if (messageType === 'text') {
-                userText = message.text?.body || '';
-              } else if (messageType === 'audio' || messageType === 'voice') {
-                const mediaId = message.audio?.id || message.voice?.id;
-                console.log(`[Robot Kalu] 🎙️ Procesando nota de voz recibida (Media ID: ${mediaId})...`);
-                audioData = await downloadMetaMediaAsBase64(mediaId);
-              }
-
-              // Cargar colecciones vivas del sistema
-              const clients = readCollection('clients');
-              const installments = readCollection('installments');
-              const products = readCollection('products');
-              const settings = readCollection('settings');
-              const generalSettings = Array.isArray(settings) ? (settings.find(s => s.id === 'general') || {}) : settings;
-
-              const client = findClientByPhone(fromPhone, clients);
-
-              if (!client) {
-                const unregisteredReply = `¡Hola! Gracias por escribirnos a Mundo Kalu. No logramos asociar tu número de teléfono con nuestros registros del sistema. Si ya eres cliente, por favor indícanos tu número de cédula o razón social para ayudarte.`;
-                await sendWhatsAppDirectMessage(fromPhone, unregisteredReply);
-                continue;
-              }
-
-              const clientId = client.id || client._id;
-              const pendingInstallments = installments.filter(inst => (String(inst.clientId) === String(clientId) || String(inst.client_id) === String(clientId)) && inst.status === 'pending');
-              const exchangeRate = Number(generalSettings.exchangeRate || generalSettings.bcvRate || 807.38);
-
-              // Contexto enriquecido para el motor de Inteligencia Artificial (Ventas Directas)
-              const systemPrompt = `
-              Eres Kalu, el asesor de ventas y asistente virtual inteligente oficial de Mundo Kalu Sabanota.
-              Estás atendiendo al cliente: ${client.name || client.nombre || 'Cliente'}.
-              Tasa oficial BCV actual: ${exchangeRate} VES/USD.
-
-              ESTADO DE CUENTA Y CUOTAS PENDIENTES DEL CLIENTE:
-              ${JSON.stringify(pendingInstallments, null, 2)}
-
-              INVENTARIO DISPONIBLE (PRECIOS Y EXISTENCIAS):
-              ${JSON.stringify(products.map(p => ({
-                id: p.id,
-                nombre: p.name,
-                categoria: p.category,
-                precio_usd: p.sellingPrice || p.price || 0,
-                stock: p.stockKg ?? p.stock ?? 0,
-                unidad: p.unit || 'Und'
-              })), null, 2)}
-
-              REGLAS ESTRICTAS DE VENTAS DIRECTAS Y ATENCIÓN (CERO RODEOS):
-              1. RESPUESTAS INMEDIATAS DE EXISTENCIA Y PRECIOS:
-                 - Si el cliente pregunta por la disponibilidad o precio de cualquier producto (ej: "embobinado cuatro cables", repuestos, víveres, quesos), responde DE INMEDIATO en tu primer mensaje confirmando la existencia y desglosando de una vez las opciones disponibles con sus precios respectivos.
-                 - Si existen variaciones o calidades (ej: calidad 100% cobre a $X vs opción económica a $Y, o diferentes marcas/presentaciones), preséntalas de forma clara, directa y con sus precios en USD y en Bolívares a la tasa BCV (${exchangeRate} Bs/$).
-                 - ESTÁ ESTRICTAMENTE PROHIBIDO dar rodeos, vueltas o hacer esperar al cliente antes de brindar los precios y la disponibilidad.
-
-              2. ENLACES A PORTALES OFICIALES:
-                 - Si el cliente pregunta cómo pagar, reportar un abono o ver sus recibos, envíale de inmediato el enlace oficial del Portal de Clientes:
-                   👉 https://sistemakalu.com/?portal=cliente
-                 - Si el usuario solicita acceso como productor, entrega de queso o área de arrime, envíale de inmediato el enlace oficial del Portal de Productores:
-                   👉 https://sistemakalu.com/?portal=productor
-
-              3. DEUDAS Y CONSULTAS DE SALDO:
-                 - Si consulta su saldo o cuotas pendientes, indica el monto exacto en USD y en Bolívares calculados a la tasa BCV (${exchangeRate} Bs/$).
-
-              4. TONO COMERCIAL Y CONCISO:
-                 - Responde de forma amable, directa, ejecutiva y enfocada en cerrar la venta o resolver la inquietud rápidamente. Usa formato WhatsApp legible con negritas (*) y viñetas limpias.
-              `;
-
-              let botReply = "Disculpa, en este momento estoy experimentando dificultades técnicas. Intenta nuevamente en unos minutos.";
-
-              if (ai) {
-                try {
-                  const parts = [{ text: systemPrompt }];
-
-                  if (audioData) {
-                    // Inyectar el audio en base64 para transcripción y respuesta multimodal directa con Gemini
-                    parts.push({
-                      inlineData: {
-                        mimeType: audioData.mimeType,
-                        data: audioData.base64Audio
-                      }
-                    });
-                    parts.push({ text: "Escucha la nota de voz del cliente arriba y responde a su consulta siguiendo las reglas estrictas de ventas directas." });
-                  } else {
-                    parts.push({ text: "Mensaje del cliente: " + userText });
-                  }
-
-                  let aiResponse = null;
-                  const modelsToTry = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
-                  for (const m of modelsToTry) {
-                    try {
-                      aiResponse = await ai.models.generateContent({
-                        model: m,
-                        contents: [{ role: 'user', parts }]
-                      });
-                      if (aiResponse && aiResponse.text) break;
-                    } catch (mErr) {
-                      console.warn(`[Robot Kalu AI] Reintentando con modelo alternativo tras fallo en ${m}...`);
-                    }
-                  }
-                  if (aiResponse && aiResponse.text) {
-                    botReply = aiResponse.text;
-                  }
-                } catch (aiErr) {
-                  console.error('[Robot Kalu AI] Error generando respuesta con Gemini:', aiErr.message);
-                }
-              }
-
-              await sendWhatsAppDirectMessage(fromPhone, botReply);
-            }
-          }
-        }
-      }
-      return;
-    }
-
-    res.sendStatus(404);
-  } catch (error) {
-    console.error('[Robot Kalu Webhook] Error en procesamiento:', error);
-    if (!res.headersSent) {
-      res.sendStatus(500);
-    }
-  }
 });
 
 // ============================================================
@@ -3106,6 +2850,83 @@ const aiRateLimiter = rateLimit({
   message: {
     success: false,
     error: 'Demasiadas solicitudes al servicio de Inteligencia Artificial. Por favor espere un momento.'
+  }
+});
+
+// Rate limiter específico para sincronización de tasa BCV (Prevención de flood / scraping externo: 15 req/min por IP)
+const syncRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'Demasiadas solicitudes de sincronización de tasa. Por favor espere un momento.'
+  }
+});
+
+// Rate limiter específico para revisión manual de cobranzas (Máximo 5 ejecuciones por cada 15 min por usuario autenticado/IP)
+const debtCheckLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { default: false },
+  keyGenerator: (req) => {
+    if (req.user?.id) return `debt_check_user_${req.user.id}`;
+    if (req.session?.userId) return `debt_check_session_${req.session.userId}`;
+    return req.ip || 'unknown_ip';
+  },
+  message: {
+    success: false,
+    error: 'Demasiadas solicitudes de revisión de cobranzas. Por favor espere 15 minutos.'
+  }
+});
+
+// Rate limiter específico para descarga de Backups completos (Máximo 10 descargas por cada 15 min por admin/IP)
+const adminBackupLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { default: false },
+  keyGenerator: (req) => {
+    if (req.user?.id) return `backup_user_${req.user.id}`;
+    return req.ip || 'unknown_ip';
+  },
+  message: {
+    error: 'Demasiadas solicitudes de respaldo generadas. Por favor espere 15 minutos.'
+  }
+});
+
+// Rate limiter específico para Restauración de Backup (Operación destructiva: Máximo 5 por cada 15 min por admin/IP)
+const adminRestoreLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { default: false },
+  keyGenerator: (req) => {
+    if (req.user?.id) return `restore_user_${req.user.id}`;
+    return req.ip || 'unknown_ip';
+  },
+  message: {
+    error: 'Demasiadas solicitudes de restauración de respaldo. Por favor espere 15 minutos.'
+  }
+});
+
+// Rate limiter específico para Restablecimiento Contable (Operación destructiva: Máximo 3 por cada 15 min por admin/IP)
+const adminResetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { default: false },
+  keyGenerator: (req) => {
+    if (req.user?.id) return `reset_acct_user_${req.user.id}`;
+    return req.ip || 'unknown_ip';
+  },
+  message: {
+    error: 'Demasiadas solicitudes de restablecimiento contable. Por favor espere 15 minutos.'
   }
 });
 
@@ -4155,7 +3976,8 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
   }
 });
 
-app.get('/api/sync-rate', async (req, res) => {
+// Endpoint para sincronización de tasa de cambio (Protegido por syncRateLimiter)
+app.get('/api/sync-rate', syncRateLimiter, async (req, res) => {
   try {
     let rate = 0;
 
@@ -4327,7 +4149,7 @@ app.delete('/api/collections/:name/:id', requireAuth, requireRole('admin'), veri
 
 // 6. Endpoint Administrativo Oficial para Restablecimiento Contable (Fase 1C)
 // Sustituye al peligroso DELETE /api/collections/:name de wipe genérico
-app.post('/api/admin/reset-accounting', requireAuth, requireRole('admin'), verifyCsrf, async (req, res) => {
+app.post('/api/admin/reset-accounting', requireAuth, requireRole('admin'), verifyCsrf, adminResetLimiter, async (req, res) => {
   try {
     const ACCOUNTING_COLLECTIONS = [
       'transactions',
@@ -4413,7 +4235,7 @@ const BACKUP_COLLECTIONS = [
 ];
 
 // Obtener respaldo completo de todas las colecciones existentes en JSON (Solo Admin)
-app.get('/api/full-backup', requireAuth, requireRole('admin'), (req, res) => {
+app.get('/api/full-backup', requireAuth, requireRole('admin'), adminBackupLimiter, (req, res) => {
   try {
     const backup = {
       version: '2.0',
@@ -4434,7 +4256,7 @@ app.get('/api/full-backup', requireAuth, requireRole('admin'), (req, res) => {
 });
 
 // Restaurar copia de seguridad completa atómicamente (Solo Admin + CSRF)
-app.post('/api/restore-backup', requireAuth, requireRole('admin'), verifyCsrf, (req, res) => {
+app.post('/api/restore-backup', requireAuth, requireRole('admin'), verifyCsrf, adminRestoreLimiter, (req, res) => {
   try {
     const { collections } = req.body;
     if (!collections || typeof collections !== 'object') {
@@ -4679,7 +4501,7 @@ async function checkOverdueInstallments() {
 }
 
 // Endpoint para disparar la revisión manualmente desde el CRM/Contador
-app.post('/api/run-debt-check', requireAuth, requireRole('admin', 'cajero', 'accountant'), verifyCsrf, async (req, res) => {
+app.post('/api/run-debt-check', requireAuth, requireRole('admin', 'cajero', 'accountant'), verifyCsrf, debtCheckLimiter, async (req, res) => {
   try {
     console.log('\n[Trigger Manual] Ejecutando revisión de cobranzas y mora solicitada vía API...');
     const result = await checkOverdueInstallments();
@@ -4852,5 +4674,14 @@ export {
   isWebhookEventProcessed,
   markWebhookEventProcessed,
   extractWebhookEventIds,
-  resetProcessedWebhookEventsForTest
+  resetProcessedWebhookEventsForTest,
+  hashRateLimitKey,
+  loginAccountLimiter,
+  portalAccountLoginLimiter,
+  recoveryResetPinLimiter,
+  syncRateLimiter,
+  debtCheckLimiter,
+  adminBackupLimiter,
+  adminRestoreLimiter,
+  adminResetLimiter
 };
