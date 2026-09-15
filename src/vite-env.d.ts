@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  readonly VITE_GEMINI_API_KEY: string
+  // Entorno seguro del cliente Vite - Cero secretos o API keys expuestas
 }
 
 interface ImportMeta {

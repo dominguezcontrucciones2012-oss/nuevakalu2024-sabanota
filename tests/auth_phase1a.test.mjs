@@ -4925,6 +4925,213 @@ async function runTests() {
   });
 
   // ============================================================
+  // PRUEBAS DE FASE 1E-C: ELIMINACIÓN DEFINITIVA DEL RASTRO GEMINI FRONTEND
+  // ============================================================
+
+  // 1E-C-01: VITE_GEMINI_API_KEY no existe como configuración frontend operativa
+  await test('262. TEST 1E-C-01: VITE_GEMINI_API_KEY no existe en src/vite-env.d.ts ni en .env.example', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const viteEnv = fs.readFileSync(path.resolve('src/vite-env.d.ts'), 'utf8');
+    assert.strictEqual(viteEnv.includes('VITE_GEMINI_API_KEY'), false, 'vite-env.d.ts no debe declarar VITE_GEMINI_API_KEY');
+
+    const envExample = fs.readFileSync(path.resolve('.env.example'), 'utf8');
+    assert.strictEqual(envExample.includes('VITE_GEMINI_API_KEY='), false, '.env.example no debe incluir VITE_GEMINI_API_KEY');
+  });
+
+  // 1E-C-02: Ningún archivo frontend utiliza import.meta.env.VITE_GEMINI_API_KEY
+  await test('263. TEST 1E-C-02: Ningún archivo en src/ contiene import.meta.env.VITE_GEMINI_API_KEY', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+
+    function searchFiles(dir) {
+      let files = [];
+      for (const item of fs.readdirSync(dir)) {
+        const full = path.join(dir, item);
+        if (fs.statSync(full).isDirectory()) {
+          files = files.concat(searchFiles(full));
+        } else if (/\.(ts|tsx|js|jsx)$/.test(item)) {
+          files.push(full);
+        }
+      }
+      return files;
+    }
+
+    const allSrcFiles = searchFiles(path.resolve('src'));
+    for (const f of allSrcFiles) {
+      const code = fs.readFileSync(f, 'utf8');
+      assert.strictEqual(code.includes('import.meta.env.VITE_GEMINI_API_KEY'), false, `${f} contiene import.meta.env.VITE_GEMINI_API_KEY`);
+    }
+  });
+
+  // 1E-C-03: Ningún archivo frontend utiliza window.__GEMINI_API_KEY__
+  await test('264. TEST 1E-C-03: Ningún archivo en src/ contiene window.__GEMINI_API_KEY__', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+
+    function searchFiles(dir) {
+      let files = [];
+      for (const item of fs.readdirSync(dir)) {
+        const full = path.join(dir, item);
+        if (fs.statSync(full).isDirectory()) {
+          files = files.concat(searchFiles(full));
+        } else if (/\.(ts|tsx|js|jsx)$/.test(item)) {
+          files.push(full);
+        }
+      }
+      return files;
+    }
+
+    const allSrcFiles = searchFiles(path.resolve('src'));
+    for (const f of allSrcFiles) {
+      const code = fs.readFileSync(f, 'utf8');
+      assert.strictEqual(code.includes('__GEMINI_API_KEY__'), false, `${f} contiene __GEMINI_API_KEY__`);
+    }
+  });
+
+  // 1E-C-04: Ningún archivo frontend utiliza process.env.GEMINI_API_KEY
+  await test('265. TEST 1E-C-04: Ningún archivo en src/ accede a process.env.GEMINI_API_KEY en runtime de navegador', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+
+    function searchFiles(dir) {
+      let files = [];
+      for (const item of fs.readdirSync(dir)) {
+        const full = path.join(dir, item);
+        if (fs.statSync(full).isDirectory()) {
+          files = files.concat(searchFiles(full));
+        } else if (/\.(ts|tsx|js|jsx)$/.test(item)) {
+          files.push(full);
+        }
+      }
+      return files;
+    }
+
+    const allSrcFiles = searchFiles(path.resolve('src'));
+    for (const f of allSrcFiles) {
+      const code = fs.readFileSync(f, 'utf8');
+      assert.strictEqual(code.includes('process.env.GEMINI_API_KEY'), false, `${f} contiene process.env.GEMINI_API_KEY`);
+    }
+  });
+
+  // 1E-C-05: Ningún archivo frontend hace llamadas directas a generativelanguage.googleapis.com
+  await test('266. TEST 1E-C-05: Cero llamadas a generativelanguage.googleapis.com en src/', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+
+    function searchFiles(dir) {
+      let files = [];
+      for (const item of fs.readdirSync(dir)) {
+        const full = path.join(dir, item);
+        if (fs.statSync(full).isDirectory()) {
+          files = files.concat(searchFiles(full));
+        } else if (/\.(ts|tsx|js|jsx)$/.test(item)) {
+          files.push(full);
+        }
+      }
+      return files;
+    }
+
+    const allSrcFiles = searchFiles(path.resolve('src'));
+    for (const f of allSrcFiles) {
+      const code = fs.readFileSync(f, 'utf8');
+      assert.strictEqual(code.includes('generativelanguage.googleapis.com'), false, `${f} contiene generativelanguage.googleapis.com`);
+    }
+  });
+
+  // 1E-C-06: Ningún archivo frontend importa @google/genai
+  await test('267. TEST 1E-C-06: Cero imports de @google/genai en src/', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+
+    function searchFiles(dir) {
+      let files = [];
+      for (const item of fs.readdirSync(dir)) {
+        const full = path.join(dir, item);
+        if (fs.statSync(full).isDirectory()) {
+          files = files.concat(searchFiles(full));
+        } else if (/\.(ts|tsx|js|jsx)$/.test(item)) {
+          files.push(full);
+        }
+      }
+      return files;
+    }
+
+    const allSrcFiles = searchFiles(path.resolve('src'));
+    for (const f of allSrcFiles) {
+      const code = fs.readFileSync(f, 'utf8');
+      assert.strictEqual(code.includes('@google/genai'), false, `${f} importa @google/genai`);
+    }
+  });
+
+  // 1E-C-07: Ningún archivo frontend utiliza GoogleGenAI ni GenerativeModel
+  await test('268. TEST 1E-C-07: Cero instancias de GoogleGenAI / GenerativeModel en src/', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+
+    function searchFiles(dir) {
+      let files = [];
+      for (const item of fs.readdirSync(dir)) {
+        const full = path.join(dir, item);
+        if (fs.statSync(full).isDirectory()) {
+          files = files.concat(searchFiles(full));
+        } else if (/\.(ts|tsx|js|jsx)$/.test(item)) {
+          files.push(full);
+        }
+      }
+      return files;
+    }
+
+    const allSrcFiles = searchFiles(path.resolve('src'));
+    for (const f of allSrcFiles) {
+      const code = fs.readFileSync(f, 'utf8');
+      assert.strictEqual(code.includes('GoogleGenAI'), false, `${f} contiene GoogleGenAI`);
+      assert.strictEqual(code.includes('GenerativeModel'), false, `${f} contiene GenerativeModel`);
+    }
+  });
+
+  // 1E-C-08: Los wrappers AI siguen apuntando a /api/ai/* exclusivamente
+  await test('269. TEST 1E-C-08: Wrappers gemini.ts, geminiInventoryAssistant.ts y ocrService.ts delegan exclusivamente en aiApi', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const geminiWrapper = fs.readFileSync(path.resolve('src/services/gemini.ts'), 'utf8');
+    const inventoryWrapper = fs.readFileSync(path.resolve('src/services/geminiInventoryAssistant.ts'), 'utf8');
+    const ocrWrapper = fs.readFileSync(path.resolve('src/services/ocrService.ts'), 'utf8');
+
+    assert.ok(geminiWrapper.includes("from './aiApi'"), 'gemini.ts debe importar de aiApi');
+    assert.ok(inventoryWrapper.includes("from './aiApi'"), 'geminiInventoryAssistant.ts debe importar de aiApi');
+    assert.ok(ocrWrapper.includes("from './aiApi'"), 'ocrService.ts debe importar de aiApi');
+  });
+
+  // 1E-C-09: El backend conserva process.env.GEMINI_API_KEY como frontera server-side
+  await test('270. TEST 1E-C-09: Backend server.js utiliza process.env.GEMINI_API_KEY para inicializar la IA', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const serverCode = fs.readFileSync(path.resolve('server.js'), 'utf8');
+    assert.ok(serverCode.includes('process.env.GEMINI_API_KEY'), 'server.js debe utilizar process.env.GEMINI_API_KEY');
+    assert.strictEqual(serverCode.includes('VITE_GEMINI_API_KEY'), false, 'server.js no debe depender de VITE_GEMINI_API_KEY');
+  });
+
+  // 1E-C-10: El bundle de producción dist/ no contiene VITE_GEMINI_API_KEY ni generativelanguage
+  await test('271. TEST 1E-C-10: Los archivos en dist/assets no contienen rastros de Google Gemini ni API keys', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const distAssets = path.resolve('dist/assets');
+
+    if (fs.existsSync(distAssets)) {
+      for (const file of fs.readdirSync(distAssets)) {
+        if (file.endsWith('.js')) {
+          const content = fs.readFileSync(path.join(distAssets, file), 'utf8');
+          assert.strictEqual(content.includes('generativelanguage.googleapis.com'), false, `${file} contiene generativelanguage`);
+          assert.strictEqual(content.includes('@google/genai'), false, `${file} contiene @google/genai`);
+          assert.strictEqual(content.includes('VITE_GEMINI_API_KEY'), false, `${file} contiene VITE_GEMINI_API_KEY`);
+          assert.strictEqual(content.includes('x-goog-api-key'), false, `${file} contiene x-goog-api-key`);
+        }
+      }
+    }
+  });
+
+  // ============================================================
   // PRUEBAS DE RATE LIMITER (SE EJECUTAN AL FINAL)
   // ============================================================
 
