@@ -88,10 +88,11 @@ app.use(session({
   }
 }));
 
-// Rate limiter específico para Login (10 intentos por cada ventana de 15 minutos)
+// Rate limiter específico para Login (10 intentos fallidos por cada ventana de 15 minutos)
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
+  skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -118,7 +119,68 @@ function verifyCredential(input, hash) {
 }
 
 // ============================================================
-// ENDPOINTS DE AUTENTICACIÓN SEGURA (FASE 1A)
+// MIDDLEWARES DE AUTORIZACIÓN SERVER-SIDE (RBAC) (FASE 1B)
+// ============================================================
+
+/**
+ * Middleware requireAuth:
+ * Verifica que exista una sesión activa en el servidor.
+ * Obtiene la identidad directamente de req.session (NUNCA de headers/body del cliente).
+ * Si no está autenticado, devuelve 401 Unauthorized.
+ */
+function requireAuth(req, res, next) {
+  if (!req.session || !req.session.userId) {
+    return res.status(401).json({ error: 'No autenticado' });
+  }
+
+  const users = readCollection('users');
+  const user = users.find(u => String(u.id) === String(req.session.userId));
+
+  if (!user || !user.active) {
+    req.session.destroy(() => {});
+    return res.status(401).json({ error: 'Sesión inválida o usuario inactivo' });
+  }
+
+  // Adjuntar la identidad sanitizada en req.user para los siguientes middlewares/handlers
+  req.user = {
+    id: user.id,
+    name: user.name,
+    role: user.role,
+    cedula: user.cedula,
+    initials: user.initials || (user.name ? user.name.slice(0, 2).toUpperCase() : 'US')
+  };
+
+  next();
+}
+
+/**
+ * Middleware requireRole(...allowedRoles):
+ * Valida que el rol del usuario autenticado coincida con alguno de los roles permitidos.
+ * Debe ejecutarse tras requireAuth.
+ * Si el usuario no tiene el rol permitido, devuelve 403 Forbidden.
+ */
+function requireRole(...allowedRoles) {
+  return (req, res, next) => {
+    if (!req.user || !req.user.role) {
+      return res.status(401).json({ error: 'Autenticación requerida' });
+    }
+
+    const userRole = String(req.user.role).toLowerCase();
+    const hasRole = allowedRoles.some(r => String(r).toLowerCase() === userRole);
+
+    if (!hasRole) {
+      return res.status(403).json({ 
+        error: 'Acceso denegado: permisos insuficientes para esta operación',
+        requiredRoles: allowedRoles
+      });
+    }
+
+    next();
+  };
+}
+
+// ============================================================
+// ENDPOINTS DE AUTENTICACIÓN SEGURA (FASE 1A / 1B)
 // ============================================================
 
 // 1. Obtener Token CSRF activo para el cliente
@@ -199,31 +261,40 @@ app.post('/api/auth/login', loginLimiter, (req, res) => {
   }
 });
 
-// 3. Obtener sesión activa del usuario autenticado
-app.get('/api/auth/me', (req, res) => {
-  if (!req.session || !req.session.userId) {
-    return res.status(401).json({ error: 'No autenticado' });
-  }
-
-  const users = readCollection('users');
-  const user = users.find(u => String(u.id) === String(req.session.userId));
-
-  if (!user || !user.active) {
-    req.session.destroy(() => {});
-    return res.status(401).json({ error: 'Sesión inválida o cuenta inactiva' });
-  }
-
-  const safeUser = {
-    id: user.id,
-    name: user.name,
-    role: user.role,
-    cedula: user.cedula,
-    initials: user.initials || (user.name ? user.name.slice(0, 2).toUpperCase() : 'US')
-  };
-
+// 3. Obtener sesión activa del usuario autenticado (Protegido por requireAuth)
+app.get('/api/auth/me', requireAuth, (req, res) => {
   res.json({
-    user: safeUser,
+    user: req.user,
     csrfToken: req.session.csrfToken
+  });
+});
+
+// --- ENDPOINTS DE PRUEBA Y VALIDACIÓN RBAC (FASE 1B) ---
+
+// Endpoint exclusivo para Administradores
+app.get('/api/rbac/admin-only', requireAuth, requireRole('admin'), (req, res) => {
+  res.json({
+    success: true,
+    message: 'Operación administrativa autorizada',
+    user: req.user
+  });
+});
+
+// Endpoint accesible por Administradores y Cajeros
+app.get('/api/rbac/cashier-allowed', requireAuth, requireRole('admin', 'cajero'), (req, res) => {
+  res.json({
+    success: true,
+    message: 'Operación de caja autorizada',
+    user: req.user
+  });
+});
+
+// Endpoint de prueba que demuestra que el body no puede sobreescribir el rol de sesión
+app.post('/api/rbac/role-change-test', requireAuth, (req, res) => {
+  res.json({
+    success: true,
+    effectiveRole: req.user.role,
+    user: req.user
   });
 });
 
@@ -1533,8 +1604,8 @@ const BACKUP_COLLECTIONS = [
   'pwa_payments'
 ];
 
-// Obtener respaldo completo de todas las colecciones existentes en JSON
-app.get('/api/full-backup', (req, res) => {
+// Obtener respaldo completo de todas las colecciones existentes en JSON (Solo Admin)
+app.get('/api/full-backup', requireAuth, requireRole('admin'), (req, res) => {
   try {
     const backup = {
       version: '2.0',
@@ -1554,8 +1625,8 @@ app.get('/api/full-backup', (req, res) => {
   }
 });
 
-// Restaurar copia de seguridad completa atómicamente
-app.post('/api/restore-backup', (req, res) => {
+// Restaurar copia de seguridad completa atómicamente (Solo Admin + CSRF)
+app.post('/api/restore-backup', requireAuth, requireRole('admin'), verifyCsrf, (req, res) => {
   try {
     const { collections } = req.body;
     if (!collections || typeof collections !== 'object') {
@@ -1570,7 +1641,7 @@ app.post('/api/restore-backup', (req, res) => {
       }
     }
 
-    console.log('[Sistema Kalu] ✅ Restauración completa de base de datos realizada con éxito:', restoredSummary);
+    console.log('[Sistema Kalu] ✅ Restauración completa de base de datos realizada con éxito por admin:', restoredSummary);
     io.emit('database_restored', { timestamp: new Date().toISOString(), summary: restoredSummary });
     
     // Emitir eventos para que todas las vistas reactivas se actualicen
@@ -1799,8 +1870,9 @@ async function checkOverdueInstallments() {
 }
 
 // Endpoint para disparar la revisión manualmente desde el CRM/Contador
-app.post('/api/run-debt-check', async (req, res) => {
+app.post('/api/run-debt-check', requireAuth, requireRole('admin', 'cajero', 'accountant'), verifyCsrf, async (req, res) => {
   try {
+    console.log('\n[Trigger Manual] Ejecutando revisión de cobranzas y mora solicitada vía API...');
     const result = await checkOverdueInstallments();
     res.json({ success: true, result });
   } catch (error) {

@@ -36,7 +36,7 @@ async function request(url, options = {}) {
 }
 
 async function runTests() {
-  console.log('🧪 Iniciando Suite de Pruebas Automatizadas — Fase 1A (20 Pruebas)\n');
+  console.log('🧪 Iniciando Suite de Pruebas Automatizadas — Fase 1A + Fase 1B: RBAC (36 Pruebas)\n');
   let passed = 0;
   let failed = 0;
 
@@ -327,8 +327,193 @@ async function runTests() {
     assert.strictEqual(res.status, 401, 'El servidor debe rechazar cualquier intento sin cookie válida');
   });
 
-  // 23. Rate Limiter de Login
-  await test('23. Intentos repetidos de login activan Rate Limiter (HTTP 429)', async () => {
+  // 23. Endpoint protegido sin sesión -> 401 Unauthorized
+  await test('23. RBAC: Endpoint administrativo sin sesión devuelve 401 Unauthorized', async () => {
+    const res = await request('/api/rbac/admin-only');
+    assert.strictEqual(res.status, 401, `Esperado 401, recibido ${res.status}`);
+    assert.strictEqual(res.data.error, 'No autenticado');
+  });
+
+  // 24. Endpoint protegido con sesión válida de Admin -> 200 OK
+  await test('24. RBAC: Admin accede exitosamente a endpoint administrativo (200 OK)', async () => {
+    // Re-autenticar como admin
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const cookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/rbac/admin-only', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.strictEqual(res.data.user.role, 'admin');
+  });
+
+  // 25. Endpoint exclusivo de Admin rechazado para rol Cajero -> 403 Forbidden
+  let freshCashierCookie = '';
+  await test('25. RBAC: Cajero intentando acceder a endpoint exclusivo de Admin recibe 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    freshCashierCookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/rbac/admin-only', {
+      headers: { 'Cookie': freshCashierCookie }
+    });
+    assert.strictEqual(res.status, 403, `Esperado 403, recibido ${res.status}`);
+    assert.strictEqual(res.data.error, 'Acceso denegado: permisos insuficientes para esta operación');
+  });
+
+  // 26. GET /api/full-backup rechazado para rol Cajero -> 403 Forbidden
+  await test('26. RBAC: Cajero no puede descargar /api/full-backup (403 Forbidden)', async () => {
+    const res = await request('/api/full-backup', {
+      headers: { 'Cookie': freshCashierCookie }
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 27. GET /api/full-backup permitido para rol Admin -> 200 OK
+  await test('27. RBAC: Admin puede descargar /api/full-backup (200 OK)', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const cookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/full-backup', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(res.data.collections, 'Debe contener objeto collections');
+  });
+
+  // 28. Endpoint de caja permitido para Cajero -> 200 OK
+  await test('28. RBAC: Cajero accede exitosamente a endpoint de caja autorizado (200 OK)', async () => {
+    const res = await request('/api/rbac/cashier-allowed', {
+      headers: { 'Cookie': freshCashierCookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.user.role, 'cajero');
+  });
+
+  // 29. Endpoint de caja rechazado para rol Productor -> 403 Forbidden
+  await test('29. RBAC: Productor intentando acceder a endpoint de caja recibe 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '87654321',
+        pin: '4321'
+      })
+    });
+    const producerCookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/rbac/cashier-allowed', {
+      headers: { 'Cookie': producerCookie }
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 30. Intento de elevar privilegio enviando role=admin en body -> Inmune
+  await test('30. RBAC: Manipular role=admin en body no eleva permisos en el servidor', async () => {
+    const res = await request('/api/rbac/role-change-test', {
+      method: 'POST',
+      headers: { 'Cookie': freshCashierCookie },
+      body: JSON.stringify({
+        role: 'admin',
+        userRole: 'admin',
+        isAdmin: true
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.effectiveRole, 'cajero', 'El servidor debe mantener el rol de sesión original');
+  });
+
+  // 31. Intento de elevar privilegio con headers falsos -> Inmune
+  await test('31. RBAC: Manipular headers (x-user-role, x-role) no eleva permisos', async () => {
+    const res = await request('/api/rbac/admin-only', {
+      headers: {
+        'Cookie': freshCashierCookie,
+        'x-user-role': 'admin',
+        'x-role': 'admin',
+        'x-authenticated-role': 'admin'
+      }
+    });
+    assert.strictEqual(res.status, 403, 'El servidor debe ignorar headers manipulados por el cliente');
+  });
+
+  // 32. Diferenciación estricta entre 401 (sin sesión) y 403 (rol insuficiente)
+  await test('32. RBAC: Códigos 401 y 403 permanecen estrictamente diferenciados', async () => {
+    const resNoAuth = await request('/api/rbac/admin-only');
+    const resForbidden = await request('/api/rbac/admin-only', {
+      headers: { 'Cookie': freshCashierCookie }
+    });
+    assert.strictEqual(resNoAuth.status, 401, 'Sin sesión debe ser 401');
+    assert.strictEqual(resForbidden.status, 403, 'Con sesión pero rol insuficiente debe ser 403');
+  });
+
+  // 33. Ninguna respuesta RBAC expone credenciales ni hashes
+  await test('33. RBAC: Ninguna respuesta expone password, pin, passwordHash ni pinHash', async () => {
+    const res = await request('/api/rbac/cashier-allowed', {
+      headers: { 'Cookie': freshCashierCookie }
+    });
+    assert.strictEqual(res.data.user.password, undefined);
+    assert.strictEqual(res.data.user.pin, undefined);
+    assert.strictEqual(res.data.user.passwordHash, undefined);
+    assert.strictEqual(res.data.user.pinHash, undefined);
+  });
+
+  // 34. Operación sensible /api/restore-backup rechazada para Cajero -> 403
+  await test('34. RBAC: POST /api/restore-backup rechazado para rol Cajero (403 Forbidden)', async () => {
+    const res = await request('/api/restore-backup', {
+      method: 'POST',
+      headers: { 'Cookie': freshCashierCookie },
+      body: JSON.stringify({ collections: {} })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 35. Operación sensible /api/restore-backup permitida para Admin con CSRF -> 200
+  await test('35. RBAC: POST /api/restore-backup permitido para Admin con token CSRF válido (200 OK)', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const cookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/restore-backup', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({
+        collections: {
+          daily_drafts: []
+        }
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 36. Rate Limiter de Login (Se ejecuta al final para no afectar otros tests de login)
+  await test('36. Intentos repetidos de login activan Rate Limiter (HTTP 429)', async () => {
     let got429 = false;
     for (let i = 0; i < 15; i++) {
       const res = await request('/api/auth/login', {
