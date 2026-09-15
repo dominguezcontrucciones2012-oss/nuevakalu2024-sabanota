@@ -2881,8 +2881,8 @@ async function runTests() {
     assert.strictEqual(meRes.data.user.role, 'admin');
   });
 
-  // 163. Legacy /api/send-recovery opera con limiter y modo simulación
-  await test('163. 1D-C.2: Legacy /api/send-recovery opera en simulación sin exponer secretos', async () => {
+  // 163. Legacy /api/send-recovery fue retirado definitivamente (404 Not Found)
+  await test('163. 1D-C.4: Legacy POST /api/send-recovery fue retirado definitivamente (404 Not Found)', async () => {
     const res = await request('/api/send-recovery', {
       method: 'POST',
       body: JSON.stringify({
@@ -2892,8 +2892,7 @@ async function runTests() {
         name: 'Cliente Test'
       })
     });
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.data.success, true);
+    assert.strictEqual(res.status, 404, 'Endpoint legacy /api/send-recovery debe retornar 404 Not Found');
   });
 
   // ============================================================

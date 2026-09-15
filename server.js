@@ -2018,29 +2018,6 @@ async function dispatchRecoveryOtp({ channel = 'email', recipient, code, name })
   }
 }
 
-// Endpoint Legacy de envío directo (se mantiene por compatibilidad temporal con ProfileTab y ProducerPortal antes de 1D-C.3)
-app.post('/api/send-recovery', recoveryRequestLimiter, async (req, res) => {
-  const { channel = 'email', email, phone, code, name } = req.body || {};
-
-  if (!code) {
-    return res.status(400).json({ error: 'Falta el código de recuperación' });
-  }
-
-  const recipient = channel === 'whatsapp' ? phone : email;
-  if (!recipient) {
-    return res.status(400).json({ error: channel === 'whatsapp' ? 'Falta el número de teléfono para WhatsApp' : 'Falta el correo electrónico' });
-  }
-
-  try {
-    const result = await dispatchRecoveryOtp({ channel, recipient, code, name });
-    if (!result.success && result.error && !result.simulated) {
-      return res.status(500).json({ error: 'Error despachando código', details: result.error });
-    }
-    return res.json(result);
-  } catch (err) {
-    return res.status(500).json({ error: 'Error procesando despacho de recuperación' });
-  }
-});
 
 // --- WHATSAPP BUSINESS WEBHOOK ENDPOINTS ---
 
