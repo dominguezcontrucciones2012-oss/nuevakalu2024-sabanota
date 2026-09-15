@@ -3,6 +3,17 @@
 // ============================================================
 import assert from 'assert';
 import http from 'http';
+import {
+  createRecoveryChallenge,
+  verifyRecoveryCode,
+  consumeResetToken,
+  invalidateRecoveryChallenge,
+  cleanupRecoveryStore,
+  recoveryChallengeStore,
+  recoveryResetTokenStore,
+  hashEphemeralSecret,
+  maskRecipient
+} from '../server.js';
 
 const BASE_URL = 'http://localhost:3001';
 
@@ -1757,6 +1768,1132 @@ async function runTests() {
     });
     assert.strictEqual(res.status, 200);
     assert.ok(Array.isArray(res.data));
+  });
+
+  // ============================================================
+  // PRUEBAS DE FASE 1D-C.1: RECOVERY CORE MODULE (SERVER-SIDE)
+  // ============================================================
+
+  // 114. OTP generado tiene exactamente 6 dígitos numéricos
+  await test('114. 1D-C.1: OTP generado tiene exactamente 6 dígitos numéricos', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-test-1',
+      targetName: 'Cliente Test',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    assert.ok(ch.otpForDelivery, 'Debe retornar otpForDelivery');
+    assert.strictEqual(ch.otpForDelivery.length, 6);
+    assert.ok(/^\d{6}$/.test(ch.otpForDelivery), 'OTP debe contener únicamente 6 dígitos numéricos');
+  });
+
+  // 115. OTP utiliza CSPRNG y es pseudoaleatorio entre 100000 y 999999
+  await test('115. 1D-C.1: OTP utiliza CSPRNG dentro del rango 100000-999999', async () => {
+    const otps = new Set();
+    for (let i = 0; i < 20; i++) {
+      const ch = createRecoveryChallenge({
+        portalType: 'client',
+        targetId: `cli-test-${i}`,
+        targetName: 'Cliente Test',
+        channel: 'email',
+        recipient: 'test@kalu.local'
+      });
+      const num = parseInt(ch.otpForDelivery, 10);
+      assert.ok(num >= 100000 && num <= 999999);
+      otps.add(ch.otpForDelivery);
+    }
+    assert.ok(otps.size >= 18, 'Los códigos OTP deben tener alta entropía y no repetirse en ráfaga');
+  });
+
+  // 116. Challenge queda vinculado a targetId y portalType
+  await test('116. 1D-C.1: Challenge queda vinculado a targetId y portalType', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Cliente Demo Comercial S.A.',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const stored = recoveryChallengeStore.get(ch.challengeId);
+    assert.ok(stored, 'Challenge debe existir en recoveryChallengeStore');
+    assert.strictEqual(stored.targetId, 'cli-demo-1');
+    assert.strictEqual(stored.portalType, 'client');
+    assert.strictEqual(stored.targetName, 'Cliente Demo Comercial S.A.');
+  });
+
+  // 117. OTP plaintext NO queda almacenado en el store
+  await test('117. 1D-C.1: OTP plaintext NUNCA queda almacenado en el challenge store', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'producer',
+      targetId: 'sup-demo-1',
+      targetName: 'Hacienda El Roble',
+      channel: 'whatsapp',
+      recipient: '04125550101'
+    });
+    const stored = recoveryChallengeStore.get(ch.challengeId);
+    assert.strictEqual(stored.otp, undefined);
+    assert.strictEqual(stored.code, undefined);
+    assert.strictEqual(stored.otpForDelivery, undefined);
+    assert.ok(stored.codeHash && stored.codeHash.length === 64, 'Solo debe almacenar el SHA-256 HMAC del OTP');
+    assert.notStrictEqual(stored.codeHash, ch.otpForDelivery);
+  });
+
+  // 118. Enmascaramiento de destinatarios protege privacidad
+  await test('118. 1D-C.1: Helper de enmascaramiento protege teléfono y correo', async () => {
+    assert.strictEqual(maskRecipient('whatsapp', '04141234567'), '+58***4567');
+    assert.strictEqual(maskRecipient('email', 'usuario.demo@sistemakalu.com'), 'us***@sistemakalu.com');
+  });
+
+  // 119. OTP correcto verifica exitosamente
+  await test('119. 1D-C.1: OTP correcto verifica exitosamente', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-verify-1',
+      targetName: 'Cliente Verify',
+      channel: 'whatsapp',
+      recipient: '04141112233'
+    });
+    const res = verifyRecoveryCode({
+      challengeId: ch.challengeId,
+      portalType: 'client',
+      targetId: 'cli-verify-1',
+      code: ch.otpForDelivery
+    });
+    assert.strictEqual(res.success, true);
+    assert.ok(res.resetToken && res.resetToken.length >= 32);
+  });
+
+  // 120. OTP incorrecto falla y descuenta intentos
+  await test('120. 1D-C.1: OTP incorrecto falla y descuenta intentos', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-fail-1',
+      targetName: 'Cliente Fail',
+      channel: 'whatsapp',
+      recipient: '04141112233'
+    });
+    const res = verifyRecoveryCode({
+      challengeId: ch.challengeId,
+      portalType: 'client',
+      targetId: 'cli-fail-1',
+      code: '000000'
+    });
+    assert.strictEqual(res.success, false);
+    assert.strictEqual(res.code, 'INVALID_CODE');
+    assert.strictEqual(res.attemptsRemaining, 2);
+  });
+
+  // 121. Tercer fallo consecutivo invalida permanentemente el challenge
+  await test('121. 1D-C.1: Tercer fallo consecutivo invalida el challenge', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-lock-1',
+      targetName: 'Cliente Lock',
+      channel: 'whatsapp',
+      recipient: '04141112233'
+    });
+    verifyRecoveryCode({ challengeId: ch.challengeId, portalType: 'client', targetId: 'cli-lock-1', code: '111111' });
+    verifyRecoveryCode({ challengeId: ch.challengeId, portalType: 'client', targetId: 'cli-lock-1', code: '222222' });
+    const thirdTry = verifyRecoveryCode({ challengeId: ch.challengeId, portalType: 'client', targetId: 'cli-lock-1', code: '333333' });
+    assert.strictEqual(thirdTry.success, false);
+    assert.strictEqual(thirdTry.code, 'LOCKED');
+
+    // Intento posterior con código real debe fallar por estar invalidado
+    const tryWithReal = verifyRecoveryCode({ challengeId: ch.challengeId, portalType: 'client', targetId: 'cli-lock-1', code: ch.otpForDelivery });
+    assert.strictEqual(tryWithReal.success, false);
+  });
+
+  // 122. OTP expirado falla
+  await test('122. 1D-C.1: OTP expirado (>10 min) es rechazado', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-exp-1',
+      targetName: 'Cliente Expire',
+      channel: 'email',
+      recipient: 'exp@kalu.local'
+    });
+    // Forzar expiración simulada en store
+    const stored = recoveryChallengeStore.get(ch.challengeId);
+    stored.expiresAt = Date.now() - 1000;
+
+    const res = verifyRecoveryCode({
+      challengeId: ch.challengeId,
+      portalType: 'client',
+      targetId: 'cli-exp-1',
+      code: ch.otpForDelivery
+    });
+    assert.strictEqual(res.success, false);
+    assert.strictEqual(res.code, 'EXPIRED');
+  });
+
+  // 123. Single-use: OTP verificado no puede volver a utilizarse (Anti-Replay)
+  await test('123. 1D-C.1: Single-use: OTP verificado no puede volver a utilizarse (Anti-Replay)', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-replay-1',
+      targetName: 'Cliente Replay',
+      channel: 'whatsapp',
+      recipient: '04149998877'
+    });
+    const firstVerify = verifyRecoveryCode({
+      challengeId: ch.challengeId,
+      portalType: 'client',
+      targetId: 'cli-replay-1',
+      code: ch.otpForDelivery
+    });
+    assert.strictEqual(firstVerify.success, true);
+
+    const secondVerify = verifyRecoveryCode({
+      challengeId: ch.challengeId,
+      portalType: 'client',
+      targetId: 'cli-replay-1',
+      code: ch.otpForDelivery
+    });
+    assert.strictEqual(secondVerify.success, false);
+  });
+
+  // 124. Reset token se genera tras verificación exitosa con TTL de 5 minutos
+  await test('124. 1D-C.1: Reset token tiene TTL de 5 minutos y binding de identidad', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-token-1',
+      targetName: 'Cliente Token',
+      channel: 'whatsapp',
+      recipient: '04149998877'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: ch.challengeId,
+      portalType: 'client',
+      targetId: 'cli-token-1',
+      code: ch.otpForDelivery
+    });
+    assert.strictEqual(verRes.success, true);
+    assert.ok(verRes.resetToken);
+    assert.ok(verRes.expiresAt > Date.now());
+    assert.ok(verRes.expiresAt <= Date.now() + 5 * 60 * 1000 + 1000);
+  });
+
+  // 125. consumeResetToken consume exitosamente el token para la identidad correcta
+  await test('125. 1D-C.1: consumeResetToken consume exitosamente el token para la identidad correcta', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-consume-1',
+      targetName: 'Cliente Consume',
+      channel: 'whatsapp',
+      recipient: '04149998877'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: ch.challengeId,
+      portalType: 'client',
+      targetId: 'cli-consume-1',
+      code: ch.otpForDelivery
+    });
+    const consumeRes = consumeResetToken({
+      resetToken: verRes.resetToken,
+      portalType: 'client',
+      targetId: 'cli-consume-1'
+    });
+    assert.strictEqual(consumeRes.success, true);
+    assert.strictEqual(consumeRes.targetId, 'cli-consume-1');
+  });
+
+  // 126. Reset token no puede reutilizarse (Single-use reset token)
+  await test('126. 1D-C.1: Reset token no puede reutilizarse (Single-use reset token)', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-reuse-1',
+      targetName: 'Cliente Reuse',
+      channel: 'whatsapp',
+      recipient: '04149998877'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: ch.challengeId,
+      portalType: 'client',
+      targetId: 'cli-reuse-1',
+      code: ch.otpForDelivery
+    });
+    const firstConsume = consumeResetToken({
+      resetToken: verRes.resetToken,
+      portalType: 'client',
+      targetId: 'cli-reuse-1'
+    });
+    assert.strictEqual(firstConsume.success, true);
+
+    const secondConsume = consumeResetToken({
+      resetToken: verRes.resetToken,
+      portalType: 'client',
+      targetId: 'cli-reuse-1'
+    });
+    assert.strictEqual(secondConsume.success, false);
+  });
+
+  // 127. Reset token no puede ser consumido por otro portalType u otro targetId
+  await test('127. 1D-C.1: Reset token rechaza discrepancia de identidad o tipo de portal', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-mismatch-1',
+      targetName: 'Cliente Mismatch',
+      channel: 'whatsapp',
+      recipient: '04149998877'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: ch.challengeId,
+      portalType: 'client',
+      targetId: 'cli-mismatch-1',
+      code: ch.otpForDelivery
+    });
+
+    // Intento 1: Consumir con otro targetId
+    const badTarget = consumeResetToken({
+      resetToken: verRes.resetToken,
+      portalType: 'client',
+      targetId: 'cli-otro-target'
+    });
+    assert.strictEqual(badTarget.success, false);
+    assert.strictEqual(badTarget.code, 'IDENTITY_MISMATCH');
+
+    // Intento 2: Consumir con otro portalType (producer)
+    const badType = consumeResetToken({
+      resetToken: verRes.resetToken,
+      portalType: 'producer',
+      targetId: 'cli-mismatch-1'
+    });
+    assert.strictEqual(badType.success, false);
+    assert.strictEqual(badType.code, 'IDENTITY_MISMATCH');
+  });
+
+  // 128. Challenge de productor funciona de forma aislada y simétrica
+  await test('128. 1D-C.1: Challenge de productor opera de forma aislada e independiente', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'producer',
+      targetId: 'sup-demo-1',
+      targetName: 'Hacienda El Roble',
+      channel: 'whatsapp',
+      recipient: '04125550101'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: ch.challengeId,
+      portalType: 'producer',
+      targetId: 'sup-demo-1',
+      code: ch.otpForDelivery
+    });
+    assert.strictEqual(verRes.success, true);
+    assert.strictEqual(verRes.portalType, 'producer');
+
+    const consRes = consumeResetToken({
+      resetToken: verRes.resetToken,
+      portalType: 'producer',
+      targetId: 'sup-demo-1'
+    });
+    assert.strictEqual(consRes.success, true);
+  });
+
+  // 129. invalidateRecoveryChallenge cancela explícitamente un challenge
+  await test('129. 1D-C.1: invalidateRecoveryChallenge cancela explícitamente un challenge', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-inval-1',
+      targetName: 'Cliente Inval',
+      channel: 'email',
+      recipient: 'inval@kalu.local'
+    });
+    const didCancel = invalidateRecoveryChallenge(ch.challengeId);
+    assert.strictEqual(didCancel, true);
+
+    const verRes = verifyRecoveryCode({
+      challengeId: ch.challengeId,
+      portalType: 'client',
+      targetId: 'cli-inval-1',
+      code: ch.otpForDelivery
+    });
+    assert.strictEqual(verRes.success, false);
+    assert.strictEqual(verRes.code, 'CHALLENGE_NOT_FOUND');
+  });
+
+  // 130. cleanupRecoveryStore elimina retos y tokens expirados o consumidos
+  await test('130. 1D-C.1: cleanupRecoveryStore purga retos y tokens caducados de memoria', async () => {
+    const ch = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-clean-1',
+      targetName: 'Cliente Clean',
+      channel: 'email',
+      recipient: 'clean@kalu.local'
+    });
+    const stored = recoveryChallengeStore.get(ch.challengeId);
+    stored.expiresAt = Date.now() - 5000;
+
+    cleanupRecoveryStore();
+    assert.strictEqual(recoveryChallengeStore.has(ch.challengeId), false);
+  });
+
+  // ============================================================
+  // PRUEBAS DE ENDPOINTS DE RECUPERACIÓN — FASE 1D-C.2 (TESTS 131-169)
+  // ============================================================
+
+  // --- RECOVERY REQUEST ---
+  // 131. Request con cliente válido genera reto y despacha OTP
+  await test('131. 1D-C.2: POST /api/portal/auth/recovery/request con cliente válido genera challenge', async () => {
+    const res = await request('/api/portal/auth/recovery/request', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        channel: 'whatsapp'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.ok(res.data.challengeId);
+    assert.ok(res.data.recipientMasked);
+    assert.strictEqual(res.data.otp, undefined);
+    assert.strictEqual(res.data.otpForDelivery, undefined);
+  });
+
+  // 132. Request con productor válido por email
+  await test('132. 1D-C.2: POST /api/portal/auth/recovery/request con productor válido genera challenge', async () => {
+    const res = await request('/api/portal/auth/recovery/request', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: 'elroble.demo@example.com',
+        channel: 'email'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.ok(res.data.challengeId);
+  });
+
+  // 133. Anti-enumeration: usuario inexistente devuelve 200 OK con mensaje idéntico
+  await test('133. 1D-C.2: Anti-enumeration: usuario inexistente devuelve respuesta exitosa genérica', async () => {
+    const res = await request('/api/portal/auth/recovery/request', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04149999999',
+        channel: 'whatsapp'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.strictEqual(res.data.challengeId, undefined);
+  });
+
+  // 134. portalType inválido devuelve 400 Bad Request
+  await test('134. 1D-C.2: portalType inválido en request devuelve 400 Bad Request', async () => {
+    const res = await request('/api/portal/auth/recovery/request', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'admin',
+        identifier: '04141234567',
+        channel: 'whatsapp'
+      })
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  // 135. channel inválido devuelve 400 Bad Request
+  await test('135. 1D-C.2: channel inválido en request devuelve 400 Bad Request', async () => {
+    const res = await request('/api/portal/auth/recovery/request', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        channel: 'telegram'
+      })
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  // 136. Phone arbitrario enviado en body NO es aceptado para redirección
+  await test('136. 1D-C.2: Phone arbitrario en body es ignorado (destinatario se resuelve server-side)', async () => {
+    const res = await request('/api/portal/auth/recovery/request', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        channel: 'whatsapp',
+        phone: '04140000000', // Intento de secuestro
+        recipient: '04140000000'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    const challenge = recoveryChallengeStore.get(res.data.challengeId);
+    assert.ok(challenge);
+    assert.notStrictEqual(challenge.recipient, '04140000000');
+    assert.strictEqual(challenge.recipient, '04141234567');
+  });
+
+  // 137. Email arbitrario enviado en body NO es aceptado para redirección
+  await test('137. 1D-C.2: Email arbitrario en body es ignorado (destinatario se resuelve server-side)', async () => {
+    const res = await request('/api/portal/auth/recovery/request', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: 'elroble.demo@example.com',
+        channel: 'email',
+        email: 'hacker@evil.com'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    const challenge = recoveryChallengeStore.get(res.data.challengeId);
+    assert.ok(challenge);
+    assert.strictEqual(challenge.recipient, 'elroble.demo@example.com');
+  });
+
+  // 138. targetId arbitrario enviado en body NO es aceptado
+  await test('138. 1D-C.2: targetId arbitrario en body es ignorado (se resuelve por identifier)', async () => {
+    const res = await request('/api/portal/auth/recovery/request', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        channel: 'whatsapp',
+        targetId: 'cli-demo-2'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    const challenge = recoveryChallengeStore.get(res.data.challengeId);
+    assert.strictEqual(challenge.targetId, 'cli-demo-1');
+  });
+
+  // 139. OTP NUNCA se expone en la respuesta HTTP
+  await test('139. 1D-C.2: OTP plaintext no se expone en respuesta de /request', async () => {
+    const res = await request('/api/portal/auth/recovery/request', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        channel: 'whatsapp'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    const rawBody = JSON.stringify(res.data);
+    assert.strictEqual(rawBody.includes('otpForDelivery'), false);
+    assert.strictEqual(rawBody.includes('codeHash'), false);
+  });
+
+  // --- RECOVERY VERIFY ---
+  // 140. Verify con OTP correcto emite resetToken
+  await test('140. 1D-C.2: POST /api/portal/auth/recovery/verify con OTP correcto devuelve resetToken', async () => {
+    const reqRes = await request('/api/portal/auth/recovery/request', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        channel: 'whatsapp'
+      })
+    });
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+
+    const verRes = await request('/api/portal/auth/recovery/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        challengeId: otpTest.challengeId,
+        code: otpTest.otpForDelivery
+      })
+    });
+    assert.strictEqual(verRes.status, 200);
+    assert.strictEqual(verRes.data.success, true);
+    assert.ok(verRes.data.resetToken);
+  });
+
+  // 141. Verify con OTP incorrecto devuelve 400 Bad Request
+  await test('141. 1D-C.2: Verify con OTP incorrecto devuelve 400 Bad Request', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const verRes = await request('/api/portal/auth/recovery/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        challengeId: otpTest.challengeId,
+        code: '000000'
+      })
+    });
+    assert.strictEqual(verRes.status, 400);
+  });
+
+  // 142. Verify con challenge inexistente devuelve 400 Bad Request
+  await test('142. 1D-C.2: Verify con challenge inexistente devuelve 400 Bad Request', async () => {
+    const verRes = await request('/api/portal/auth/recovery/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        challengeId: 'rec-ch-fake-999',
+        code: '123456'
+      })
+    });
+    assert.strictEqual(verRes.status, 400);
+  });
+
+  // 143. Verify con challenge expirado devuelve 400 Bad Request
+  await test('143. 1D-C.2: Verify con challenge expirado devuelve 400 Bad Request', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const doc = recoveryChallengeStore.get(otpTest.challengeId);
+    doc.expiresAt = Date.now() - 1000;
+
+    const verRes = await request('/api/portal/auth/recovery/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        challengeId: otpTest.challengeId,
+        code: otpTest.otpForDelivery
+      })
+    });
+    assert.strictEqual(verRes.status, 400);
+  });
+
+  // 144. Challenge de client verificado con portalType=producer es rechazado
+  await test('144. 1D-C.2: Challenge de client no puede verificarse como producer', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const verRes = await request('/api/portal/auth/recovery/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: 'elroble.demo@example.com',
+        challengeId: otpTest.challengeId,
+        code: otpTest.otpForDelivery
+      })
+    });
+    assert.strictEqual(verRes.status, 400);
+  });
+
+  // 145. Challenge de producer verificado con portalType=client es rechazado
+  await test('145. 1D-C.2: Challenge de producer no puede verificarse como client', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'producer',
+      targetId: 'sup-demo-1',
+      targetName: 'Hacienda El Roble',
+      channel: 'whatsapp',
+      recipient: '04125550101'
+    });
+    const verRes = await request('/api/portal/auth/recovery/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        challengeId: otpTest.challengeId,
+        code: otpTest.otpForDelivery
+      })
+    });
+    assert.strictEqual(verRes.status, 400);
+  });
+
+  // 146. Replay: OTP verificado no puede usarse de nuevo en /verify
+  await test('146. 1D-C.2: Replay en /verify es rechazado (Single-use OTP)', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const firstTry = await request('/api/portal/auth/recovery/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        challengeId: otpTest.challengeId,
+        code: otpTest.otpForDelivery
+      })
+    });
+    assert.strictEqual(firstTry.status, 200);
+
+    const secondTry = await request('/api/portal/auth/recovery/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        challengeId: otpTest.challengeId,
+        code: otpTest.otpForDelivery
+      })
+    });
+    assert.strictEqual(secondTry.status, 400);
+  });
+
+  // 147. 3 fallos consecutivos en /verify bloquean el challenge
+  await test('147. 1D-C.2: 3 fallos consecutivos en /verify invalidan el reto (Lockout)', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    await request('/api/portal/auth/recovery/verify', { method: 'POST', body: JSON.stringify({ portalType: 'client', identifier: '04141234567', challengeId: otpTest.challengeId, code: '000001' }) });
+    await request('/api/portal/auth/recovery/verify', { method: 'POST', body: JSON.stringify({ portalType: 'client', identifier: '04141234567', challengeId: otpTest.challengeId, code: '000002' }) });
+    const lockRes = await request('/api/portal/auth/recovery/verify', { method: 'POST', body: JSON.stringify({ portalType: 'client', identifier: '04141234567', challengeId: otpTest.challengeId, code: '000003' }) });
+    assert.strictEqual(lockRes.status, 429);
+
+    // Intento con código correcto posterior es rechazado
+    const goodRes = await request('/api/portal/auth/recovery/verify', { method: 'POST', body: JSON.stringify({ portalType: 'client', identifier: '04141234567', challengeId: otpTest.challengeId, code: otpTest.otpForDelivery }) });
+    assert.ok(goodRes.status === 400 || goodRes.status === 429);
+  });
+
+  // 148. Identifier manipulado en /verify no coincide con challenge
+  await test('148. 1D-C.2: Identifier manipulado en /verify es rechazado', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const verRes = await request('/api/portal/auth/recovery/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04147654321', // Cliente 2
+        challengeId: otpTest.challengeId,
+        code: otpTest.otpForDelivery
+      })
+    });
+    assert.ok(verRes.status === 400 || verRes.status === 429);
+  });
+
+  // --- RECOVERY RESET-PIN ---
+  // 149. Reset-PIN con resetToken válido actualiza PIN de cliente
+  await test('149. 1D-C.2: POST /api/portal/auth/recovery/reset-pin actualiza el PIN de cliente', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: otpTest.challengeId,
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      code: otpTest.otpForDelivery
+    });
+    assert.strictEqual(verRes.success, true);
+
+    const resetRes = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        resetToken: verRes.resetToken,
+        newPin: '654321'
+      })
+    });
+    assert.strictEqual(resetRes.status, 200);
+    assert.strictEqual(resetRes.data.success, true);
+
+    // Validar que el login funcione con el nuevo PIN
+    const loginRes = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '654321'
+      })
+    });
+    assert.strictEqual(loginRes.status, 200);
+    assert.strictEqual(loginRes.data.authenticated, true);
+  });
+
+  // 150. Reset-PIN con productor actualiza PIN de productor
+  await test('150. 1D-C.2: Reset-PIN actualiza el PIN de productor', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'producer',
+      targetId: 'sup-demo-1',
+      targetName: 'Hacienda El Roble',
+      channel: 'whatsapp',
+      recipient: '04125550101'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: otpTest.challengeId,
+      portalType: 'producer',
+      targetId: 'sup-demo-1',
+      code: otpTest.otpForDelivery
+    });
+
+    const resetRes = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: '04125550101',
+        resetToken: verRes.resetToken,
+        newPin: '888999'
+      })
+    });
+    assert.strictEqual(resetRes.status, 200);
+
+    const loginRes = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: '04125550101',
+        pin: '888999'
+      })
+    });
+    assert.strictEqual(loginRes.status, 200);
+  });
+
+  // 151. Reset-PIN con resetToken inválido es rechazado
+  await test('151. 1D-C.2: Reset-PIN con resetToken inválido devuelve 400 Bad Request', async () => {
+    const res = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        resetToken: 'fake-token-123456',
+        newPin: '112233'
+      })
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  // 152. Reset-PIN con resetToken expirado es rechazado
+  await test('152. 1D-C.2: Reset-PIN con resetToken expirado devuelve 400 Bad Request', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: otpTest.challengeId,
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      code: otpTest.otpForDelivery
+    });
+    const tokDoc = recoveryResetTokenStore.get(verRes.resetToken);
+    tokDoc.expiresAt = Date.now() - 1000;
+
+    const res = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        resetToken: verRes.resetToken,
+        newPin: '112233'
+      })
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  // 153. Reset-PIN no permite reutilizar resetToken (Single-use resetToken)
+  await test('153. 1D-C.2: Replay de resetToken en reset-pin es rechazado', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: otpTest.challengeId,
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      code: otpTest.otpForDelivery
+    });
+
+    const first = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        resetToken: verRes.resetToken,
+        newPin: '123456'
+      })
+    });
+    assert.strictEqual(first.status, 200);
+
+    const second = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        resetToken: verRes.resetToken,
+        newPin: '999888'
+      })
+    });
+    assert.strictEqual(second.status, 400);
+  });
+
+  // 154. resetToken de cliente usado para resetear productor es rechazado
+  await test('154. 1D-C.2: resetToken de cliente no puede usarse con portalType=producer', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: otpTest.challengeId,
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      code: otpTest.otpForDelivery
+    });
+
+    const res = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: '04125550101',
+        resetToken: verRes.resetToken,
+        newPin: '555666'
+      })
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  // 155. resetToken de Cliente 1 usado con identifier de Cliente 2 es rechazado
+  await test('155. 1D-C.2: resetToken de Cliente 1 no puede usarse para modificar Cliente 2', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: otpTest.challengeId,
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      code: otpTest.otpForDelivery
+    });
+
+    const res = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04147654321', // Cliente 2
+        resetToken: verRes.resetToken,
+        newPin: '555666'
+      })
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  // 156. PIN de 5 dígitos es rechazado
+  await test('156. 1D-C.2: PIN de 5 dígitos en reset-pin es rechazado (400)', async () => {
+    const res = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        resetToken: 'some-token',
+        newPin: '12345'
+      })
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  // 157. PIN de 7 dígitos es rechazado
+  await test('157. 1D-C.2: PIN de 7 dígitos en reset-pin es rechazado (400)', async () => {
+    const res = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        resetToken: 'some-token',
+        newPin: '1234567'
+      })
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  // 158. PIN alfanumérico es rechazado
+  await test('158. 1D-C.2: PIN alfanumérico en reset-pin es rechazado (400)', async () => {
+    const res = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        resetToken: 'some-token',
+        newPin: '12A45B'
+      })
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  // 159. Body con campos maliciosos/arbitrarios es ignorado (Whitelist)
+  await test('159. 1D-C.2: Body con campos arbitrarios (role, creditLimit) no altera la entidad', async () => {
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: otpTest.challengeId,
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      code: otpTest.otpForDelivery
+    });
+
+    const res = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        resetToken: verRes.resetToken,
+        newPin: '123456',
+        role: 'admin',
+        creditLimit: 999999,
+        balance: 0
+      })
+    });
+    assert.strictEqual(res.status, 200);
+
+    // Verificar en DB que el cliente no adquirió rol admin ni alteró balance
+    const clients = JSON.parse(await import('fs').then(fs => fs.promises.readFile('./data-dev/clients_db.json', 'utf8')));
+    const client = clients.find(c => c.id === 'cli-demo-1');
+    assert.strictEqual(client.role, undefined);
+    assert.notStrictEqual(client.creditLimit, 999999);
+  });
+
+  // 160. PIN plaintext NUNCA queda almacenado en la colección
+  await test('160. 1D-C.2: PIN plaintext NUNCA se almacena en el JSON tras reset', async () => {
+    const clients = JSON.parse(await import('fs').then(fs => fs.promises.readFile('./data-dev/clients_db.json', 'utf8')));
+    const client = clients.find(c => c.id === 'cli-demo-1');
+    assert.strictEqual(client.pin, undefined);
+    assert.ok(client.pinHash);
+    assert.ok(client.pinHash.startsWith('$2'));
+  });
+
+  // 161. Invalida la sesión portal activa si coincide con el usuario que reseteó
+  await test('161. 1D-C.2: Reset-PIN invalida sesión portal activa del usuario', async () => {
+    // 1. Iniciar sesión portal como cliente 1
+    const loginRes = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '123456'
+      })
+    });
+    const portalCookie = loginRes.setCookie;
+
+    // 2. Realizar recovery y reset de PIN usando la cookie activa
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      targetName: 'Juan Pérez',
+      channel: 'whatsapp',
+      recipient: '04141234567'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: otpTest.challengeId,
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      code: otpTest.otpForDelivery
+    });
+
+    const resetRes = await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      headers: { Cookie: portalCookie },
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        resetToken: verRes.resetToken,
+        newPin: '998877'
+      })
+    });
+    assert.strictEqual(resetRes.status, 200);
+
+    // 3. Verificar que la cookie previa ya no tenga acceso
+    const meRes = await request('/api/portal/auth/me', {
+      headers: { Cookie: portalCookie }
+    });
+    assert.strictEqual(meRes.status, 401);
+  });
+
+  // 162. Reset-PIN no destruye la sesión CRM de un usuario administrativo
+  await test('162. 1D-C.2: Reset-PIN portal no destruye la sesión CRM si coexiste en sesión', async () => {
+    // Iniciar sesión como admin CRM
+    const adminLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = adminLogin.setCookie;
+
+    // Resetear PIN de cliente usando otra petición
+    const otpTest = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-2',
+      targetName: 'María Rodríguez',
+      channel: 'whatsapp',
+      recipient: '04147654321'
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: otpTest.challengeId,
+      portalType: 'client',
+      targetId: 'cli-demo-2',
+      code: otpTest.otpForDelivery
+    });
+
+    await request('/api/portal/auth/recovery/reset-pin', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04147654321',
+        resetToken: verRes.resetToken,
+        newPin: '334455'
+      })
+    });
+
+    // Sesión CRM del admin debe seguir 100% activa
+    const meRes = await request('/api/auth/me', {
+      headers: { Cookie: adminCookie }
+    });
+    assert.strictEqual(meRes.status, 200);
+    assert.strictEqual(meRes.data.user.role, 'admin');
+  });
+
+  // 163. Legacy /api/send-recovery opera con limiter y modo simulación
+  await test('163. 1D-C.2: Legacy /api/send-recovery opera en simulación sin exponer secretos', async () => {
+    const res = await request('/api/send-recovery', {
+      method: 'POST',
+      body: JSON.stringify({
+        channel: 'whatsapp',
+        phone: '04141234567',
+        code: '123456',
+        name: 'Cliente Test'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
   });
 
   // ============================================================

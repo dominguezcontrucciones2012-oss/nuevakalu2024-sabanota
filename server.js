@@ -191,6 +191,313 @@ const portalLoginLimiter = rateLimit({
   }
 });
 
+// ============================================================
+// RECOVERY CORE MODULE — FASE 1D-C.1 (SERVER-SIDE CORE)
+// ============================================================
+/**
+ * RECOVERY STORE (DEV/TEST IN-MEMORY STORE)
+ * NOTE: DEV/TEST ONLY — production requires a persistent/shared recovery store (e.g. Redis/Encrypted DB).
+ *
+ * Estructura de un challenge:
+ * challengeId -> {
+ *   challengeId: string,
+ *   portalType: 'client' | 'producer',
+ *   targetId: string,
+ *   targetName: string,
+ *   channel: 'email' | 'whatsapp',
+ *   recipientMasked: string,
+ *   codeHash: string,
+ *   expiresAt: number,
+ *   attempts: number,
+ *   maxAttempts: number,
+ *   consumed: boolean,
+ *   createdAt: number
+ * }
+ *
+ * Estructura de un reset token:
+ * resetToken -> {
+ *   token: string,
+ *   tokenHash: string,
+ *   portalType: 'client' | 'producer',
+ *   targetId: string,
+ *   expiresAt: number,
+ *   consumed: boolean,
+ *   createdAt: number
+ * }
+ */
+const recoveryChallengeStore = new Map();
+const recoveryResetTokenStore = new Map();
+
+const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutos
+const RESET_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutos
+const MAX_OTP_ATTEMPTS = 3;
+
+/**
+ * Helper criptográfico para hash seguro de secreto efímero (OTP / Reset Token)
+ * Utiliza SHA-256 con salt interno derivado del SESSION_SECRET.
+ */
+function hashEphemeralSecret(secret, saltKey = '') {
+  const secretKey = process.env.SESSION_SECRET || 'kalu_secure_session_secret_default_2026';
+  return crypto.createHmac('sha256', secretKey)
+    .update(`${saltKey}:${String(secret)}`)
+    .digest('hex');
+}
+
+/**
+ * Helper de comparación segura en tiempo constante contra timing attacks
+ */
+function safeTimingCompare(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * Limpieza periódica de challenges y tokens expirados en memoria
+ */
+function cleanupRecoveryStore() {
+  const now = Date.now();
+  for (const [id, ch] of recoveryChallengeStore.entries()) {
+    if (now > ch.expiresAt || ch.consumed || ch.attempts >= ch.maxAttempts) {
+      recoveryChallengeStore.delete(id);
+    }
+  }
+  for (const [tok, rt] of recoveryResetTokenStore.entries()) {
+    if (now > rt.expiresAt || rt.consumed) {
+      recoveryResetTokenStore.delete(tok);
+    }
+  }
+}
+
+// Ejecutar limpieza cada 5 minutos
+setInterval(cleanupRecoveryStore, 5 * 60 * 1000).unref();
+
+/**
+ * Helper para enmascarar teléfonos (+58***1234) o correos (u***@domain.com)
+ */
+function maskRecipient(channel, recipient) {
+  if (!recipient) return '';
+  const str = String(recipient).trim();
+  if (channel === 'email') {
+    const parts = str.split('@');
+    if (parts.length !== 2) return '***@***';
+    const name = parts[0];
+    const domain = parts[1];
+    const visibleStart = name.length > 2 ? name.slice(0, 2) : name.slice(0, 1);
+    return `${visibleStart}***@${domain}`;
+  } else {
+    // Phone
+    const digits = str.replace(/\D/g, '');
+    const last4 = digits.slice(-4);
+    return `+58***${last4}`;
+  }
+}
+
+/**
+ * 1. createRecoveryChallenge({ portalType, targetId, targetName, channel, recipient })
+ * Genera un OTP criptográficamente seguro (CSPRNG), almacena su hash con TTL y binding de identidad.
+ * Retorna { challengeId, recipientMasked, expiresAt, otpForDelivery }
+ * NOTA: otpForDelivery se entrega exclusivamente al caller interno para el despacho por pasarela/simulación.
+ */
+function createRecoveryChallenge({ portalType, targetId, targetName, channel, recipient }) {
+  if (!['client', 'producer'].includes(portalType)) {
+    throw new Error('Tipo de portal no válido para recuperación');
+  }
+  if (!targetId || !channel || !recipient) {
+    throw new Error('Parámetros de challenge incompletos');
+  }
+
+  // Generar OTP de 6 dígitos numéricos usando CSPRNG nativo
+  const otpNumber = crypto.randomInt(100000, 1000000);
+  const otpPlain = String(otpNumber);
+
+  const challengeId = `rec-ch-${Date.now()}-${crypto.randomBytes(16).toString('hex')}`;
+  const codeHash = hashEphemeralSecret(otpPlain, `${challengeId}:${portalType}:${targetId}`);
+  const now = Date.now();
+  const expiresAt = now + OTP_TTL_MS;
+
+  const challengeDoc = {
+    challengeId,
+    portalType,
+    targetId: String(targetId),
+    targetName: String(targetName || ''),
+    channel,
+    recipient: String(recipient),
+    recipientMasked: maskRecipient(channel, recipient),
+    codeHash,
+    expiresAt,
+    attempts: 0,
+    maxAttempts: MAX_OTP_ATTEMPTS,
+    consumed: false,
+    createdAt: now
+  };
+
+  recoveryChallengeStore.set(challengeId, challengeDoc);
+
+  return {
+    challengeId,
+    recipientMasked: challengeDoc.recipientMasked,
+    expiresAt,
+    otpForDelivery: otpPlain // Se devuelve SOLO para que el transportador interno lo envíe
+  };
+}
+
+/**
+ * 2. verifyRecoveryCode({ challengeId, portalType, targetId, code })
+ * Valida un código OTP contra el challenge almacenado.
+ * Si es válido: invalida el challenge (single-use) y genera un resetToken temporal.
+ * Si es inválido: incrementa intentos (invalida al 3er fallo) y rechaza.
+ */
+function verifyRecoveryCode({ challengeId, portalType, targetId, code }) {
+  const challenge = recoveryChallengeStore.get(challengeId);
+  if (!challenge) {
+    return { success: false, error: 'Challenge no encontrado o expirado', code: 'CHALLENGE_NOT_FOUND' };
+  }
+
+  const now = Date.now();
+  if (now > challenge.expiresAt) {
+    recoveryChallengeStore.delete(challengeId);
+    return { success: false, error: 'Código de recuperación expirado', code: 'EXPIRED' };
+  }
+
+  if (challenge.consumed) {
+    recoveryChallengeStore.delete(challengeId);
+    return { success: false, error: 'Código ya utilizado previamente', code: 'ALREADY_CONSUMED' };
+  }
+
+  if (challenge.attempts >= challenge.maxAttempts) {
+    recoveryChallengeStore.delete(challengeId);
+    return { success: false, error: 'Límite de intentos superado', code: 'MAX_ATTEMPTS_EXCEEDED' };
+  }
+
+  // Comprobar coincidencia estricta de tipo de portal y targetId
+  if (challenge.portalType !== portalType || String(challenge.targetId) !== String(targetId)) {
+    return { success: false, error: 'Identidad no coincide con el challenge', code: 'IDENTITY_MISMATCH' };
+  }
+
+  const inputHash = hashEphemeralSecret(String(code || '').trim(), `${challengeId}:${portalType}:${targetId}`);
+  const isMatch = safeTimingCompare(inputHash, challenge.codeHash);
+
+  if (!isMatch) {
+    challenge.attempts += 1;
+    if (challenge.attempts >= challenge.maxAttempts) {
+      challenge.consumed = true;
+      recoveryChallengeStore.delete(challengeId);
+      return { success: false, error: 'Demasiados intentos incorrectos. Challenge invalidado.', code: 'LOCKED', attempts: challenge.attempts };
+    }
+    return { success: false, error: 'Código de verificación incorrecto', code: 'INVALID_CODE', attemptsRemaining: challenge.maxAttempts - challenge.attempts };
+  }
+
+  // Código correcto: invalidar inmediatamente el challenge (single-use)
+  challenge.consumed = true;
+  recoveryChallengeStore.delete(challengeId);
+
+  // Generar reset token efímero vinculado a la identidad
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = hashEphemeralSecret(rawToken, `reset:${portalType}:${targetId}`);
+  const tokenExpiresAt = now + RESET_TOKEN_TTL_MS;
+
+  const resetDoc = {
+    token: rawToken,
+    tokenHash,
+    portalType,
+    targetId: String(targetId),
+    expiresAt: tokenExpiresAt,
+    consumed: false,
+    createdAt: now
+  };
+
+  recoveryResetTokenStore.set(rawToken, resetDoc);
+
+  return {
+    success: true,
+    resetToken: rawToken,
+    expiresAt: tokenExpiresAt,
+    portalType,
+    targetId: challenge.targetId
+  };
+}
+
+/**
+ * 3. consumeResetToken({ resetToken, portalType, targetId })
+ * Valida que un resetToken sea válido, esté dentro del TTL, coincida con la identidad y no haya sido consumido.
+ * Lo marca como consumido inmediatamente.
+ */
+function consumeResetToken({ resetToken, portalType, targetId }) {
+  cleanupRecoveryStore();
+
+  if (!resetToken || typeof resetToken !== 'string') {
+    return { success: false, error: 'Token de reseteo inválido', code: 'INVALID_TOKEN' };
+  }
+
+  const resetDoc = recoveryResetTokenStore.get(resetToken);
+  if (!resetDoc) {
+    return { success: false, error: 'Token de reseteo no encontrado o expirado', code: 'TOKEN_NOT_FOUND' };
+  }
+
+  const now = Date.now();
+  if (now > resetDoc.expiresAt) {
+    recoveryResetTokenStore.delete(resetToken);
+    return { success: false, error: 'Token de reseteo expirado', code: 'EXPIRED' };
+  }
+
+  if (resetDoc.consumed) {
+    recoveryResetTokenStore.delete(resetToken);
+    return { success: false, error: 'Token de reseteo ya utilizado', code: 'ALREADY_CONSUMED' };
+  }
+
+  if (resetDoc.portalType !== portalType || String(resetDoc.targetId) !== String(targetId)) {
+    return { success: false, error: 'Token no coincide con la identidad especificada', code: 'IDENTITY_MISMATCH' };
+  }
+
+  // Consumir token
+  resetDoc.consumed = true;
+  recoveryResetTokenStore.delete(resetToken);
+
+  return {
+    success: true,
+    portalType: resetDoc.portalType,
+    targetId: resetDoc.targetId
+  };
+}
+
+/**
+ * 4. invalidateRecoveryChallenge(challengeId)
+ * Permite invalidar explícitamente un challenge activo
+ */
+function invalidateRecoveryChallenge(challengeId) {
+  if (challengeId && recoveryChallengeStore.has(challengeId)) {
+    recoveryChallengeStore.delete(challengeId);
+    return true;
+  }
+  return false;
+}
+
+// Rate Limiters dedicados para el subsistema de recuperación
+const recoveryRequestLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5, // Máximo 5 solicitudes fallidas por IP en 15 minutos
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'Demasiadas solicitudes de recuperación. Por favor espere 15 minutos.'
+  }
+});
+
+const recoveryVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10, // Máximo 10 intentos de verificación fallidos por IP en 15 minutos
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'Demasiados intentos de verificación. Por favor espere 15 minutos.'
+  }
+});
+
 /**
  * Middleware requirePortalAuth (Fase 1D-A):
  * Verifica que exista una identidad portal activa en req.session.portalUser.
@@ -618,6 +925,312 @@ app.post('/api/portal/auth/logout', verifyCsrf, (req, res) => {
     });
   } else {
     res.json({ success: true, message: 'Sesión de portal cerrada' });
+  }
+});
+
+// ============================================================
+// ENDPOINTS SERVER-SIDE DE RECOVERY DE PORTAL (FASE 1D-C.2)
+// ============================================================
+
+/**
+ * 4. Solicitar recuperación de acceso (Request Challenge)
+ * POST /api/portal/auth/recovery/request
+ * Payload: { portalType: 'client'|'producer', identifier: string, channel: 'email'|'whatsapp' }
+ * Anti-enumeration: Devuelve respuesta genérica idéntica tanto si la entidad existe como si no.
+ */
+app.post('/api/portal/auth/recovery/request', recoveryRequestLimiter, async (req, res) => {
+  try {
+    const { portalType, identifier, channel } = req.body || {};
+
+    if (!portalType || !['client', 'producer'].includes(portalType) || !identifier || !channel || !['email', 'whatsapp'].includes(channel)) {
+      return res.status(400).json({ error: 'Parámetros de solicitud de recuperación inválidos' });
+    }
+
+    const cleanId = String(identifier).trim().toLowerCase();
+    const cleanDigits = String(identifier).replace(/\D/g, '');
+
+    let matchedEntity = null;
+
+    if (portalType === 'client') {
+      const clients = readCollection('clients');
+      matchedEntity = clients.find(c => {
+        if (c.status && c.status !== 'active') return false;
+        const phoneDigits = String(c.phone || c.telefono || '').replace(/\D/g, '');
+        const cedulaDigits = String(c.cedula || c.ci || c.ciRif || c.idNumber || '').replace(/\D/g, '');
+        const emailMatch = c.email && c.email.trim().toLowerCase() === cleanId;
+        const idMatch = c.id && String(c.id).trim().toLowerCase() === cleanId;
+        const nameMatch = c.name && c.name.trim().toLowerCase() === cleanId;
+
+        if (emailMatch || idMatch || nameMatch) return true;
+        if (cleanDigits.length >= 4 && phoneDigits.length >= 4 && phoneDigits.endsWith(cleanDigits)) return true;
+        if (cleanDigits.length >= 4 && cedulaDigits.length >= 4 && cedulaDigits.endsWith(cleanDigits)) return true;
+        return false;
+      });
+    } else {
+      const suppliers = readCollection('suppliers');
+      matchedEntity = suppliers.find(s => {
+        if (s.status && s.status !== 'active') return false;
+        const phoneDigits = String(s.phone || s.telefono || '').replace(/\D/g, '');
+        const rifDigits = String(s.rif || s.cedula || s.ci || '').replace(/\D/g, '');
+        const emailMatch = s.email && s.email.trim().toLowerCase() === cleanId;
+        const idMatch = s.id && String(s.id).trim().toLowerCase() === cleanId;
+        const nameMatch = s.name && s.name.trim().toLowerCase() === cleanId;
+
+        if (emailMatch || idMatch || nameMatch) return true;
+        if (cleanDigits.length >= 4 && phoneDigits.length >= 4 && phoneDigits.endsWith(cleanDigits)) return true;
+        if (cleanDigits.length >= 4 && rifDigits.length >= 4 && rifDigits.endsWith(cleanDigits)) return true;
+        return false;
+      });
+    }
+
+    // Respuesta genérica uniforme para anti-enumeración
+    const genericSuccessResponse = {
+      success: true,
+      message: 'Si los datos corresponden a una cuenta activa, recibirás un código de recuperación.'
+    };
+
+    if (!matchedEntity) {
+      return res.json(genericSuccessResponse);
+    }
+
+    // Obtener contacto registrado en el servidor según el canal
+    let recipient = null;
+    if (channel === 'email') {
+      recipient = matchedEntity.email ? String(matchedEntity.email).trim() : null;
+    } else if (channel === 'whatsapp') {
+      recipient = matchedEntity.phone || matchedEntity.telefono ? String(matchedEntity.phone || matchedEntity.telefono).trim() : null;
+    }
+
+    if (!recipient) {
+      return res.json(genericSuccessResponse);
+    }
+
+    // Crear reto seguro en el Recovery Core
+    const challenge = createRecoveryChallenge({
+      portalType,
+      targetId: matchedEntity.id,
+      targetName: matchedEntity.name,
+      channel,
+      recipient
+    });
+
+    // Despachar OTP mediante la pasarela segura
+    try {
+      await dispatchRecoveryOtp({
+        channel,
+        recipient,
+        code: challenge.otpForDelivery,
+        name: matchedEntity.name
+      });
+    } catch (dispatchErr) {
+      console.error('[Recovery Dispatch Error]:', dispatchErr.message);
+    }
+
+    // Respuesta segura: Retorna challengeId para que el cliente pueda enviarlo en verify
+    return res.json({
+      success: true,
+      challengeId: challenge.challengeId,
+      recipientMasked: challenge.recipientMasked,
+      expiresAt: challenge.expiresAt,
+      message: 'Código de recuperación despachado al contacto registrado.'
+    });
+  } catch (error) {
+    console.error('[Recovery Request Exception]:', error);
+    res.status(500).json({ error: 'Error procesando solicitud de recuperación' });
+  }
+});
+
+/**
+ * 5. Verificar código OTP y emitir reset token
+ * POST /api/portal/auth/recovery/verify
+ * Payload: { portalType: 'client'|'producer', identifier: string, challengeId: string, code: string }
+ */
+app.post('/api/portal/auth/recovery/verify', recoveryVerifyLimiter, (req, res) => {
+  try {
+    const { portalType, identifier, challengeId, code } = req.body || {};
+
+    if (!portalType || !['client', 'producer'].includes(portalType) || !identifier || !challengeId || !code) {
+      return res.status(400).json({ error: 'Parámetros de verificación incompletos' });
+    }
+
+    const cleanId = String(identifier).trim().toLowerCase();
+    const cleanDigits = String(identifier).replace(/\D/g, '');
+
+    let matchedEntity = null;
+
+    if (portalType === 'client') {
+      const clients = readCollection('clients');
+      matchedEntity = clients.find(c => {
+        if (c.status && c.status !== 'active') return false;
+        const phoneDigits = String(c.phone || c.telefono || '').replace(/\D/g, '');
+        const cedulaDigits = String(c.cedula || c.ci || c.ciRif || c.idNumber || '').replace(/\D/g, '');
+        const emailMatch = c.email && c.email.trim().toLowerCase() === cleanId;
+        const idMatch = c.id && String(c.id).trim().toLowerCase() === cleanId;
+        const nameMatch = c.name && c.name.trim().toLowerCase() === cleanId;
+
+        if (emailMatch || idMatch || nameMatch) return true;
+        if (cleanDigits.length >= 4 && phoneDigits.length >= 4 && phoneDigits.endsWith(cleanDigits)) return true;
+        if (cleanDigits.length >= 4 && cedulaDigits.length >= 4 && cedulaDigits.endsWith(cleanDigits)) return true;
+        return false;
+      });
+    } else {
+      const suppliers = readCollection('suppliers');
+      matchedEntity = suppliers.find(s => {
+        if (s.status && s.status !== 'active') return false;
+        const phoneDigits = String(s.phone || s.telefono || '').replace(/\D/g, '');
+        const rifDigits = String(s.rif || s.cedula || s.ci || '').replace(/\D/g, '');
+        const emailMatch = s.email && s.email.trim().toLowerCase() === cleanId;
+        const idMatch = s.id && String(s.id).trim().toLowerCase() === cleanId;
+        const nameMatch = s.name && s.name.trim().toLowerCase() === cleanId;
+
+        if (emailMatch || idMatch || nameMatch) return true;
+        if (cleanDigits.length >= 4 && phoneDigits.length >= 4 && phoneDigits.endsWith(cleanDigits)) return true;
+        if (cleanDigits.length >= 4 && rifDigits.length >= 4 && rifDigits.endsWith(cleanDigits)) return true;
+        return false;
+      });
+    }
+
+    if (!matchedEntity) {
+      return res.status(400).json({ error: 'Código de recuperación inválido o expirado' });
+    }
+
+    const verifyResult = verifyRecoveryCode({
+      challengeId,
+      portalType,
+      targetId: matchedEntity.id,
+      code
+    });
+
+    if (!verifyResult.success) {
+      if (verifyResult.code === 'LOCKED' || verifyResult.code === 'MAX_ATTEMPTS_EXCEEDED') {
+        return res.status(429).json({ error: 'Límite de intentos superado. Solicite un nuevo código.' });
+      }
+      return res.status(400).json({ error: 'Código de recuperación inválido o expirado' });
+    }
+
+    return res.json({
+      success: true,
+      resetToken: verifyResult.resetToken,
+      expiresAt: verifyResult.expiresAt,
+      message: 'Código verificado con éxito'
+    });
+  } catch (error) {
+    console.error('[Recovery Verify Exception]:', error);
+    res.status(500).json({ error: 'Error verificando código de recuperación' });
+  }
+});
+
+/**
+ * 6. Restablecer PIN con resetToken verificado
+ * POST /api/portal/auth/recovery/reset-pin
+ * Payload: { portalType: 'client'|'producer', identifier: string, resetToken: string, newPin: string }
+ */
+app.post('/api/portal/auth/recovery/reset-pin', (req, res) => {
+  try {
+    const { portalType, identifier, resetToken, newPin } = req.body || {};
+
+    if (!portalType || !['client', 'producer'].includes(portalType) || !identifier || !resetToken || !newPin) {
+      return res.status(400).json({ error: 'Parámetros de restablecimiento incompletos' });
+    }
+
+    // Validar formato estricto del nuevo PIN (exactamente 6 dígitos numéricos)
+    const pinStr = String(newPin).trim();
+    if (!/^\d{6}$/.test(pinStr)) {
+      return res.status(400).json({ error: 'El PIN debe contener exactamente 6 dígitos numéricos' });
+    }
+
+    const cleanId = String(identifier).trim().toLowerCase();
+    const cleanDigits = String(identifier).replace(/\D/g, '');
+
+    let matchedEntity = null;
+
+    if (portalType === 'client') {
+      const clients = readCollection('clients');
+      matchedEntity = clients.find(c => {
+        if (c.status && c.status !== 'active') return false;
+        const phoneDigits = String(c.phone || c.telefono || '').replace(/\D/g, '');
+        const cedulaDigits = String(c.cedula || c.ci || c.ciRif || c.idNumber || '').replace(/\D/g, '');
+        const emailMatch = c.email && c.email.trim().toLowerCase() === cleanId;
+        const idMatch = c.id && String(c.id).trim().toLowerCase() === cleanId;
+        const nameMatch = c.name && c.name.trim().toLowerCase() === cleanId;
+
+        if (emailMatch || idMatch || nameMatch) return true;
+        if (cleanDigits.length >= 4 && phoneDigits.length >= 4 && phoneDigits.endsWith(cleanDigits)) return true;
+        if (cleanDigits.length >= 4 && cedulaDigits.length >= 4 && cedulaDigits.endsWith(cleanDigits)) return true;
+        return false;
+      });
+    } else {
+      const suppliers = readCollection('suppliers');
+      matchedEntity = suppliers.find(s => {
+        if (s.status && s.status !== 'active') return false;
+        const phoneDigits = String(s.phone || s.telefono || '').replace(/\D/g, '');
+        const rifDigits = String(s.rif || s.cedula || s.ci || '').replace(/\D/g, '');
+        const emailMatch = s.email && s.email.trim().toLowerCase() === cleanId;
+        const idMatch = s.id && String(s.id).trim().toLowerCase() === cleanId;
+        const nameMatch = s.name && s.name.trim().toLowerCase() === cleanId;
+
+        if (emailMatch || idMatch || nameMatch) return true;
+        if (cleanDigits.length >= 4 && phoneDigits.length >= 4 && phoneDigits.endsWith(cleanDigits)) return true;
+        if (cleanDigits.length >= 4 && rifDigits.length >= 4 && rifDigits.endsWith(cleanDigits)) return true;
+        return false;
+      });
+    }
+
+    if (!matchedEntity) {
+      return res.status(400).json({ error: 'Token de restablecimiento inválido o expirado' });
+    }
+
+    // Consumir resetToken validando binding estricto de identidad
+    const consumeRes = consumeResetToken({
+      resetToken,
+      portalType,
+      targetId: matchedEntity.id
+    });
+
+    if (!consumeRes.success) {
+      return res.status(400).json({ error: 'Token de restablecimiento inválido o expirado' });
+    }
+
+    // Hashear nuevo PIN usando bcrypt con salt rounds estándar (10)
+    const newPinHash = bcrypt.hashSync(pinStr, 10);
+
+    // Actualizar entidad mediante persistencia segura y controlada (whitelist estricta)
+    if (portalType === 'client') {
+      const clients = readCollection('clients');
+      const idx = clients.findIndex(c => String(c.id) === String(matchedEntity.id));
+      if (idx !== -1) {
+        clients[idx].pinHash = newPinHash;
+        delete clients[idx].pin; // Eliminar PIN plano si existía
+        writeCollection('clients', clients);
+      }
+    } else {
+      const suppliers = readCollection('suppliers');
+      const idx = suppliers.findIndex(s => String(s.id) === String(matchedEntity.id));
+      if (idx !== -1) {
+        suppliers[idx].pinHash = newPinHash;
+        delete suppliers[idx].pin; // Eliminar PIN plano si existía
+        writeCollection('suppliers', suppliers);
+      }
+    }
+
+    // Invalidar sesión portal activa si coincide con el cliente/productor que cambió PIN
+    if (req.session && req.session.portalUser && String(req.session.portalUser.id) === String(matchedEntity.id)) {
+      delete req.session.portalUser;
+      if (!req.session.userId) {
+        req.session.destroy(() => {});
+        res.clearCookie('__kalu_sid');
+      } else {
+        req.session.save(() => {});
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: 'PIN restablecido exitosamente. Ya puede iniciar sesión con su nueva clave.'
+    });
+  } catch (error) {
+    console.error('[Recovery Reset-PIN Exception]:', error);
+    res.status(500).json({ error: 'Error procesando el restablecimiento del PIN' });
   }
 });
 
@@ -1263,6 +1876,8 @@ app.post('/api/upload', upload.array('files', 10), (req, res) => {
   }
 });
 
+
+
 // Configuración de Nodemailer (Email de Recuperación)
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -1272,21 +1887,16 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-app.post('/api/send-recovery', async (req, res) => {
-  const { channel = 'email', email, phone, code, name } = req.body;
+/**
+ * Helper de despacho de OTP (WhatsApp / Email)
+ * Se reutiliza tanto por el nuevo endpoint server-side /request como por simulación y legacy
+ */
+async function dispatchRecoveryOtp({ channel = 'email', recipient, code, name }) {
+  if (!code) throw new Error('Falta el código de recuperación');
+  if (!recipient) throw new Error('Falta el destinatario para despacho');
 
-  if (!code) {
-    return res.status(400).json({ error: 'Falta el código de recuperación' });
-  }
-
-  // --- CANAL 1: WHATSAPP ---
   if (channel === 'whatsapp') {
-    if (!phone) {
-      return res.status(400).json({ error: 'Falta el número de teléfono para WhatsApp' });
-    }
-
-    // Normalizar el número telefónico
-    let cleanPhone = String(phone).replace(/\D/g, '');
+    let cleanPhone = String(recipient).replace(/\D/g, '');
     if (cleanPhone.startsWith('0')) {
       cleanPhone = '58' + cleanPhone.substring(1);
     } else if (!cleanPhone.startsWith('58') && cleanPhone.length === 10) {
@@ -1295,16 +1905,13 @@ app.post('/api/send-recovery', async (req, res) => {
 
     const messageText = `🔒 *Mundo Kalu - Seguridad*\n\nHola *${name || 'Usuario'}*,\nTu código de verificación para restablecer tu PIN es:\n\n👉 *${code}*\n\n_Por seguridad, no compartas este código con nadie._`;
 
-    // Leer credenciales desde las variables de entorno de forma estricta y segura
     const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || '1344089325449515';
     const waApiKey = process.env.WHATSAPP_API_KEY || process.env.API_KEY || process.env.WHATSAPP_TOKEN;
     const waApiUrl = process.env.WHATSAPP_API_URL || (phoneId ? `https://graph.facebook.com/v20.0/${phoneId}/messages` : null);
 
     if (waApiUrl && waApiKey) {
       try {
-        console.log(`[Robot WhatsApp] Despachando PIN ${code} a ${cleanPhone} vía Meta Cloud API (${waApiUrl})...`);
-
-        // Estructura oficial de Meta Cloud API
+        console.log(`[Robot WhatsApp] Despachando PIN a ${cleanPhone} vía Meta Cloud API...`);
         const isMetaCloudApi = waApiUrl.includes('graph.facebook.com');
         const payload = isMetaCloudApi ? {
           messaging_product: 'whatsapp',
@@ -1335,44 +1942,30 @@ app.post('/api/send-recovery', async (req, res) => {
 
         if (!response.ok) {
           const errText = await response.text();
-          console.error('[Robot WhatsApp] Error en respuesta de Meta/Proveedor:', response.status, errText);
-          return res.status(502).json({ error: 'Error en la pasarela de WhatsApp', details: errText });
+          console.error('[Robot WhatsApp] Error en pasarela Meta/Proveedor:', response.status, errText);
+          return { success: false, channel: 'whatsapp', recipient: cleanPhone, error: errText };
         }
 
         const data = await response.json().catch(() => ({ success: true }));
-        console.log('[Robot WhatsApp] Mensaje enviado exitosamente:', data);
-        return res.json({ success: true, channel: 'whatsapp', recipient: cleanPhone, data });
+        return { success: true, channel: 'whatsapp', recipient: cleanPhone, data };
       } catch (error) {
         console.error('[Robot WhatsApp] Error de conexión:', error.message);
-        return res.status(500).json({ error: 'Error conectando con el servicio de WhatsApp', details: error.message });
+        return { success: false, channel: 'whatsapp', recipient: cleanPhone, error: error.message };
       }
     } else {
-      // Modo simulación / Fallback seguro si la URL no está seteada en el entorno
-      console.log(`[Robot WhatsApp] (Modo Local/API Key lista) Mensaje simulado a ${cleanPhone}: "${messageText}"`);
-      return res.json({
-        success: true,
-        channel: 'whatsapp',
-        simulated: true,
-        recipient: cleanPhone,
-        message: 'Código despachado por WhatsApp'
-      });
+      // Modo simulación local / DEV
+      console.log(`[Robot WhatsApp] (Modo Simulación) Despacho simulado a ${cleanPhone}`);
+      return { success: true, channel: 'whatsapp', simulated: true, recipient: cleanPhone };
     }
   }
 
-  // --- CANAL 2: CORREO ELECTRÓNICO (DEFAULT) ---
-  if (!email) {
-    return res.status(400).json({ error: 'Falta el correo electrónico' });
-  }
-
+  // Email
   const emailUser = process.env.EMAIL_USER || 'cherokejd566@gmail.com';
   const emailPass = process.env.EMAIL_PASS;
 
   if (!emailPass) {
-    console.error('[Robot Correo] ❌ Error: process.env.EMAIL_PASS no está definido en el archivo .env.');
-    return res.status(500).json({
-      error: 'Credenciales incompletas',
-      details: 'Falta la contraseña de aplicación (EMAIL_PASS) en el archivo .env del servidor.'
-    });
+    console.log(`[Robot Correo] (Modo Simulación/DEV) EMAIL_PASS no configurado. Simulación a ${recipient}`);
+    return { success: true, channel: 'email', simulated: true, recipient };
   }
 
   const dynamicTransporter = nodemailer.createTransport({
@@ -1413,15 +2006,39 @@ app.post('/api/send-recovery', async (req, res) => {
   try {
     await dynamicTransporter.sendMail({
       from: `"Mundo Kalu Seguridad" <${emailUser}>`,
-      to: email,
+      to: recipient,
       subject: 'Tu código de recuperación de Mundo Kalu',
       html: htmlTemplate
     });
-    console.log(`[Robot Correo] PIN enviado exitosamente a ${email}`);
-    res.json({ success: true, channel: 'email', recipient: email });
+    console.log(`[Robot Correo] Correo despachado exitosamente a ${recipient}`);
+    return { success: true, channel: 'email', recipient };
   } catch (error) {
     console.error('[Robot Correo] Error enviando correo:', error);
-    res.status(500).json({ error: 'Error enviando el correo', details: error.message });
+    return { success: false, channel: 'email', recipient, error: error.message };
+  }
+}
+
+// Endpoint Legacy de envío directo (se mantiene por compatibilidad temporal con ProfileTab y ProducerPortal antes de 1D-C.3)
+app.post('/api/send-recovery', recoveryRequestLimiter, async (req, res) => {
+  const { channel = 'email', email, phone, code, name } = req.body || {};
+
+  if (!code) {
+    return res.status(400).json({ error: 'Falta el código de recuperación' });
+  }
+
+  const recipient = channel === 'whatsapp' ? phone : email;
+  if (!recipient) {
+    return res.status(400).json({ error: channel === 'whatsapp' ? 'Falta el número de teléfono para WhatsApp' : 'Falta el correo electrónico' });
+  }
+
+  try {
+    const result = await dispatchRecoveryOtp({ channel, recipient, code, name });
+    if (!result.success && result.error && !result.simulated) {
+      return res.status(500).json({ error: 'Error despachando código', details: result.error });
+    }
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: 'Error procesando despacho de recuperación' });
   }
 });
 
@@ -2670,3 +3287,17 @@ server.listen(PORT, () => {
   }, CHECK_INTERVAL_MS);
 });
 
+// Exportaciones del Recovery Core para pruebas y consumo interno seguro
+export {
+  createRecoveryChallenge,
+  verifyRecoveryCode,
+  consumeResetToken,
+  invalidateRecoveryChallenge,
+  cleanupRecoveryStore,
+  recoveryChallengeStore,
+  recoveryResetTokenStore,
+  recoveryRequestLimiter,
+  recoveryVerifyLimiter,
+  hashEphemeralSecret,
+  maskRecipient
+};
