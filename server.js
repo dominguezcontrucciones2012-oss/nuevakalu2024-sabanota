@@ -100,11 +100,17 @@ console.log('📂 Directorio de Datos / DB (Privado):', dataDir);
 console.log('🖼️  Directorio de Uploads / Assets (Público):', uploadDir);
 console.log('----------------------------------------------------');
 
-// --- CONFIGURACIÓN DE CORS Y ORIGINS PERMITIDOS (FASE 1D-D.2) ---
+// --- CONFIGURACIÓN DE CORS Y ORIGINS PERMITIDOS (FASE 1D-D.2 & 1F-D) ---
+function parseAllowedOrigins(rawEnv) {
+  if (!rawEnv || typeof rawEnv !== 'string') return [];
+  return rawEnv
+    .split(',')
+    .map(s => s.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+}
+
 const rawAllowedOrigins = process.env.SOCKET_ALLOWED_ORIGINS || process.env.ALLOWED_ORIGINS || '';
-const configuredOrigins = rawAllowedOrigins
-  ? rawAllowedOrigins.split(',').map(s => s.trim()).filter(Boolean)
-  : [];
+const configuredOrigins = parseAllowedOrigins(rawAllowedOrigins);
 
 // Origins de desarrollo locales permitidos por defecto cuando !isProd
 const defaultDevOrigins = [
@@ -116,12 +122,29 @@ const defaultDevOrigins = [
   'http://127.0.0.1:5173'
 ];
 
+function getAllowedOrigins() {
+  const list = [...configuredOrigins];
+  if (!isProd) {
+    for (const devOrigin of defaultDevOrigins) {
+      if (!list.includes(devOrigin)) {
+        list.push(devOrigin);
+      }
+    }
+  }
+  return list;
+}
+
+function normalizeOrigin(origin) {
+  if (!origin || typeof origin !== 'string') return '';
+  return origin.trim().replace(/\/+$/, '');
+}
+
 function isOriginAllowed(origin) {
-  // Peticiones locales o server-to-server sin cabecera origin (curl, apps móviles nativas, testing)
+  // Peticiones locales o server-to-server sin cabecera origin (curl, scripts internos, health checks, testing)
   if (!origin) return true;
-  if (configuredOrigins.includes(origin)) return true;
-  if (!isProd && defaultDevOrigins.includes(origin)) return true;
-  return false;
+  const normalized = normalizeOrigin(origin);
+  const allowed = getAllowedOrigins();
+  return allowed.includes(normalized);
 }
 
 const PORT = process.env.PORT || 3001;
@@ -217,27 +240,37 @@ const io = new Server(server, {
   cors: {
     origin: function (origin, callback) {
       if (isOriginAllowed(origin)) {
-        callback(null, true);
+        callback(null, origin || true);
       } else {
         callback(new Error('Origin no permitido por política CORS'));
       }
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE']
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS']
   }
 });
 
-app.use(cors({
+// Middleware CORS Endurecido para Express (Fase 1F-D)
+const corsOptions = {
   origin: function (origin, callback) {
     if (isOriginAllowed(origin)) {
-      callback(null, true);
+      // Si el request trae un Origin permitido, se devuelve explícitamente para que ACAO nunca sea '*'
+      callback(null, origin ? normalizeOrigin(origin) : true);
     } else {
-      callback(new Error('Origin no permitido por política CORS'));
+      // Origin no autorizado: callback(null, false) no emite ACAO y bloquea al navegador
+      callback(null, false);
     }
   },
-  credentials: true
-}));
-app.use(express.json());
+  credentials: true,
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-csrf-token', 'X-Requested-With'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  maxAge: 86400
+};
+
+app.use(cors(corsOptions));
+
+app.use(express.json({ limit: '50mb' }));
 
 const SESSION_SECRET = process.env.SESSION_SECRET || 'kalu_dev_session_secret_2026_super_safe_and_random';
 
@@ -4587,5 +4620,8 @@ export {
   uploadDir,
   backupsDir,
   getCollectionFilePath,
-  ALLOWED_STATIC_EXTENSIONS
+  ALLOWED_STATIC_EXTENSIONS,
+  parseAllowedOrigins,
+  normalizeOrigin,
+  getAllowedOrigins
 };

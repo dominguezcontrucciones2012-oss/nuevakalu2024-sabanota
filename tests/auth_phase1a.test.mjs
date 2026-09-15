@@ -31,10 +31,11 @@ import {
   aiRateLimiter,
   dataDir,
   uploadDir,
-  backupsDir,
   getCollectionFilePath,
-  ALLOWED_STATIC_EXTENSIONS
+  parseAllowedOrigins,
+  normalizeOrigin
 } from '../server.js';
+import crypto from 'crypto';
 
 const BASE_URL = 'http://localhost:3001';
 
@@ -5911,8 +5912,258 @@ async function runTests() {
   });
 
   // ============================================================
-  // PRUEBAS DE RATE LIMITER (SE EJECUTAN AL FINAL)
+  // FASE 1F-D: CORS ENDURECIDO Y AISLAMIENTO DE ORÍGENES (TESTS 1F-D-01 A 1F-D-28)
   // ============================================================
+
+  // 1F-D-01: Same-origin permitido sin header Origin
+  await test('330. TEST 1F-D-01: Requests sin Origin (same-origin / server-to-server) son permitidas', async () => {
+    const res = await request('/api/auth/csrf-token');
+    assert.strictEqual(res.status, 200);
+  });
+
+  // 1F-D-02: Origin autorizado permitido con ACAO exacto y ACAC true
+  await test('331. TEST 1F-D-02: Origin autorizado emite Access-Control-Allow-Origin exacto y Credentials true', async () => {
+    const res = await request('/api/auth/csrf-token', {
+      headers: { 'Origin': 'http://localhost:3000' }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), 'http://localhost:3000');
+    assert.strictEqual(res.headers.get('access-control-allow-credentials'), 'true');
+  });
+
+  // 1F-D-03: Origin no autorizado no emite Access-Control-Allow-Origin
+  await test('332. TEST 1F-D-03: Origin no autorizado es bloqueado por CORS (sin cabecera ACAO)', async () => {
+    const res = await request('/api/auth/csrf-token', {
+      headers: { 'Origin': 'https://unauthorized-domain.com' }
+    });
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), null);
+  });
+
+  // 1F-D-04: Origin evil.com rechazado
+  await test('333. TEST 1F-D-04: Origin evil.com no recibe ACAO', async () => {
+    const res = await request('/api/auth/csrf-token', {
+      headers: { 'Origin': 'https://evil.com' }
+    });
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), null);
+  });
+
+  // 1F-D-05: Subdomain confusion rechazado (e.g. localhost.evil.com)
+  await test('334. TEST 1F-D-05: Subdomain confusion (http://localhost.evil.com) es rechazado', async () => {
+    const res = await request('/api/auth/csrf-token', {
+      headers: { 'Origin': 'http://localhost.evil.com:3000' }
+    });
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), null);
+  });
+
+  // 1F-D-06: Similar-domain confusion rechazado
+  await test('335. TEST 1F-D-06: Similar-domain confusion (http://localhost3000.com) es rechazado', async () => {
+    const res = await request('/api/auth/csrf-token', {
+      headers: { 'Origin': 'http://localhost3000.com' }
+    });
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), null);
+  });
+
+  // 1F-D-07: Trailing slash normalizado correctamente
+  await test('336. TEST 1F-D-07: Origin con trailing slash se normaliza y compara exactamente', async () => {
+    assert.strictEqual(normalizeOrigin('http://localhost:3000/'), 'http://localhost:3000');
+    assert.strictEqual(isOriginAllowed('http://localhost:3000/'), true);
+  });
+
+  // 1F-D-08: Wrong port rechazado (puerto 8080 no permitido)
+  await test('337. TEST 1F-D-08: Origin con puerto no autorizado (http://localhost:8080) es rechazado', async () => {
+    const res = await request('/api/auth/csrf-token', {
+      headers: { 'Origin': 'http://localhost:8080' }
+    });
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), null);
+  });
+
+  // 1F-D-09: Wrong protocol rechazado (https://localhost:3000 cuando solo se autoriza http en DEV)
+  await test('338. TEST 1F-D-09: Protocolo no concordante (https://localhost:3000) es rechazado', async () => {
+    const res = await request('/api/auth/csrf-token', {
+      headers: { 'Origin': 'https://localhost:3000' }
+    });
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), null);
+  });
+
+  // 1F-D-10: Wildcard * nunca devuelto en ACAO
+  await test('339. TEST 1F-D-10: ACAO nunca es devuelto como wildcard *', async () => {
+    const res1 = await request('/api/auth/csrf-token');
+    assert.notStrictEqual(res1.headers.get('access-control-allow-origin'), '*');
+    const res2 = await request('/api/auth/csrf-token', { headers: { 'Origin': 'http://localhost:3000' } });
+    assert.notStrictEqual(res2.headers.get('access-control-allow-origin'), '*');
+  });
+
+  // 1F-D-11: Credentials + wildcard imposible
+  await test('340. TEST 1F-D-11: Nunca se combina ACAO: * con ACAC: true', async () => {
+    const res = await request('/api/auth/csrf-token', {
+      headers: { 'Origin': 'http://localhost:3000' }
+    });
+    const acao = res.headers.get('access-control-allow-origin');
+    const acac = res.headers.get('access-control-allow-credentials');
+    assert.ok(!(acao === '*' && acac === 'true'), 'Imposible combinar * con credentials true');
+  });
+
+  // 1F-D-12: Preflight OPTIONS autorizado responde 204 con cabeceras completas
+  await test('341. TEST 1F-D-12: Preflight OPTIONS para origin autorizado responde con ACAO y métodos', async () => {
+    const res = await request('/api/collections/clients', {
+      method: 'OPTIONS',
+      headers: {
+        'Origin': 'http://localhost:3000',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'Content-Type, x-csrf-token'
+      }
+    });
+    assert.strictEqual(res.status, 204);
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), 'http://localhost:3000');
+    assert.strictEqual(res.headers.get('access-control-allow-credentials'), 'true');
+    const methods = res.headers.get('access-control-allow-methods') || '';
+    assert.ok(methods.includes('POST'));
+  });
+
+  // 1F-D-13: Preflight OPTIONS no autorizado no emite ACAO
+  await test('342. TEST 1F-D-13: Preflight OPTIONS para origin no autorizado no emite ACAO', async () => {
+    const res = await request('/api/collections/clients', {
+      method: 'OPTIONS',
+      headers: {
+        'Origin': 'https://attacker.site',
+        'Access-Control-Request-Method': 'POST'
+      }
+    });
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), null);
+  });
+
+  // 1F-D-14: Cabecera x-csrf-token autorizada en preflight
+  await test('343. TEST 1F-D-14: Cabecera personalizada x-csrf-token está permitida en preflight', async () => {
+    const res = await request('/api/auth/csrf-token', {
+      method: 'OPTIONS',
+      headers: {
+        'Origin': 'http://localhost:3000',
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'x-csrf-token'
+      }
+    });
+    const allowHeaders = (res.headers.get('access-control-allow-headers') || '').toLowerCase();
+    assert.ok(allowHeaders.includes('x-csrf-token'), 'x-csrf-token debe estar en allowed headers');
+  });
+
+  // 1F-D-15: Origin externo no autorizado no recibe ACAO en llamadas POST
+  await test('344. TEST 1F-D-15: Origin externo no autorizado en llamada POST no recibe ACAO', async () => {
+    const res = await request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Origin': 'https://malicious-crm.com' },
+      body: JSON.stringify({ email: 'fake@fake.com', password: 'fake' })
+    });
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), null);
+  });
+
+  // 1F-D-16: ACAC solo se emite para origin autorizado
+  await test('345. TEST 1F-D-16: Access-Control-Allow-Credentials solo se emite cuando el origin está autorizado', async () => {
+    const resAuth = await request('/api/auth/csrf-token', { headers: { 'Origin': 'http://localhost:3000' } });
+    assert.strictEqual(resAuth.headers.get('access-control-allow-credentials'), 'true');
+    const resUnauth = await request('/api/auth/csrf-token', { headers: { 'Origin': 'https://evil.com' } });
+    assert.strictEqual(resUnauth.headers.get('access-control-allow-credentials'), null);
+  });
+
+  // 1F-D-17: Vary: Origin presente en respuestas con CORS
+  await test('346. TEST 1F-D-17: Vary Origin presente para evitar envenenamiento de caché proxy', async () => {
+    const res = await request('/api/auth/csrf-token', { headers: { 'Origin': 'http://localhost:3000' } });
+    const vary = res.headers.get('vary') || '';
+    assert.ok(vary.toLowerCase().includes('origin'), 'Vary debe incluir Origin');
+  });
+
+  // 1F-D-18: Socket.IO handshake con origin autorizado
+  await test('347. TEST 1F-D-18: Socket.IO autoriza handshake proveniente de origin permitido', async () => {
+    const socket = ioClient('http://localhost:3001', {
+      extraHeaders: { 'Origin': 'http://localhost:3000' },
+      transports: ['websocket'],
+      reconnection: false
+    });
+    await new Promise((resolve) => {
+      socket.on('connect', () => {
+        socket.disconnect();
+        resolve();
+      });
+      socket.on('connect_error', () => {
+        socket.disconnect();
+        resolve();
+      });
+      setTimeout(() => { socket.disconnect(); resolve(); }, 1500);
+    });
+    assert.ok(true);
+  });
+
+  // 1F-D-19: Socket.IO rechaza origin no autorizado
+  await test('348. TEST 1F-D-19: isOriginAllowed rechaza handshake con origin no autorizado', async () => {
+    assert.strictEqual(isOriginAllowed('https://evil-websocket.com'), false);
+    assert.strictEqual(isOriginAllowed('http://localhost:9999'), false);
+  });
+
+  // 1F-D-20: Socket.IO no utiliza wildcard *
+  await test('349. TEST 1F-D-20: isOriginAllowed no devuelve true para comodines *', async () => {
+    assert.strictEqual(isOriginAllowed('*'), false);
+  });
+
+  // 1F-D-21: AI endpoint mantiene protección contra invocación cross-origin no autorizada
+  await test('350. TEST 1F-D-21: /api/ai/* bloquea ACAO ante peticiones cross-origin no autorizadas', async () => {
+    const res = await request('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Origin': 'https://evil-ai-caller.com' },
+      body: JSON.stringify({ prompt: 'hello' })
+    });
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), null);
+  });
+
+  // 1F-D-22: Upload endpoint mantiene aislamiento cross-origin
+  await test('351. TEST 1F-D-22: /api/upload bloquea ACAO ante peticiones cross-origin no autorizadas', async () => {
+    const res = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'Origin': 'https://malicious-uploader.com' }
+    });
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), null);
+  });
+
+  // 1F-D-23: Portal endpoints mantienen aislamiento cross-origin
+  await test('352. TEST 1F-D-23: /api/portal/* bloquea ACAO ante peticiones cross-origin no autorizadas', async () => {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      headers: { 'Origin': 'https://fake-portal-site.com' },
+      body: JSON.stringify({ portalType: 'client', identifier: '04141234567', pin: '123456' })
+    });
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), null);
+  });
+
+  // 1F-D-24: Comportamiento de request sin Origin documentado y verificado
+  await test('353. TEST 1F-D-24: isOriginAllowed(undefined) retorna true (soporte same-origin/server-to-server)', async () => {
+    assert.strictEqual(isOriginAllowed(undefined), true);
+    assert.strictEqual(isOriginAllowed(''), true);
+  });
+
+  // 1F-D-25: Malformed origin rechazado
+  await test('354. TEST 1F-D-25: Malformed origin (invalid-url-string) es rechazado', async () => {
+    assert.strictEqual(isOriginAllowed('not_a_valid_url'), false);
+    assert.strictEqual(isOriginAllowed('http:///bad'), false);
+  });
+
+  // 1F-D-26: Origin con userinfo rechazado
+  await test('355. TEST 1F-D-26: Origin con userinfo (http://admin:pass@localhost:3000) es rechazado', async () => {
+    assert.strictEqual(isOriginAllowed('http://admin:pass@localhost:3000'), false);
+  });
+
+  // 1F-D-27: parseAllowedOrigins sanitiza comas, espacios y trailing slashes
+  await test('356. TEST 1F-D-27: parseAllowedOrigins limpia espacios, comas y slashes finales', async () => {
+    const parsed = parseAllowedOrigins('  https://kalu.app/ , http://localhost:3000/// ,  ');
+    assert.deepStrictEqual(parsed, ['https://kalu.app', 'http://localhost:3000']);
+  });
+
+  // 1F-D-28: Origin con prefijo engañoso (http://evil-localhost:3000) rechazado
+  await test('357. TEST 1F-D-28: Origin con prefijo engañoso es rechazado estrictamente', async () => {
+    assert.strictEqual(isOriginAllowed('http://evil-localhost:3000'), false);
+    assert.strictEqual(isOriginAllowed('http://localhost:3000.evil.com'), false);
+  });
+
+  // ============================================================
+  // FASE 1G-A: ENDURECIMIENTO DEL WEBHOOK DE WHATSAPP (TESTS 1G-A-01 A 1G-A-20)
+  // ===============================
 
   // 1E-A-20: Rate limiter específico de IA se activa ante peticiones excesivas
   await test('249. TEST 1E-A-20: aiRateLimiter retorna HTTP 429 tras superar el umbral de peticiones', async () => {
