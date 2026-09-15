@@ -198,6 +198,125 @@ io.use((socket, next) => {
   next();
 });
 
+// ============================================================
+// REGISTRO Y GESTIÓN DE CICLO DE VIDA DE SOCKETS (FASE 1D-D.3)
+// ============================================================
+
+// Registro efímero en memoria de sockets activos indexados por sessionId
+// sessionId -> Set<Socket>
+const activeSessionSockets = new Map();
+
+function registerSocketSession(socket) {
+  const sessionId = socket.request?.session?.id || socket.request?.sessionID;
+  if (!sessionId) return;
+
+  if (!activeSessionSockets.has(sessionId)) {
+    activeSessionSockets.set(sessionId, new Set());
+  }
+  activeSessionSockets.get(sessionId).add(socket);
+}
+
+function unregisterSocketSession(socket) {
+  const sessionId = socket.request?.session?.id || socket.request?.sessionID;
+  if (!sessionId) return;
+
+  const socketSet = activeSessionSockets.get(sessionId);
+  if (socketSet) {
+    socketSet.delete(socket);
+    if (socketSet.size === 0) {
+      activeSessionSockets.delete(sessionId);
+    }
+  }
+}
+
+/**
+ * Invalida todos los sockets asociados a una sesión destruida o cerrada (CRM logout)
+ */
+function invalidateSessionSockets(sessionId) {
+  if (!sessionId) return;
+  const socketSet = activeSessionSockets.get(sessionId);
+  if (socketSet && socketSet.size > 0) {
+    for (const s of socketSet) {
+      try {
+        s.disconnect(true);
+      } catch (err) {
+        console.error('[Socket Lifecycle] Error desconectando socket:', err);
+      }
+    }
+    activeSessionSockets.delete(sessionId);
+  }
+}
+
+/**
+ * Remueve privilegios y rooms de portal de todos los sockets de una sesión (Portal logout)
+ * Si la sesión coexiste con CRM, no desconecta el socket ni altera rooms CRM.
+ * Si la sesión era exclusiva de portal, desconecta los sockets.
+ */
+function purgePortalSocketPrivileges(sessionId, isCoexistingWithCrm = false) {
+  if (!sessionId) return;
+  const socketSet = activeSessionSockets.get(sessionId);
+  if (socketSet && socketSet.size > 0) {
+    for (const s of socketSet) {
+      try {
+        if (isCoexistingWithCrm) {
+          // Remover exclusivamente rooms de portal
+          const portalRooms = Array.from(s.rooms || []).filter(r => r.startsWith('room:portal:'));
+          for (const pr of portalRooms) {
+            s.leave(pr);
+          }
+          if (s.data && s.data.identity) {
+            s.data.identity.portal = null;
+          }
+        } else {
+          // Sesión exclusiva de portal: desconectar limpiamente
+          s.disconnect(true);
+        }
+      } catch (err) {
+        console.error('[Socket Lifecycle] Error purgando privilegios de portal:', err);
+      }
+    }
+    if (!isCoexistingWithCrm) {
+      activeSessionSockets.delete(sessionId);
+    }
+  }
+}
+
+// Handler de conexión de Socket.IO con asignación automática de rooms según identidad (Fases 1D-D.1, 1D-D.2 y 1D-D.3)
+io.on('connection', (socket) => {
+  const identity = socket.data?.identity || { isAnonymous: true, crm: null, portal: null };
+
+  // Registrar socket en el registry de sesiones activas
+  registerSocketSession(socket);
+
+  // 1. Unirse siempre a la room pública base
+  socket.join('room:public');
+
+  // 2. Unirse a rooms correspondientes de CRM
+  if (identity.crm) {
+    const role = String(identity.crm.role || '').toLowerCase();
+    socket.join('room:crm:staff');
+    if (role === 'admin') {
+      socket.join('room:crm:admin');
+    }
+  }
+
+  // 3. Unirse a rooms correspondientes de Portal
+  if (identity.portal) {
+    const portalType = String(identity.portal.type || '').toLowerCase();
+    const portalId = String(identity.portal.id || '');
+    if (portalType === 'client' && portalId) {
+      socket.join(`room:portal:client:${portalId}`);
+    } else if (portalType === 'producer' && portalId) {
+      socket.join(`room:portal:producer:${portalId}`);
+    }
+  }
+
+  // Limpieza al desconectarse
+  socket.on('disconnect', () => {
+    unregisterSocketSession(socket);
+  });
+});
+
 // Rate limiter específico para Login (10 intentos fallidos por cada ventana de 15 minutos)
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -883,6 +1002,10 @@ function verifyCsrf(req, res, next) {
 
 // 4. Logout e invalidación de sesión server-side (Protegido con verificación CSRF)
 app.post('/api/auth/logout', verifyCsrf, (req, res) => {
+  const sessionId = req.session?.id || req.sessionID;
+  if (sessionId) {
+    invalidateSessionSockets(sessionId);
+  }
   req.session.destroy((err) => {
     if (err) {
       console.error('[Auth Error] Error destruyendo sesión:', err);
@@ -1037,7 +1160,16 @@ app.get('/api/portal/auth/me', requirePortalAuth, (req, res) => {
 // 3. Logout del portal (Protegido con verificación CSRF)
 app.post('/api/portal/auth/logout', verifyCsrf, (req, res) => {
   if (req.session) {
+    const sessionId = req.session?.id || req.sessionID;
+    const isCoexisting = Boolean(req.session.userId);
+
     delete req.session.portalUser;
+
+    // Purgar privilegios de portal de sockets en memoria server-side
+    if (sessionId) {
+      purgePortalSocketPrivileges(sessionId, isCoexisting);
+    }
+
     // Si no hay sesión CRM activa, destruir la sesión y limpiar cookie
     if (!req.session.userId) {
       req.session.destroy((err) => {
@@ -3616,5 +3748,8 @@ export {
   sanitizeProducerPayload,
   sanitizePublicProduct,
   isOriginAllowed,
-  writeCollection
+  writeCollection,
+  activeSessionSockets,
+  invalidateSessionSockets,
+  purgePortalSocketPrivileges
 };

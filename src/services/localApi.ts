@@ -23,6 +23,19 @@ export const initSocket = () => {
   return socket;
 };
 
+export const disconnectSocket = () => {
+  if (socket) {
+    socket.removeAllListeners();
+    socket.disconnect();
+    socket = null;
+  }
+};
+
+export const reconnectSocket = () => {
+  disconnectSocket();
+  return initSocket();
+};
+
 // Generic Collection Hook/Subscriber with Delta Updates
 export const onCollectionSnapshot = (collectionName: string, callback: (data: any[]) => void) => {
   const currentSocket = initSocket();
@@ -262,6 +275,8 @@ export const loginApi = async (credentials: {
   if (data.csrfToken) {
     cachedCsrfToken = data.csrfToken;
   }
+  // Reconectar socket con la nueva sesión HTTP (Fase 1D-D.3)
+  reconnectSocket();
   return data;
 };
 
@@ -275,6 +290,8 @@ export const logoutApi = async () => {
     credentials: 'include'
   });
   cachedCsrfToken = '';
+  // Desconectar socket localmente tras destruir sesión HTTP (Fase 1D-D.3)
+  disconnectSocket();
   return await res.json();
 };
 
@@ -316,6 +333,8 @@ export const portalLoginApi = async (credentials: {
   if (data.csrfToken) {
     cachedCsrfToken = data.csrfToken;
   }
+  // Reconectar socket con la nueva sesión de portal (Fase 1D-D.3)
+  reconnectSocket();
   return data;
 };
 
@@ -328,6 +347,8 @@ export const portalLogoutApi = async () => {
     },
     credentials: 'include'
   });
+  // Reconectar socket para reevaluar sesión (o quedar anónimo) (Fase 1D-D.3)
+  reconnectSocket();
   return await res.json();
 };
 

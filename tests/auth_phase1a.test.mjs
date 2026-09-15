@@ -20,7 +20,8 @@ import {
   sanitizeProducerPayload,
   sanitizePublicProduct,
   isOriginAllowed,
-  writeCollection
+  writeCollection,
+  activeSessionSockets
 } from '../server.js';
 
 const BASE_URL = 'http://localhost:3001';
@@ -4013,6 +4014,392 @@ async function runTests() {
       emitCollectionDeltaScoped({ action: 'add', collection: 'banners', doc: { id: 'b1', title: 'Banner' } });
       emitCollectionUpdatedScoped('banners');
     });
+  });
+
+  // ============================================================
+  // PRUEBAS DE FASE 1D-D.3: SOCKET LIFECYCLE, INVALIDATION & RECONNECT
+  // ============================================================
+
+  // D3-01: anonymous socket -> portal login -> old socket remains public only
+  await test('210. TEST D3-01: Socket anónimo previo a login de portal NO adquiere privilegios de portal', async () => {
+    const anonSocket = await connectTestSocket(null);
+    assert.ok(anonSocket && anonSocket.id);
+
+    // Login HTTP de cliente A
+    const { cookie: clientCookie } = await loginClientAD2();
+
+    // Consultar rooms del socket viejo
+    const resRooms = await request(`/api/test-socket-info/${anonSocket.id}`);
+    assert.strictEqual(resRooms.data.identity.isAnonymous, true, 'Socket viejo debe seguir siendo anónimo');
+    assert.ok(!resRooms.data.rooms.includes('room:portal:client:cli-demo-1'), 'Socket viejo NO debe adquirir room de cliente');
+    anonSocket.disconnect();
+  });
+
+  // D3-02: portal client login -> reconnect -> correct client room
+  await test('211. TEST D3-02: Cliente reconecta tras login y obtiene su room de cliente legítima', async () => {
+    const { cookie: clientCookie } = await loginClientAD2();
+    const newSocket = await connectTestSocket(clientCookie);
+    assert.ok(newSocket && newSocket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${newSocket.id}`);
+    assert.strictEqual(resRooms.data.identity.portal.type, 'client');
+    assert.strictEqual(resRooms.data.identity.portal.id, 'cli-demo-1');
+    assert.ok(resRooms.data.rooms.includes('room:portal:client:cli-demo-1'), 'Nuevo socket debe tener su room de cliente');
+    newSocket.disconnect();
+  });
+
+  // D3-03: portal producer login -> reconnect -> correct producer room
+  await test('212. TEST D3-03: Productor reconecta tras login y obtiene su room de productor legítima', async () => {
+    const { cookie: producerCookie } = await loginProducerAD2();
+    const newSocket = await connectTestSocket(producerCookie);
+    assert.ok(newSocket && newSocket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${newSocket.id}`);
+    assert.strictEqual(resRooms.data.identity.portal.type, 'producer');
+    assert.strictEqual(resRooms.data.identity.portal.id, 'sup-demo-1');
+    assert.ok(resRooms.data.rooms.includes('room:portal:producer:sup-demo-1'), 'Nuevo socket debe tener su room de productor');
+    newSocket.disconnect();
+  });
+
+  // D3-04: CRM admin login -> reconnect -> admin rooms
+  await test('213. TEST D3-04: Admin CRM reconecta tras login y obtiene rooms staff y admin', async () => {
+    const { cookie: adminCookie } = await loginAdminD2();
+    const adminSocket = await connectTestSocket(adminCookie);
+    assert.ok(adminSocket && adminSocket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${adminSocket.id}`);
+    assert.strictEqual(resRooms.data.identity.crm.role, 'admin');
+    assert.ok(resRooms.data.rooms.includes('room:crm:staff'));
+    assert.ok(resRooms.data.rooms.includes('room:crm:admin'));
+    adminSocket.disconnect();
+  });
+
+  // D3-05: CRM cashier login -> reconnect -> staff only (NO admin)
+  await test('214. TEST D3-05: Cajero CRM reconecta tras login y obtiene staff pero NO admin room', async () => {
+    const { cookie: cashierCookie } = await loginCashierD2();
+    const cashierSocket = await connectTestSocket(cashierCookie);
+    assert.ok(cashierSocket && cashierSocket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${cashierSocket.id}`);
+    assert.strictEqual(resRooms.data.identity.crm.role, 'cajero');
+    assert.ok(resRooms.data.rooms.includes('room:crm:staff'));
+    assert.ok(!resRooms.data.rooms.includes('room:crm:admin'), 'Cajero no debe obtener room:crm:admin');
+    cashierSocket.disconnect();
+  });
+
+  // D3-06: admin logout invalidates all sockets of same session
+  await test('215. TEST D3-06: Logout de Admin CRM invalida y desconecta server-side los sockets de la sesión', async () => {
+    const { cookie: adminCookie, csrf } = await loginAdminD2();
+    const socket = await connectTestSocket(adminCookie);
+    assert.ok(socket && socket.id);
+
+    const disconnectPromise = new Promise((resolve) => {
+      socket.on('disconnect', () => resolve(true));
+      setTimeout(() => resolve(false), 2000);
+    });
+
+    // Ejecutar HTTP logout con CSRF
+    const resLogout = await request('/api/auth/logout', {
+      method: 'POST',
+      headers: {
+        'Cookie': adminCookie,
+        'x-csrf-token': csrf
+      }
+    });
+    assert.strictEqual(resLogout.status, 200);
+
+    const disconnected = await disconnectPromise;
+    assert.strictEqual(disconnected, true, 'Socket debe ser desconectado server-side tras logout');
+  });
+
+  // D3-07: portal logout invalidates portal room
+  await test('216. TEST D3-07: Logout de Portal Cliente invalida y desconecta socket exclusivo de portal', async () => {
+    const { cookie: clientCookie, csrf } = await loginClientAD2();
+    const socket = await connectTestSocket(clientCookie);
+    assert.ok(socket && socket.id);
+
+    const disconnectPromise = new Promise((resolve) => {
+      socket.on('disconnect', () => resolve(true));
+      setTimeout(() => resolve(false), 2000);
+    });
+
+    const resLogout = await request('/api/portal/auth/logout', {
+      method: 'POST',
+      headers: {
+        'Cookie': clientCookie,
+        'x-csrf-token': csrf
+      }
+    });
+    assert.strictEqual(resLogout.status, 200);
+
+    const disconnected = await disconnectPromise;
+    assert.strictEqual(disconnected, true, 'Socket de portal exclusivo debe ser desconectado');
+  });
+
+  // D3-08: CRM + client coexistence -> portal logout removes only portal room, preserves CRM socket
+  await test('217. TEST D3-08: Coexistencia CRM + Portal: Portal logout purga room de portal y preserva CRM rooms', async () => {
+    const { cookie: adminCookie, csrf } = await loginAdminD2();
+
+    // Login portal en la misma sesión (coexistencia)
+    const resPortalLogin = await request('/api/portal/auth/login', {
+      method: 'POST',
+      headers: { 'Cookie': adminCookie },
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '778899'
+      })
+    });
+    const sessionCookie = resPortalLogin.setCookie.split(';')[0];
+    const portalCsrf = resPortalLogin.data.csrfToken;
+
+    const socket = await connectTestSocket(sessionCookie);
+    assert.ok(socket && socket.id);
+
+    // Verificar que tiene ambas rooms inicialmente
+    const resRoomsBefore = await request(`/api/test-socket-info/${socket.id}`);
+    assert.ok(resRoomsBefore.data.rooms.includes('room:crm:admin'));
+    assert.ok(resRoomsBefore.data.rooms.includes('room:portal:client:cli-demo-1'));
+
+    // Ejecutar Portal Logout preservando CRM
+    const resPortalLogout = await request('/api/portal/auth/logout', {
+      method: 'POST',
+      headers: {
+        'Cookie': sessionCookie,
+        'x-csrf-token': portalCsrf
+      }
+    });
+    assert.strictEqual(resPortalLogout.status, 200);
+
+    // Verificar rooms después del logout
+    const resRoomsAfter = await request(`/api/test-socket-info/${socket.id}`);
+    assert.ok(resRoomsAfter.data.rooms.includes('room:crm:admin'), 'Debe conservar room:crm:admin');
+    assert.ok(resRoomsAfter.data.rooms.includes('room:crm:staff'), 'Debe conservar room:crm:staff');
+    assert.ok(!resRoomsAfter.data.rooms.includes('room:portal:client:cli-demo-1'), 'Debe haber purgado room:portal:client:cli-demo-1');
+    socket.disconnect();
+  });
+
+  // D3-09: CRM + producer coexistence -> portal logout removes only producer room
+  await test('218. TEST D3-09: Coexistencia CRM + Productor: Portal logout purga room de productor y preserva CRM rooms', async () => {
+    const { cookie: adminCookie } = await loginAdminD2();
+
+    const resPortalLogin = await request('/api/portal/auth/login', {
+      method: 'POST',
+      headers: { 'Cookie': adminCookie },
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: '04125550101',
+        pin: '445566'
+      })
+    });
+    const sessionCookie = resPortalLogin.setCookie.split(';')[0];
+    const portalCsrf = resPortalLogin.data.csrfToken;
+
+    const socket = await connectTestSocket(sessionCookie);
+    assert.ok(socket && socket.id);
+
+    const resRoomsBefore = await request(`/api/test-socket-info/${socket.id}`);
+    assert.ok(resRoomsBefore.data.rooms.includes('room:crm:admin'));
+    assert.ok(resRoomsBefore.data.rooms.includes('room:portal:producer:sup-demo-1'));
+
+    const resPortalLogout = await request('/api/portal/auth/logout', {
+      method: 'POST',
+      headers: {
+        'Cookie': sessionCookie,
+        'x-csrf-token': portalCsrf
+      }
+    });
+    assert.strictEqual(resPortalLogout.status, 200);
+
+    const resRoomsAfter = await request(`/api/test-socket-info/${socket.id}`);
+    assert.ok(resRoomsAfter.data.rooms.includes('room:crm:admin'));
+    assert.ok(!resRoomsAfter.data.rooms.includes('room:portal:producer:sup-demo-1'), 'Debe haber purgado room de productor');
+    socket.disconnect();
+  });
+
+  // D3-10: CRM logout invalidates CRM rooms
+  await test('219. TEST D3-10: CRM logout destruye sesión e invalida acceso a eventos privados', async () => {
+    const { cookie: cashierCookie, csrf } = await loginCashierD2();
+    const socket = await connectTestSocket(cashierCookie);
+    assert.ok(socket && socket.id);
+
+    const resLogout = await request('/api/auth/logout', {
+      method: 'POST',
+      headers: {
+        'Cookie': cashierCookie,
+        'x-csrf-token': csrf
+      }
+    });
+    assert.strictEqual(resLogout.status, 200);
+
+    const resSocket = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resSocket.status, 404, 'Socket cerrado no debe estar activo');
+  });
+
+  // D3-11: admin logout -> cashier login -> old admin socket cannot receive admin events
+  await test('220. TEST D3-11: Admin logout seguido de login Cajero en nueva conexión no otorga privilegios admin', async () => {
+    const { cookie: adminCookie, csrf } = await loginAdminD2();
+    const adminSocket = await connectTestSocket(adminCookie);
+    assert.ok(adminSocket && adminSocket.id);
+
+    await request('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Cookie': adminCookie, 'x-csrf-token': csrf }
+    });
+
+    const { cookie: cashierCookie } = await loginCashierD2();
+    const cashierSocket = await connectTestSocket(cashierCookie);
+
+    const resRooms = await request(`/api/test-socket-info/${cashierSocket.id}`);
+    assert.ok(!resRooms.data.rooms.includes('room:crm:admin'), 'Nueva conexión de cajero jamás hereda room admin');
+    cashierSocket.disconnect();
+  });
+
+  // D3-12: portal A logout -> portal B login -> A room is never inherited
+  await test('221. TEST D3-12: Portal A logout seguido de login Portal B no hereda rooms de Portal A', async () => {
+    const { cookie: clientACookie, csrf: csrfA } = await loginClientAD2();
+    const socketA = await connectTestSocket(clientACookie);
+    assert.ok(socketA && socketA.id);
+
+    await request('/api/portal/auth/logout', {
+      method: 'POST',
+      headers: { 'Cookie': clientACookie, 'x-csrf-token': csrfA }
+    });
+
+    const { cookie: clientBCookie } = await loginClientBD2();
+    const socketB = await connectTestSocket(clientBCookie);
+    assert.ok(socketB && socketB.id);
+
+    const resRoomsB = await request(`/api/test-socket-info/${socketB.id}`);
+    assert.ok(resRoomsB.data.rooms.includes('room:portal:client:cli-demo-2'));
+    assert.ok(!resRoomsB.data.rooms.includes('room:portal:client:cli-demo-1'), 'Socket B jamás hereda room de Client A');
+    socketB.disconnect();
+  });
+
+  // D3-13: two sockets same session both invalidated on logout
+  await test('222. TEST D3-13: Múltiples sockets asociados a una misma sesión son todos invalidados en logout', async () => {
+    const { cookie: adminCookie, csrf } = await loginAdminD2();
+    const socket1 = await connectTestSocket(adminCookie);
+    const socket2 = await connectTestSocket(adminCookie);
+    assert.ok(socket1 && socket1.id);
+    assert.ok(socket2 && socket2.id);
+
+    const disconnectCount = { count: 0 };
+    socket1.on('disconnect', () => { disconnectCount.count++; });
+    socket2.on('disconnect', () => { disconnectCount.count++; });
+
+    await request('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Cookie': adminCookie, 'x-csrf-token': csrf }
+    });
+
+    await new Promise(r => setTimeout(r, 600));
+    assert.strictEqual(disconnectCount.count, 2, 'Ambos sockets de la misma sesión deben ser desconectados');
+  });
+
+  // D3-14: two different sessions remain isolated on single logout
+  await test('223. TEST D3-14: Logout en sesión 1 no afecta los sockets de una sesión 2 independiente', async () => {
+    const { cookie: session1Cookie, csrf: csrf1 } = await loginAdminD2();
+    const { cookie: session2Cookie } = await loginCashierD2();
+
+    const socket1 = await connectTestSocket(session1Cookie);
+    const socket2 = await connectTestSocket(session2Cookie);
+    assert.ok(socket1 && socket1.id);
+    assert.ok(socket2 && socket2.id);
+
+    // Logout en sesión 1
+    await request('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Cookie': session1Cookie, 'x-csrf-token': csrf1 }
+    });
+
+    await new Promise(r => setTimeout(r, 400));
+    const resSocket2 = await request(`/api/test-socket-info/${socket2.id}`);
+    assert.strictEqual(resSocket2.status, 200, 'Socket de la sesión 2 debe permanecer activo e inalterado');
+    socket2.disconnect();
+  });
+
+  // D3-15: destroyed session cannot keep private socket access
+  await test('224. TEST D3-15: Sesión destruida no retiene sockets en el registry activo', async () => {
+    const { cookie: clientCookie, csrf } = await loginClientAD2();
+    const socket = await connectTestSocket(clientCookie);
+    assert.ok(socket && socket.id);
+
+    await request('/api/portal/auth/logout', {
+      method: 'POST',
+      headers: { 'Cookie': clientCookie, 'x-csrf-token': csrf }
+    });
+
+    const resSocket = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resSocket.status, 404, 'Socket de sesión destruida no debe existir en servidor');
+  });
+
+  // D3-16: reconnect uses current cookie/session automatically
+  await test('225. TEST D3-16: Reconexión con cookie actual resuelve identidad automáticamente', async () => {
+    const { cookie: clientCookie } = await loginClientAD2();
+    const socket = await connectTestSocket(clientCookie);
+    assert.ok(socket && socket.id);
+
+    const resInfo = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resInfo.data.identity.portal.id, 'cli-demo-1');
+    socket.disconnect();
+  });
+
+  // D3-17: registry memory cleanup on disconnect
+  await test('226. TEST D3-17: Desconexión voluntaria del socket limpia referencias en memoria (evita memory leaks)', async () => {
+    const socket = await connectTestSocket(null);
+    assert.ok(socket && socket.id);
+
+    const resInfoBefore = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resInfoBefore.status, 200);
+
+    socket.disconnect();
+    await new Promise(r => setTimeout(r, 400));
+
+    const resInfoAfter = await request(`/api/test-socket-info/${socket.id}`);
+    assert.strictEqual(resInfoAfter.status, 404, 'Socket desconectado debe ser removido de las referencias activas');
+  });
+
+  // D3-18: multiple connect/disconnect cycles stay leak-free
+  await test('227. TEST D3-18: Múltiples ciclos de conexión y desconexión operan de forma limpia y estable', async () => {
+    for (let i = 0; i < 3; i++) {
+      const socket = await connectTestSocket(null);
+      assert.ok(socket && socket.id);
+      socket.disconnect();
+    }
+  });
+
+  // D3-19: forged identity cannot override socket authorization
+  await test('228. TEST D3-19: Parámetros forzados en reconnect no alteran rooms de sesión', async () => {
+    const { cookie: clientCookie } = await loginClientAD2();
+    const socket = await connectTestSocket(clientCookie, {
+      auth: { role: 'admin', clientId: 'cli-demo-2' },
+      query: { role: 'admin', clientId: 'cli-demo-2' }
+    });
+    assert.ok(socket && socket.id);
+
+    const resRooms = await request(`/api/test-socket-info/${socket.id}`);
+    assert.ok(resRooms.data.rooms.includes('room:portal:client:cli-demo-1'));
+    assert.ok(!resRooms.data.rooms.includes('room:crm:admin'), 'No debe adquirir admin');
+    assert.ok(!resRooms.data.rooms.includes('room:portal:client:cli-demo-2'), 'No debe adquirir client 2');
+    socket.disconnect();
+  });
+
+  // D3-20: session regeneration on login keeps old socket bounded to old state
+  await test('229. TEST D3-20: Session regeneration en login HTTP no otorga privilegios al socket anterior', async () => {
+    const { cookie: anonCookie } = await (async () => {
+      const res = await request('/api/auth/csrf-token');
+      return { cookie: res.setCookie.split(';')[0] };
+    })();
+    const oldSocket = await connectTestSocket(anonCookie);
+    assert.ok(oldSocket && oldSocket.id);
+
+    // Login HTTP regenera sesión
+    await loginAdminD2();
+
+    const resInfoOld = await request(`/api/test-socket-info/${oldSocket.id}`);
+    assert.strictEqual(resInfoOld.data.identity.isAnonymous, true, 'Socket previo no debe adquirir rol admin tras login');
+    oldSocket.disconnect();
   });
 
   // ============================================================
