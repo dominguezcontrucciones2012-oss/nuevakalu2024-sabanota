@@ -36,7 +36,7 @@ async function request(url, options = {}) {
 }
 
 async function runTests() {
-  console.log('🧪 Iniciando Suite de Pruebas Automatizadas — Fase 1A + Fase 1B: RBAC (36 Pruebas)\n');
+  console.log('🧪 Iniciando Suite de Pruebas Automatizadas — Fases 1A, 1B y 1C: API Hardening (63 Pruebas)\n');
   let passed = 0;
   let failed = 0;
 
@@ -298,7 +298,19 @@ async function runTests() {
 
   // 20. Sanitización de GET /api/collections/users (No expone hashes al cliente)
   await test('20. GET /api/collections/users no expone passwordHash ni pinHash', async () => {
-    const resUsers = await request('/api/collections/users');
+    // Autenticar para obtener cookie válida
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const cookie = resLogin.setCookie.split(';')[0];
+    const resUsers = await request('/api/collections/users', {
+      headers: { 'Cookie': cookie }
+    });
     assert.strictEqual(resUsers.status, 200);
     assert.ok(Array.isArray(resUsers.data));
     resUsers.data.forEach(u => {
@@ -512,8 +524,557 @@ async function runTests() {
     assert.strictEqual(res.data.success, true);
   });
 
-  // 36. Rate Limiter de Login (Se ejecuta al final para no afectar otros tests de login)
-  await test('36. Intentos repetidos de login activan Rate Limiter (HTTP 429)', async () => {
+  // 36. POS: POST /api/pos/process-sale sin sesión devuelve 401 Unauthorized
+  await test('36. 1C-POS: POST /api/pos/process-sale sin sesión devuelve 401 Unauthorized', async () => {
+    const res = await request('/api/pos/process-sale', {
+      method: 'POST',
+      body: JSON.stringify({ saleItems: [{ productId: 'test', quantityKg: 1 }] })
+    });
+    assert.strictEqual(res.status, 401, `Esperado 401, recibido ${res.status}`);
+  });
+
+  // 37. POS: POST /api/pos/process-sale con rol no autorizado (productor) devuelve 403 Forbidden
+  await test('37. 1C-POS: POST /api/pos/process-sale con rol no autorizado (productor) devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '87654321',
+        pin: '4321'
+      })
+    });
+    const producerCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: {
+        'Cookie': producerCookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({ saleItems: [{ productId: 'test', quantityKg: 1 }] })
+    });
+    assert.strictEqual(res.status, 403, `Esperado 403, recibido ${res.status}`);
+  });
+
+  // 38. POS: POST /api/pos/process-sale sin x-csrf-token devuelve 403 Forbidden
+  await test('38. 1C-POS: POST /api/pos/process-sale sin x-csrf-token devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const cashierCookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: {
+        'Cookie': cashierCookie
+      },
+      body: JSON.stringify({ saleItems: [{ productId: 'test', quantityKg: 1 }] })
+    });
+    assert.strictEqual(res.status, 403, `Esperado 403, recibido ${res.status}`);
+  });
+
+  // 39. POS: POST /api/pos/process-sale válido ejecuta venta atómica (200 OK)
+  await test('39. 1C-POS: POST /api/pos/process-sale válido por Cajero ejecuta venta atómica (200 OK)', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const cashierCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+
+    const res = await request('/api/pos/process-sale', {
+      method: 'POST',
+      headers: {
+        'Cookie': cashierCookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({
+        saleItems: [
+          { productId: 'prod-queso-duro', productName: 'Queso Duro', quantityKg: 2, subtotal: 10 }
+        ],
+        customerName: 'Cliente Mostrador Test',
+        paidAmount: 10,
+        saleTotalAmount: 10,
+        paymentMethodType: 'Efectivo'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+    assert.ok(res.data.transaction, 'Debe generar objeto transaction');
+  });
+
+  // 40. PRODUCTS: GET /api/products sin sesión devuelve 401 Unauthorized
+  await test('40. 1C-PRODUCTS: GET /api/products sin sesión devuelve 401 Unauthorized', async () => {
+    const res = await request('/api/products');
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 41. PRODUCTS: GET /api/products con sesión válida devuelve 200 OK (sin CSRF)
+  await test('41. 1C-PRODUCTS: GET /api/products con sesión válida devuelve 200 OK (sin CSRF)', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const cashierCookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/products', {
+      headers: { 'Cookie': cashierCookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data));
+  });
+
+  // 42. PRODUCTS: POST /api/products por Cajero devuelve 403 Forbidden
+  await test('42. 1C-PRODUCTS: POST /api/products por Cajero devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const cashierCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/products', {
+      method: 'POST',
+      headers: {
+        'Cookie': cashierCookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({ name: 'Producto Ilegal Cajero', pricePerKg: 5 })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 43. PRODUCTS: POST /api/products por Admin sin CSRF devuelve 403 Forbidden
+  await test('43. 1C-PRODUCTS: POST /api/products por Admin sin CSRF devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/products', {
+      method: 'POST',
+      headers: { 'Cookie': adminCookie },
+      body: JSON.stringify({ name: 'Producto Sin CSRF', pricePerKg: 5 })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 44. PRODUCTS: POST /api/products por Admin con CSRF crea producto (200 OK)
+  let createdTestProductId = 'prod-test-fase1c';
+  await test('44. 1C-PRODUCTS: POST /api/products por Admin con CSRF crea producto (200 OK)', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/products', {
+      method: 'POST',
+      headers: {
+        'Cookie': adminCookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({
+        id: createdTestProductId,
+        name: 'Queso Especial Test 1C',
+        pricePerKg: 6.5,
+        wholesalePrice: 5.0,
+        stockKg: 50
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 45. PRODUCTS: PATCH /api/products/:id por Cajero intentando alterar wholesalePrice devuelve 403 Forbidden
+  await test('45. 1C-PRODUCTS: PATCH por Cajero intentando alterar wholesalePrice devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const cashierCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request(`/api/products/${createdTestProductId}`, {
+      method: 'PATCH',
+      headers: {
+        'Cookie': cashierCookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({
+        wholesalePrice: 1.0,
+        pricePerKg: 1.0
+      })
+    });
+    assert.strictEqual(res.status, 403, `Esperado 403, recibido ${res.status}`);
+    assert.strictEqual(res.data.error, 'Acceso denegado: los cajeros solo tienen autorización para ajustes de inventario (stock).');
+  });
+
+  // 46. PRODUCTS: PATCH /api/products/:id por Cajero ajustando adjustStockKg devuelve 200 OK
+  await test('46. 1C-PRODUCTS: PATCH por Cajero ajustando adjustStockKg devuelve 200 OK', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const cashierCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request(`/api/products/${createdTestProductId}`, {
+      method: 'PATCH',
+      headers: {
+        'Cookie': cashierCookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({
+        adjustStockKg: 10
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 47. PRODUCTS: DELETE /api/products/:id por Cajero devuelve 403 Forbidden
+  await test('47. 1C-PRODUCTS: DELETE por Cajero devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const cashierCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request(`/api/products/${createdTestProductId}`, {
+      method: 'DELETE',
+      headers: {
+        'Cookie': cashierCookie,
+        'x-csrf-token': csrf
+      }
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 48. PRODUCTS: DELETE /api/products/:id por Admin con CSRF elimina producto (200 OK)
+  await test('48. 1C-PRODUCTS: DELETE por Admin con CSRF elimina producto (200 OK)', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request(`/api/products/${createdTestProductId}`, {
+      method: 'DELETE',
+      headers: {
+        'Cookie': adminCookie,
+        'x-csrf-token': csrf
+      }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 49. COLLECTIONS: GET /api/collections/:name sin sesión devuelve 401 Unauthorized
+  await test('49. 1C-COLLECTIONS: GET sin sesión devuelve 401 Unauthorized', async () => {
+    const res = await request('/api/collections/clients');
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 50. COLLECTIONS: GET /api/collections/adminLedger por Cajero devuelve 403 Forbidden
+  await test('50. 1C-COLLECTIONS: GET /api/collections/adminLedger por Cajero devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const cashierCookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/collections/adminLedger', {
+      headers: { 'Cookie': cashierCookie }
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 51. COLLECTIONS: GET /api/collections/adminLedger por Admin devuelve 200 OK
+  await test('51. 1C-COLLECTIONS: GET /api/collections/adminLedger por Admin devuelve 200 OK', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/collections/adminLedger', {
+      headers: { 'Cookie': adminCookie }
+    });
+    assert.strictEqual(res.status, 200);
+  });
+
+  // 52. COLLECTIONS: POST /api/collections/banners sin CSRF devuelve 403 Forbidden
+  await test('52. 1C-COLLECTIONS: POST /api/collections/banners sin CSRF devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/collections/banners', {
+      method: 'POST',
+      headers: { 'Cookie': adminCookie },
+      body: JSON.stringify({ id: 'banner-test', title: 'Banner 1' })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 53. COLLECTIONS: POST /api/collections/users por Cajero devuelve 403 Forbidden
+  await test('53. 1C-COLLECTIONS: POST /api/collections/users por Cajero devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const cashierCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/collections/users', {
+      method: 'POST',
+      headers: {
+        'Cookie': cashierCookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({ name: 'Infiltrado', role: 'admin' })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 54. COLLECTIONS: batchDelete en colección protegida (clients) por Admin devuelve 403 Forbidden
+  await test('54. 1C-COLLECTIONS: batchDelete en colección protegida (clients) por Admin devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/collections/clients/batchDelete', {
+      method: 'POST',
+      headers: {
+        'Cookie': adminCookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({ ids: ['cli-1', 'cli-2'] })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 55. COLLECTIONS: batchDelete en colección permitida (banners) por Admin con CSRF devuelve 200 OK
+  await test('55. 1C-COLLECTIONS: batchDelete en colección permitida (banners) por Admin con CSRF devuelve 200 OK', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/collections/banners/batchDelete', {
+      method: 'POST',
+      headers: {
+        'Cookie': adminCookie,
+        'x-csrf-token': csrf
+      },
+      body: JSON.stringify({ ids: ['banner-non-existent'] })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 56. COLLECTIONS: DELETE /api/collections/clients/:id por Admin devuelve 403 Forbidden
+  await test('56. 1C-COLLECTIONS: DELETE individual en colección protegida (clients) devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/collections/clients/cli-1', {
+      method: 'DELETE',
+      headers: {
+        'Cookie': adminCookie,
+        'x-csrf-token': csrf
+      }
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 57. COLLECTIONS: DELETE /api/collections/banners/:id por Admin con CSRF devuelve 200 OK
+  await test('57. 1C-COLLECTIONS: DELETE individual en colección permitida (banners) con CSRF devuelve 200 OK', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/collections/banners/banner-test-del', {
+      method: 'DELETE',
+      headers: {
+        'Cookie': adminCookie,
+        'x-csrf-token': csrf
+      }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 58. WIPE ELIMINADO: DELETE /api/collections/transactions devuelve 404 Not Found
+  await test('58. 1C-WIPE: DELETE /api/collections/:name (wipe destructivo) responde 404 Not Found', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/collections/transactions', {
+      method: 'DELETE',
+      headers: {
+        'Cookie': adminCookie,
+        'x-csrf-token': csrf
+      }
+    });
+    assert.strictEqual(res.status, 404, `Esperado 404 al eliminar endpoint de wipe, recibido ${res.status}`);
+  });
+
+  // 59. RESET ACCOUNTING: POST /api/admin/reset-accounting sin sesión devuelve 401 Unauthorized
+  await test('59. 1C-RESET: POST /api/admin/reset-accounting sin sesión devuelve 401 Unauthorized', async () => {
+    const res = await request('/api/admin/reset-accounting', {
+      method: 'POST'
+    });
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 60. RESET ACCOUNTING: POST /api/admin/reset-accounting por Cajero devuelve 403 Forbidden
+  await test('60. 1C-RESET: POST /api/admin/reset-accounting por Cajero devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const cashierCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/admin/reset-accounting', {
+      method: 'POST',
+      headers: {
+        'Cookie': cashierCookie,
+        'x-csrf-token': csrf
+      }
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 61. RESET ACCOUNTING: POST /api/admin/reset-accounting por Admin sin CSRF devuelve 403 Forbidden
+  await test('61. 1C-RESET: POST /api/admin/reset-accounting por Admin sin CSRF devuelve 403 Forbidden', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const res = await request('/api/admin/reset-accounting', {
+      method: 'POST',
+      headers: { 'Cookie': adminCookie }
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 62. RESET ACCOUNTING: POST /api/admin/reset-accounting por Admin con CSRF ejecuta scope fijo (200 OK)
+  await test('62. 1C-RESET: POST /api/admin/reset-accounting por Admin con CSRF ejecuta restablecimiento fijo (200 OK)', async () => {
+    const resLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'admin',
+        email: 'admin@kalu.local',
+        password: 'Admin123!'
+      })
+    });
+    const adminCookie = resLogin.setCookie.split(';')[0];
+    const csrf = resLogin.data.csrfToken;
+    const res = await request('/api/admin/reset-accounting', {
+      method: 'POST',
+      headers: {
+        'Cookie': adminCookie,
+        'x-csrf-token': csrf
+      }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.success, true);
+  });
+
+  // 63. Rate Limiter de Login (Se ejecuta al final para no afectar otros tests de login)
+  await test('63. Intentos repetidos de login activan Rate Limiter (HTTP 429)', async () => {
     let got429 = false;
     for (let i = 0; i < 15; i++) {
       const res = await request('/api/auth/login', {

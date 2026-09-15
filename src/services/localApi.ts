@@ -1,6 +1,6 @@
 import { io, Socket } from 'socket.io-client';
 
-// Use standard relative/absolute routing instead of hardcoding localhost if possible, 
+// Use standard relative/absolute routing instead of hardcoding localhost if possible,
 // but since the server runs on 3001 locally, we stick to localhost:3001.
 // In a true local network setup with phones, we should use window.location.hostname
 const isProd = import.meta.env.PROD;
@@ -25,7 +25,7 @@ export const initSocket = () => {
 export const onCollectionSnapshot = (collectionName: string, callback: (data: any[]) => void) => {
   const currentSocket = initSocket();
   const cacheMap = new Map<string, any>();
-  
+
   const notifyCallback = () => {
     callback(Array.from(cacheMap.values()));
   };
@@ -86,7 +86,9 @@ export const onCollectionSnapshot = (collectionName: string, callback: (data: an
 
 export const fetchCollection = async (collectionName: string) => {
   try {
-    const res = await fetch(`${API_URL}/collections/${collectionName}`);
+    const res = await fetch(`${API_URL}/collections/${collectionName}`, {
+      credentials: 'include'
+    });
     if (!res.ok) throw new Error('Failed to fetch collection');
     return await res.json();
   } catch (error) {
@@ -97,9 +99,14 @@ export const fetchCollection = async (collectionName: string) => {
 
 export const addLocalDoc = async (collectionName: string, data: any) => {
   try {
+    const csrf = await getCsrfToken();
     const res = await fetch(`${API_URL}/collections/${collectionName}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-csrf-token': csrf
+      },
+      credentials: 'include',
       body: JSON.stringify(data)
     });
     const result = await res.json();
@@ -112,9 +119,14 @@ export const addLocalDoc = async (collectionName: string, data: any) => {
 
 export const updateLocalDoc = async (collectionName: string, id: string, data: any) => {
   try {
+    const csrf = await getCsrfToken();
     const res = await fetch(`${API_URL}/collections/${collectionName}/${id}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-csrf-token': csrf
+      },
+      credentials: 'include',
       body: JSON.stringify(data)
     });
     const result = await res.json();
@@ -127,9 +139,14 @@ export const updateLocalDoc = async (collectionName: string, id: string, data: a
 
 export const processSaleAtomic = async (salePayload: any) => {
   try {
+    const csrf = await getCsrfToken();
     const res = await fetch(`${API_URL}/pos/process-sale`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-csrf-token': csrf
+      },
+      credentials: 'include',
       body: JSON.stringify(salePayload)
     });
     if (!res.ok) {
@@ -144,20 +161,29 @@ export const processSaleAtomic = async (salePayload: any) => {
 };
 
 export const batchDeleteLocalDocs = async (collectionName: string, ids: string[]) => {
+  const csrf = await getCsrfToken();
   const res = await fetch(`${API_URL}/collections/${collectionName}/batchDelete`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include',
     body: JSON.stringify({ ids })
   });
   if (!res.ok) throw new Error('Error en batch delete local');
   return res.json();
 };
 
-
 export const deleteLocalDoc = async (collectionName: string, id: string) => {
   try {
+    const csrf = await getCsrfToken();
     await fetch(`${API_URL}/collections/${collectionName}/${id}`, {
-      method: 'DELETE'
+      method: 'DELETE',
+      headers: {
+        'x-csrf-token': csrf
+      },
+      credentials: 'include'
     });
     return true;
   } catch (error) {
@@ -166,11 +192,20 @@ export const deleteLocalDoc = async (collectionName: string, id: string) => {
   }
 };
 
-export const clearCollection = async (collectionName: string) => {
-  const res = await fetch(`${API_URL}/collections/${collectionName}`, {
-    method: 'DELETE',
+export const resetAccountingApi = async () => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/admin/reset-accounting`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include'
   });
-  if (!res.ok) throw new Error(`Failed to clear ${collectionName}`);
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || 'Error al restablecer datos contables');
+  }
   return await res.json();
 };
 

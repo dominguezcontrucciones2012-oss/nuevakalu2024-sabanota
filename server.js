@@ -37,8 +37,8 @@ dotenv.config(); // Cargar también fallback general
 
 // Inicializar cliente de Google Gemini para el Robot Kalu
 const geminiApiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
-const ai = (geminiApiKey && !geminiApiKey.startsWith('mock') && !geminiApiKey.startsWith('dummy')) 
-  ? new GoogleGenAI({ apiKey: geminiApiKey }) 
+const ai = (geminiApiKey && !geminiApiKey.startsWith('mock') && !geminiApiKey.startsWith('dummy'))
+  ? new GoogleGenAI({ apiKey: geminiApiKey })
   : null;
 
 const isDevEnv = process.env.NODE_ENV === 'development' || !isProd;
@@ -169,7 +169,7 @@ function requireRole(...allowedRoles) {
     const hasRole = allowedRoles.some(r => String(r).toLowerCase() === userRole);
 
     if (!hasRole) {
-      return res.status(403).json({ 
+      return res.status(403).json({
         error: 'Acceso denegado: permisos insuficientes para esta operación',
         requiredRoles: allowedRoles
       });
@@ -177,6 +177,67 @@ function requireRole(...allowedRoles) {
 
     next();
   };
+}
+
+// Políticas de Acceso a Colecciones (Fase 1C)
+const ADMIN_ONLY_COLLECTIONS = new Set(['adminLedger', 'business_debts', 'settings', 'vehicle_trips']);
+const SENSITIVE_CORE_COLLECTIONS = new Set(['users', 'clients', 'transactions', 'installments', 'bills', 'settings', 'adminLedger', 'business_debts', 'products', 'kardex', 'suppliers']);
+const ALLOWED_DELETION_COLLECTIONS = new Set(['banners', 'daily_drafts', 'photo_album', 'voice_notes', 'mobileOrders', 'admin_voice_pending']);
+
+function requireCollectionRead(req, res, next) {
+  const collectionName = req.params.name;
+  const userRole = String(req.user?.role || '').toLowerCase();
+
+  // Colecciones estrictamente administrativas y financieras
+  if (ADMIN_ONLY_COLLECTIONS.has(collectionName)) {
+    if (userRole !== 'admin' && userRole !== 'accountant') {
+      return res.status(403).json({
+        error: `Acceso denegado: la colección '${collectionName}' es exclusiva de administración.`
+      });
+    }
+  }
+
+  next();
+}
+
+function requireCollectionWrite(req, res, next) {
+  const collectionName = req.params.name;
+  const userRole = String(req.user?.role || '').toLowerCase();
+
+  // Colecciones estrictamente administrativas
+  if (ADMIN_ONLY_COLLECTIONS.has(collectionName)) {
+    if (userRole !== 'admin' && userRole !== 'accountant') {
+      return res.status(403).json({
+        error: `Acceso denegado: escritura en '${collectionName}' restringida a administración.`
+      });
+    }
+  }
+
+  // Colección de usuarios: solo admin puede crear o modificar registros
+  if (collectionName === 'users') {
+    if (userRole !== 'admin') {
+      return res.status(403).json({
+        error: 'Acceso denegado: la gestión de usuarios es exclusiva de administradores.'
+      });
+    }
+  }
+
+  // Protección de saldos y deudas contra manipulación genérica no autorizada
+  if (userRole === 'cajero') {
+    const updates = req.body || {};
+    if (collectionName === 'clients' && (updates.outstandingDebt !== undefined || updates.creditLimit !== undefined)) {
+      return res.status(403).json({
+        error: 'Acceso denegado: los cajeros no pueden alterar deudas ni límites de crédito directamente.'
+      });
+    }
+    if (collectionName === 'suppliers' && (updates.balanceOwed !== undefined || updates.storeDebt !== undefined)) {
+      return res.status(403).json({
+        error: 'Acceso denegado: los cajeros no pueden alterar saldos de proveedores directamente.'
+      });
+    }
+  }
+
+  next();
 }
 
 // ============================================================
@@ -205,8 +266,8 @@ app.post('/api/auth/login', loginLimiter, (req, res) => {
         return res.status(400).json({ error: 'Debe ingresar correo y contraseña' });
       }
 
-      matchedUser = users.find(u => 
-        (u.email && u.email.toLowerCase() === inputEmail) || 
+      matchedUser = users.find(u =>
+        (u.email && u.email.toLowerCase() === inputEmail) ||
         (u.username && u.username.toLowerCase() === inputEmail) ||
         (u.cedula && u.cedula.toLowerCase() === inputEmail)
       );
@@ -366,8 +427,8 @@ app.use('/protected_media', express.static(protectedMediaDir));
 
 const productsDbFile = path.join(uploadDir, 'products_db.json');
 
-// Leer productos locales
-app.get('/api/products', (req, res) => {
+// Leer productos locales (Protegido por requireAuth)
+app.get('/api/products', requireAuth, (req, res) => {
   try {
     if (fs.existsSync(productsDbFile)) {
       const data = fs.readFileSync(productsDbFile, 'utf8');
@@ -381,20 +442,43 @@ app.get('/api/products', (req, res) => {
   }
 });
 
-// Actualizar producto local
-app.patch('/api/products/:id', (req, res) => {
+// Actualizar producto local (Admin: total | Cajero: estrictamente ajuste de stock)
+app.patch('/api/products/:id', requireAuth, requireRole('admin', 'cajero'), verifyCsrf, (req, res) => {
   try {
     if (!fs.existsSync(productsDbFile)) {
       return res.status(404).json({ error: 'DB no encontrada' });
     }
     const data = JSON.parse(fs.readFileSync(productsDbFile, 'utf8'));
     const index = data.findIndex(p => String(p.id) === String(req.params.id));
-    
-    if (index !== -1) {
-      let current = data[index];
-      let updates = req.body;
-      
-      // Manejo especial de incrementos desde el cliente
+
+    if (index === -1) {
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+
+    const current = data[index];
+    const updates = req.body || {};
+    const userRole = String(req.user.role).toLowerCase();
+
+    if (userRole === 'cajero') {
+      // Whitelist estricta para cajeros: solo ajuste de inventario
+      const allowedCajeroFields = ['adjustStockKg', 'adjustStock', 'csrfToken'];
+      const forbiddenKeys = Object.keys(updates).filter(k => !allowedCajeroFields.includes(k));
+
+      if (forbiddenKeys.length > 0 || (updates.adjustStockKg === undefined && updates.adjustStock === undefined)) {
+        return res.status(403).json({
+          error: 'Acceso denegado: los cajeros solo tienen autorización para ajustes de inventario (stock).'
+        });
+      }
+
+      if (updates.adjustStockKg !== undefined) {
+        current.stockKg = Math.max(0, Math.round((Number(current.stockKg || 0) + Number(updates.adjustStockKg)) * 100) / 100);
+      }
+      if (updates.adjustStock !== undefined) {
+        current.stock = Math.max(0, Number(current.stock || 0) + Number(updates.adjustStock));
+      }
+      data[index] = current;
+    } else {
+      // Rol Admin: aplicar cambios administrativos
       if (updates.adjustStockKg) {
         current.stockKg = (Number(current.stockKg || 0) + Number(updates.adjustStockKg));
         delete updates.adjustStockKg;
@@ -403,23 +487,27 @@ app.patch('/api/products/:id', (req, res) => {
         current.stock = (Number(current.stock || 0) + Number(updates.adjustStock));
         delete updates.adjustStock;
       }
-      
       data[index] = { ...current, ...updates };
-      fs.writeFileSync(productsDbFile, JSON.stringify(data, null, 2));
-      io.emit('collection_delta', { action: 'update', collection: 'products', doc: data[index] });
-      io.emit('collection_updated', 'products');
-      res.json({ success: true, product: data[index] });
-    } else {
-      res.status(404).json({ error: 'Producto no encontrado' });
     }
+
+    fs.writeFileSync(productsDbFile, JSON.stringify(data, null, 2));
+    io.emit('collection_delta', { action: 'update', collection: 'products', doc: data[index] });
+    io.emit('collection_updated', 'products');
+    res.json({ success: true, product: data[index] });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Error actualizando producto' });
   }
 });
 
-app.post('/api/products', (req, res) => {
+// Crear producto local (Solo Admin + CSRF + validación de payload)
+app.post('/api/products', requireAuth, requireRole('admin'), verifyCsrf, (req, res) => {
   try {
+    const { name, pricePerKg, wholesalePrice } = req.body || {};
+    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+      return res.status(400).json({ error: 'Nombre de producto requerido' });
+    }
+
     let data = [];
     if (fs.existsSync(productsDbFile)) {
       data = JSON.parse(fs.readFileSync(productsDbFile, 'utf8'));
@@ -436,7 +524,8 @@ app.post('/api/products', (req, res) => {
   }
 });
 
-app.delete('/api/products/:id', (req, res) => {
+// Eliminar producto local (Solo Admin + CSRF)
+app.delete('/api/products/:id', requireAuth, requireRole('admin'), verifyCsrf, (req, res) => {
   try {
     if (!fs.existsSync(productsDbFile)) {
       return res.status(404).json({ error: 'DB no encontrada' });
@@ -462,7 +551,7 @@ app.post('/api/upload', upload.array('files', 10), (req, res) => {
 
     // Mapear los nombres a la ruta relativa
     const fileUrls = req.files.map(f => `/uploads/${f.filename}`);
-    
+
     res.json({ success: true, urls: fileUrls });
   } catch (error) {
     console.error('Error procesando subida:', error);
@@ -481,7 +570,7 @@ const transporter = nodemailer.createTransport({
 
 app.post('/api/send-recovery', async (req, res) => {
   const { channel = 'email', email, phone, code, name } = req.body;
-  
+
   if (!code) {
     return res.status(400).json({ error: 'Falta el código de recuperación' });
   }
@@ -510,7 +599,7 @@ app.post('/api/send-recovery', async (req, res) => {
     if (waApiUrl && waApiKey) {
       try {
         console.log(`[Robot WhatsApp] Despachando PIN ${code} a ${cleanPhone} vía Meta Cloud API (${waApiUrl})...`);
-        
+
         // Estructura oficial de Meta Cloud API
         const isMetaCloudApi = waApiUrl.includes('graph.facebook.com');
         const payload = isMetaCloudApi ? {
@@ -556,12 +645,12 @@ app.post('/api/send-recovery', async (req, res) => {
     } else {
       // Modo simulación / Fallback seguro si la URL no está seteada en el entorno
       console.log(`[Robot WhatsApp] (Modo Local/API Key lista) Mensaje simulado a ${cleanPhone}: "${messageText}"`);
-      return res.json({ 
-        success: true, 
-        channel: 'whatsapp', 
-        simulated: true, 
+      return res.json({
+        success: true,
+        channel: 'whatsapp',
+        simulated: true,
         recipient: cleanPhone,
-        message: 'Código despachado por WhatsApp' 
+        message: 'Código despachado por WhatsApp'
       });
     }
   }
@@ -576,9 +665,9 @@ app.post('/api/send-recovery', async (req, res) => {
 
   if (!emailPass) {
     console.error('[Robot Correo] ❌ Error: process.env.EMAIL_PASS no está definido en el archivo .env.');
-    return res.status(500).json({ 
-      error: 'Credenciales incompletas', 
-      details: 'Falta la contraseña de aplicación (EMAIL_PASS) en el archivo .env del servidor.' 
+    return res.status(500).json({
+      error: 'Credenciales incompletas',
+      details: 'Falta la contraseña de aplicación (EMAIL_PASS) en el archivo .env del servidor.'
     });
   }
 
@@ -761,7 +850,7 @@ const userCooldownMap = new Map();    // phone -> timestamp límite de enfriamie
 function checkUserRateLimit(phone) {
   const now = Date.now();
   const TEN_MINUTES = 10 * 60 * 1000;
-  
+
   // 1. Si el usuario está en periodo de enfriamiento activo
   if (userCooldownMap.has(phone)) {
     const cooldownExpires = userCooldownMap.get(phone);
@@ -865,10 +954,10 @@ app.post(['/api/webhook', '/webhook'], async (req, res) => {
               Eres Kalu, el asesor de ventas y asistente virtual inteligente oficial de Mundo Kalu Sabanota.
               Estás atendiendo al cliente: ${client.name || client.nombre || 'Cliente'}.
               Tasa oficial BCV actual: ${exchangeRate} VES/USD.
-              
+
               ESTADO DE CUENTA Y CUOTAS PENDIENTES DEL CLIENTE:
               ${JSON.stringify(pendingInstallments, null, 2)}
-              
+
               INVENTARIO DISPONIBLE (PRECIOS Y EXISTENCIAS):
               ${JSON.stringify(products.map(p => ({
                 id: p.id,
@@ -878,22 +967,22 @@ app.post(['/api/webhook', '/webhook'], async (req, res) => {
                 stock: p.stockKg ?? p.stock ?? 0,
                 unidad: p.unit || 'Und'
               })), null, 2)}
-              
+
               REGLAS ESTRICTAS DE VENTAS DIRECTAS Y ATENCIÓN (CERO RODEOS):
               1. RESPUESTAS INMEDIATAS DE EXISTENCIA Y PRECIOS:
                  - Si el cliente pregunta por la disponibilidad o precio de cualquier producto (ej: "embobinado cuatro cables", repuestos, víveres, quesos), responde DE INMEDIATO en tu primer mensaje confirmando la existencia y desglosando de una vez las opciones disponibles con sus precios respectivos.
                  - Si existen variaciones o calidades (ej: calidad 100% cobre a $X vs opción económica a $Y, o diferentes marcas/presentaciones), preséntalas de forma clara, directa y con sus precios en USD y en Bolívares a la tasa BCV (${exchangeRate} Bs/$).
                  - ESTÁ ESTRICTAMENTE PROHIBIDO dar rodeos, vueltas o hacer esperar al cliente antes de brindar los precios y la disponibilidad.
-              
+
               2. ENLACES A PORTALES OFICIALES:
                  - Si el cliente pregunta cómo pagar, reportar un abono o ver sus recibos, envíale de inmediato el enlace oficial del Portal de Clientes:
                    👉 https://sistemakalu.com/?portal=cliente
                  - Si el usuario solicita acceso como productor, entrega de queso o área de arrime, envíale de inmediato el enlace oficial del Portal de Productores:
                    👉 https://sistemakalu.com/?portal=productor
-              
+
               3. DEUDAS Y CONSULTAS DE SALDO:
                  - Si consulta su saldo o cuotas pendientes, indica el monto exacto en USD y en Bolívares calculados a la tasa BCV (${exchangeRate} Bs/$).
-              
+
               4. TONO COMERCIAL Y CONCISO:
                  - Responde de forma amable, directa, ejecutiva y enfocada en cerrar la venta o resolver la inquietud rápidamente. Usa formato WhatsApp legible con negritas (*) y viñetas limpias.
               `;
@@ -1009,8 +1098,8 @@ const writeCollection = (name, data, delta = null) => {
   }
 };
 
-// --- ATOMIC POS SALE CHECKOUT ENDPOINT ---
-app.post('/api/pos/process-sale', async (req, res) => {
+// --- ATOMIC POS SALE CHECKOUT ENDPOINT (Protegido con RBAC y CSRF) ---
+app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), verifyCsrf, async (req, res) => {
   try {
     const {
       saleItems,
@@ -1027,7 +1116,11 @@ app.post('/api/pos/process-sale', async (req, res) => {
       changeBs,
       bcvRateAtSettlement,
       paymentMethodType
-    } = req.body;
+    } = req.body || {};
+
+    if (!Array.isArray(saleItems) || saleItems.length === 0) {
+      return res.status(400).json({ error: 'La venta debe contener al menos un producto (saleItems).' });
+    }
 
     const saleTotal = Number(saleTotalAmount !== undefined ? saleTotalAmount : (saleItems || []).reduce((sum, it) => sum + (it.subtotal || 0), 0));
     const amountPaid = Number(paidAmount !== undefined ? paidAmount : saleTotal);
@@ -1087,7 +1180,7 @@ app.post('/api/pos/process-sale', async (req, res) => {
           const addedPoints = Math.round(Number(amountPaid || 0));
           const newDebt = Math.round((Number(c.outstandingDebt || 0) + debtAmount) * 100) / 100;
           const newPoints = Number(c.loyaltyPoints || 0) + addedPoints;
-          
+
           function getVIPCode(p = 0) {
             if (p >= 1200) return 'K6';
             if (p >= 750) return 'K5';
@@ -1192,7 +1285,7 @@ app.post('/api/pos/process-sale', async (req, res) => {
       let generalSettingsIndex = settingsData.findIndex(d => String(d.id) === 'general');
       let generalSettings = generalSettingsIndex !== -1 ? settingsData[generalSettingsIndex] : { id: 'general' };
       const currentVault = generalSettings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
-      
+
       let deltaUsd = 0;
       let deltaBs = 0;
       let deltaBankBs = 0;
@@ -1316,7 +1409,7 @@ app.post('/api/pos/process-sale', async (req, res) => {
 app.get('/api/sync-rate', async (req, res) => {
   try {
     let rate = 0;
-    
+
     // First provider
     try {
       const controller = new AbortController();
@@ -1374,7 +1467,8 @@ app.get('/api/sync-rate', async (req, res) => {
   }
 });
 
-app.get('/api/collections/:name', (req, res) => {
+// 1. Leer colección genérica (Protegido con requireAuth y filtro por rol/colección)
+app.get('/api/collections/:name', requireAuth, requireCollectionRead, (req, res) => {
   try {
     const data = readCollection(req.params.name);
     // Sanitizar colección de usuarios para jamás exponer contraseñas, PINs ni hashes
@@ -1392,12 +1486,13 @@ app.get('/api/collections/:name', (req, res) => {
   }
 });
 
-app.post('/api/collections/:name', (req, res) => {
+// 2. Crear / Sobrescribir documento en colección (Protegido con requireAuth, validación de colección y CSRF)
+app.post('/api/collections/:name', requireAuth, requireCollectionWrite, verifyCsrf, (req, res) => {
   try {
     const data = readCollection(req.params.name);
     const newDoc = { id: req.body.id || Date.now().toString(), ...req.body };
     const index = data.findIndex(d => String(d.id) === String(newDoc.id));
-    
+
     if (index !== -1) {
       // Overwrite if it already exists to prevent duplication
       data[index] = newDoc;
@@ -1413,7 +1508,8 @@ app.post('/api/collections/:name', (req, res) => {
   }
 });
 
-app.patch('/api/collections/:name/:id', (req, res) => {
+// 3. Modificar / Upsert documento en colección (Protegido con requireAuth, validación de colección y CSRF)
+app.patch('/api/collections/:name/:id', requireAuth, requireCollectionWrite, verifyCsrf, (req, res) => {
   try {
     const data = readCollection(req.params.name);
     const index = data.findIndex(d => String(d.id) === String(req.params.id));
@@ -1422,7 +1518,7 @@ app.patch('/api/collections/:name/:id', (req, res) => {
       writeCollection(req.params.name, data, { action: 'update', collection: req.params.name, doc: data[index] });
       res.json({ success: true, doc: data[index] });
     } else {
-      // UPSERT: Create document if it does not exist (like Firebase setDoc)
+      // UPSERT: Create document if it does not exist
       const newDoc = { id: req.params.id, ...req.body };
       data.push(newDoc);
       writeCollection(req.params.name, data, { action: 'add', collection: req.params.name, doc: newDoc });
@@ -1434,12 +1530,21 @@ app.patch('/api/collections/:name/:id', (req, res) => {
   }
 });
 
-app.post('/api/collections/:name/batchDelete', (req, res) => {
+// 4. Borrado masivo (batchDelete) en colección (Solo Admin + Allowlist estricta + CSRF)
+app.post('/api/collections/:name/batchDelete', requireAuth, requireRole('admin'), verifyCsrf, (req, res) => {
   try {
-    const data = readCollection(req.params.name);
+    const collectionName = req.params.name;
+    // Validar allowlist de colecciones borrables
+    if (SENSITIVE_CORE_COLLECTIONS.has(collectionName) || !ALLOWED_DELETION_COLLECTIONS.has(collectionName)) {
+      return res.status(403).json({
+        error: `Operación denegada: borrado masivo prohibido en la colección protegida '${collectionName}'.`
+      });
+    }
+
+    const data = readCollection(collectionName);
     const idsToDelete = req.body.ids || [];
     const filtered = data.filter(d => !idsToDelete.includes(String(d.id)));
-    writeCollection(req.params.name, filtered, { action: 'batchDelete', collection: req.params.name, count: idsToDelete.length });
+    writeCollection(collectionName, filtered, { action: 'batchDelete', collection: collectionName, count: idsToDelete.length });
     res.json({ success: true });
   } catch (error) {
     console.error(`Error batch deleting ${req.params.name}:`, error);
@@ -1447,130 +1552,81 @@ app.post('/api/collections/:name/batchDelete', (req, res) => {
   }
 });
 
-// Endpoint Atómico Oficial para Procesar Venta de Caja y Crédito Kalú
-app.post('/api/pos/process-sale', (req, res) => {
+// 5. Borrado individual de documento (Solo Admin + Allowlist estricta + CSRF)
+app.delete('/api/collections/:name/:id', requireAuth, requireRole('admin'), verifyCsrf, (req, res) => {
   try {
-    const payload = req.body;
-    const {
-      saleItems = [],
-      clientId,
-      customerName,
-      supplierId,
-      paidAmount = 0,
-      saleTotalAmount = 0,
-      debtAmount = 0,
-      addedPayments = [],
-      paymentMethodType = 'Efectivo',
-      transaction: customTx,
-      creditDetails
-    } = payload;
-
-    const txId = (customTx && customTx.id) || `TX-${Date.now()}`;
-    const invoiceNum = (customTx && customTx.invoiceNumber) || `F-${Date.now().toString().slice(-4)}`;
-    
-    // 1. Persistir Transacción
-    const transactions = readCollection('transactions');
-    const finalTx = {
-      id: txId,
-      entity: customerName || 'Cliente General',
-      clientId: clientId || null,
-      supplierId: supplierId || null,
-      amount: Number(paidAmount || saleTotalAmount || 0),
-      debtAmount: Number(debtAmount || 0),
-      totalUSD: Number(saleTotalAmount || 0),
-      category: 'ventas',
-      status: 'Completado',
-      paymentMethod: paymentMethodType || 'Multipago',
-      invoiceNumber: invoiceNum,
-      date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-      timestamp: new Date().toISOString(),
-      createdAt: Date.now(),
-      isIncome: true,
-      items: saleItems,
-      addedPayments: addedPayments,
-      ...(customTx || {})
-    };
-
-    transactions.unshift(finalTx);
-    writeCollection('transactions', transactions, { action: 'add', collection: 'transactions', doc: finalTx });
-
-    // 2. Si es Crédito Kalú, generar cuotas en 'installments'
-    const kaluPayment = addedPayments.find(p => p.method === 'Mundo Kalu');
-    if (kaluPayment || creditDetails?.isKaluCredit) {
-      const financedAmount = Number(kaluPayment?.amount || creditDetails?.financedAmount || debtAmount || 0);
-      const installmentsCount = Number(creditDetails?.installmentsCount || 2);
-      const cuotaAmount = Number((financedAmount / installmentsCount).toFixed(2));
-      
-      const installments = readCollection('installments');
-      let nextDueDate = new Date();
-      nextDueDate.setDate(nextDueDate.getDate() + 15);
-
-      for (let i = 0; i < installmentsCount; i++) {
-        const instDoc = {
-          id: `INST-${Date.now()}-${i + 1}`,
-          clientId: clientId || finalTx.clientId,
-          transactionId: txId,
-          amount: cuotaAmount,
-          amountUSD: cuotaAmount,
-          dueDate: nextDueDate.toISOString().split('T')[0],
-          status: 'pending',
-          installmentNumber: i + 1,
-          totalInstallments: installmentsCount,
-          pointsEarned: Math.round(cuotaAmount),
-          pointsAwarded: false,
-          createdAt: new Date().toISOString(),
-          type: creditDetails?.creditType || 'cotidiano'
-        };
-        installments.push(instDoc);
-        nextDueDate.setDate(nextDueDate.getDate() + 15);
-      }
-      writeCollection('installments', installments, { action: 'add', collection: 'installments' });
-    }
-
-    // 3. Descontar Inventario de Productos
-    if (saleItems.length > 0) {
-      const products = readCollection('products');
-      saleItems.forEach(item => {
-        const prodId = item.productId || item.id;
-        const pIndex = products.findIndex(p => String(p.id) === String(prodId));
-        if (pIndex !== -1) {
-          const deductQty = Number(item.quantityKg || item.quantity || 1);
-          products[pIndex].stockKg = Math.max(0, Number(products[pIndex].stockKg || 0) - deductQty);
-        }
+    const collectionName = req.params.name;
+    // Validar allowlist de colecciones con borrado individual permitido
+    if (SENSITIVE_CORE_COLLECTIONS.has(collectionName) && !ALLOWED_DELETION_COLLECTIONS.has(collectionName)) {
+      return res.status(403).json({
+        error: `Operación denegada: borrado individual prohibido en la colección protegida '${collectionName}'.`
       });
-      writeCollection('products', products, { action: 'update', collection: 'products' });
     }
 
-    res.json({
-      success: true,
-      transaction: finalTx,
-      message: 'Venta procesada y cuotas registradas atómicamente.'
-    });
-  } catch (error) {
-    console.error('Error en /api/pos/process-sale:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.delete('/api/collections/:name', (req, res) => {
-  try {
-    writeCollection(req.params.name, [], { action: 'clear', collection: req.params.name });
-    res.json({ success: true });
-  } catch (error) {
-    console.error(`Error clearing ${req.params.name}:`, error);
-    res.status(500).json({ error: 'Error clearing collection' });
-  }
-});
-
-app.delete('/api/collections/:name/:id', (req, res) => {
-  try {
-    const data = readCollection(req.params.name);
+    const data = readCollection(collectionName);
     const filtered = data.filter(d => String(d.id) !== String(req.params.id));
-    writeCollection(req.params.name, filtered, { action: 'delete', collection: req.params.name, doc: { id: req.params.id } });
+    writeCollection(collectionName, filtered, { action: 'delete', collection: collectionName, doc: { id: req.params.id } });
     res.json({ success: true });
   } catch (error) {
     console.error(`Error deleting ${req.params.name}:`, error);
     res.status(500).json({ error: 'Error deleting document' });
+  }
+});
+
+// 6. Endpoint Administrativo Oficial para Restablecimiento Contable (Fase 1C)
+// Sustituye al peligroso DELETE /api/collections/:name de wipe genérico
+app.post('/api/admin/reset-accounting', requireAuth, requireRole('admin'), verifyCsrf, async (req, res) => {
+  try {
+    const ACCOUNTING_COLLECTIONS = [
+      'transactions',
+      'invoices',
+      'shift_transactions',
+      'shift_sessions',
+      'cashClosings',
+      'sales',
+      'expenses',
+      'payments',
+      'bills',
+      'installments',
+      'kardex'
+    ];
+
+    await withCollectionLock('GLOBAL_TRANSACTION', async () => {
+      // 1. Limpiar colecciones contables fijas a []
+      for (const coll of ACCOUNTING_COLLECTIONS) {
+        writeCollection(coll, [], { action: 'clear', collection: coll });
+      }
+
+      // 2. Resetear deudas de clientes a cero
+      const clients = readCollection('clients');
+      if (Array.isArray(clients)) {
+        const updatedClients = clients.map(c => ({
+          ...c,
+          outstandingDebt: 0,
+          loyaltyPoints: 0
+        }));
+        writeCollection('clients', updatedClients, { action: 'update_all', collection: 'clients' });
+      }
+
+      // 3. Resetear deudas y saldos de proveedores a cero
+      const suppliers = readCollection('suppliers');
+      if (Array.isArray(suppliers)) {
+        const updatedSuppliers = suppliers.map(s => ({
+          ...s,
+          balanceOwed: 0,
+          storeDebt: 0
+        }));
+        writeCollection('suppliers', updatedSuppliers, { action: 'update_all', collection: 'suppliers' });
+      }
+    });
+
+    console.log('[Sistema Kalu] ✅ Restablecimiento contable administrativo ejecutado con éxito por admin.');
+    io.emit('database_restored', { timestamp: new Date().toISOString(), type: 'accounting_reset' });
+
+    res.json({ success: true, message: 'Datos contables restablecidos exitosamente.' });
+  } catch (error) {
+    console.error('Error en /api/admin/reset-accounting:', error);
+    res.status(500).json({ error: 'Error durante el restablecimiento contable', details: error.message });
   }
 });
 
@@ -1643,7 +1699,7 @@ app.post('/api/restore-backup', requireAuth, requireRole('admin'), verifyCsrf, (
 
     console.log('[Sistema Kalu] ✅ Restauración completa de base de datos realizada con éxito por admin:', restoredSummary);
     io.emit('database_restored', { timestamp: new Date().toISOString(), summary: restoredSummary });
-    
+
     // Emitir eventos para que todas las vistas reactivas se actualicen
     for (const colName of Object.keys(collections)) {
       io.emit('collection_updated', colName);
@@ -1664,7 +1720,7 @@ app.post('/api/restore-backup', requireAuth, requireRole('admin'), verifyCsrf, (
 
 async function sendWhatsAppNotification({ phone, name, message }) {
   if (!phone) return { success: false, reason: 'No phone' };
-  
+
   let cleanPhone = String(phone).replace(/\D/g, '');
   if (cleanPhone.startsWith('0')) {
     cleanPhone = '58' + cleanPhone.substring(1);
@@ -1712,7 +1768,7 @@ async function sendWhatsAppNotification({ phone, name, message }) {
 
 async function sendEmailNotification({ email, name, subject, htmlContent }) {
   if (!email) return { success: false, reason: 'No email' };
-  
+
   const isDev = process.env.NODE_ENV === 'development' || process.env.MAIL_MODE === 'development' || process.env.MAIL_MODE === 'simulation';
   const emailUser = process.env.EMAIL_USER || 'dev-simulator@kalu.local';
   const emailPass = process.env.EMAIL_PASS;
@@ -1767,7 +1823,7 @@ async function checkOverdueInstallments() {
 
     for (let i = 0; i < installments.length; i++) {
       const inst = installments[i];
-      
+
       // Evaluar solo cuotas pendientes de pago
       if (inst.status === 'pending') {
         const dueRaw = inst.dueDate ? String(inst.dueDate).split('T')[0] : '';
@@ -1897,7 +1953,7 @@ app.get(['/privacidad', '/api/privacidad'], (req, res) => {
 server.listen(PORT, () => {
   console.log(`Backend server (Uploader & WS) running on port ${PORT}`);
   console.log(`Saving databases and files to: ${uploadDir}`);
-  
+
   // Ejecución inicial al arrancar el backend (tras 5 segundos de gracia)
   setTimeout(() => {
     checkOverdueInstallments();

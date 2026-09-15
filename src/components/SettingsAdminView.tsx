@@ -86,18 +86,18 @@ export default function SettingsAdminView({
   // Shift Manager States
   const [localShifts, setLocalShifts] = useState<Shift[]>([]);
   const [selectedShiftId, setSelectedShiftId] = useState<string>('');
-  
+
   const [shiftBannerTitle, setShiftBannerTitle] = useState('');
   const [shiftBannerDesc, setShiftBannerDesc] = useState('');
   const [shiftBannerFile, setShiftBannerFile] = useState<File | null>(null);
-  
+
   const [isPublishingShift, setIsPublishingShift] = useState(false);
   const [activeBanners, setActiveBanners] = useState<any[]>([]);
 
   // Shift Modal States
   const [showShiftModal, setShowShiftModal] = useState(false);
   const [newShiftName, setNewShiftName] = useState('');
-  
+
   // Publish Confirmation & Progress States
   const [confirmPublishShift, setConfirmPublishShift] = useState<Shift | null>(null);
   const [uploadStatus, setUploadStatus] = useState('');
@@ -175,7 +175,7 @@ export default function SettingsAdminView({
     const updatedShift = { ...s, items: [...s.items, newItem] };
     await saveShift(updatedShift);
     setLocalShifts(await loadShifts());
-    
+
     setShiftBannerTitle('');
     setShiftBannerDesc('');
     setShiftBannerFile(null);
@@ -205,7 +205,7 @@ export default function SettingsAdminView({
     try {
       setMaintLogs(prev => [...prev, `[Banners] Purgando banners anteriores de la nube en paralelo...`]);
       const currentSnap = await fetchCollection('banners');
-      
+
       const deletePromises = currentSnap.map(async (d: any) => {
         if (d.storagePath && !d.storagePath.startsWith('/uploads')) {
           // Ignore external paths
@@ -218,30 +218,30 @@ export default function SettingsAdminView({
       setMaintLogs(prev => [...prev, `[Banners] Subiendo ${shift.items.length} archivos nuevos al servidor local/VPS...`]);
       for (let i = 0; i < shift.items.length; i++) {
         const item = shift.items[i];
-        
+
         const mimeType = item.type || (item.fileName.endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
         const cleanBlob = new Blob([item.fileBlob], { type: mimeType });
-        
+
         setUploadStatus(`Subiendo archivo ${i+1} de ${shift.items.length}: ${item.fileName}...`);
-        
+
         const formData = new FormData();
         formData.append('files', cleanBlob, item.fileName);
-        
+
         try {
           const response = await fetch('/api/upload', {
             method: 'POST',
             body: formData
           });
-          
+
           if (!response.ok) {
             throw new Error(`Error HTTP: ${response.status}`);
           }
-          
+
           const result = await response.json();
           const downloadUrl = result.urls[0];
-          
+
           setUploadStatus(`Guardando referencia en base de datos ${i+1}/${shift.items.length}...`);
-          
+
           await addLocalDoc('banners', {
             title: item.title,
             desc: item.desc,
@@ -251,7 +251,7 @@ export default function SettingsAdminView({
             active: true,
             createdAt: new Date().toISOString()
           });
-          
+
           setUploadPercent(Math.round(((i + 1) / shift.items.length) * 100));
         } catch (error: any) {
           setMaintLogs(prev => [...prev, `[Banners] Error en subida de ${item.fileName}: ${error.message}`]);
@@ -278,63 +278,18 @@ export default function SettingsAdminView({
     if (!window.confirm("¡ADVERTENCIA CRÍTICA!\n\n¿Estás seguro de que quieres borrar TODAS las ventas, transacciones y limpiar los saldos de clientes y proveedores?\n\nEsta acción NO se puede deshacer y borrará la contabilidad de la base de datos en la nube.")) {
       return;
     }
-    
+
     setIsWiping(true);
     setMaintLogs(prev => [...prev, 'INICIANDO PURGA DE CONTABILIDAD...']);
-    
+
     try {
       setMaintLogs(prev => [...prev, 'Borrando transacciones y registros contables...']);
-      
-      const { clearCollection } = await import('../services/localApi');
-      const collectionsToClear = [
-        'transactions',
-        'sales',
-        'invoices',
-        'shift_transactions',
-        'shift_sessions',
-        'cashClosings',
-        'expenses',
-        'payments',
-        'bills',
-        'installments',
-        'kardex',
-        'cheeseTrips'
-      ];
-      
-      for (const col of collectionsToClear) {
-        try {
-          await clearCollection(col);
-        } catch (e) {
-          console.warn(`Could not clear ${col}:`, e);
-        }
-      }
-      setMaintLogs(prev => [...prev, 'Colecciones contables vaciadas.']);
 
-      setMaintLogs(prev => [...prev, 'Reseteando saldos de proveedores a $0.00...']);
-      const sups = await fetchCollection('suppliers');
-      if (Array.isArray(sups)) {
-        for (const d of sups) {
-          await updateLocalDoc('suppliers', d.id, { balanceOwed: 0, storeDebt: 0, balance: 0, debt: 0 });
-        }
-      }
-      setMaintLogs(prev => [...prev, `Saldos de ${Array.isArray(sups) ? sups.length : 0} proveedores reseteados.`]);
-
-      setMaintLogs(prev => [...prev, 'Reseteando deudas de clientes a $0.00...']);
-      const clis = await fetchCollection('clients');
-      if (Array.isArray(clis)) {
-        for (const d of clis) {
-          await updateLocalDoc('clients', d.id, { outstandingDebt: 0, loyaltyPoints: 0, balanceUsd: 0, balanceBs: 0 });
-        }
-      }
-      setMaintLogs(prev => [...prev, `Deudas de ${Array.isArray(clis) ? clis.length : 0} clientes reseteadas.`]);
-
-      // Reset Bóveda Central to 0
-      try {
-        await updateLocalDoc('settings', 'general', {
-          centralVaultBalance: { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 }
-        });
-      } catch (e) {
-        console.warn('Error resetting vault balance in settings:', e);
+      if (onResetAccounting) {
+        await onResetAccounting();
+      } else {
+        const { resetAccountingApi } = await import('../services/localApi');
+        await resetAccountingApi();
       }
 
       // Purge local storage accounting keys
@@ -346,10 +301,6 @@ export default function SettingsAdminView({
       localStorage.removeItem('kalu_sales_count');
       localStorage.removeItem('kalu_sales_revenue');
       localStorage.removeItem('kalu_cheese_trips');
-
-      if (onResetAccounting) {
-        await onResetAccounting();
-      }
 
       setMaintLogs(prev => [...prev, '¡PURGA DE CONTABILIDAD COMPLETADA EXITOSAMENTE!']);
       onAddNotification("Contabilidad y deudas reseteadas a cero correctamente en la base de datos.", "success");
@@ -406,7 +357,7 @@ export default function SettingsAdminView({
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUserName || !newUserCedula || !newUserPin) return;
-    
+
     try {
       const newId = `usr-${Date.now()}`;
       await addLocalDoc('users', {
@@ -460,7 +411,7 @@ export default function SettingsAdminView({
   const handleRunBackup = async () => {
     setBackupStep('running');
     setBackupLogs([]);
-    
+
     const logs = [
       'Extrayendo catálogo de productos e inventario...',
       'Leyendo directorio de clientes y cuentas por cobrar...',
@@ -475,7 +426,7 @@ export default function SettingsAdminView({
 
     try {
       await exportToJson();
-      
+
       setTimeout(() => {
         setBackupStep('completed');
         const now = new Date();
@@ -547,7 +498,7 @@ export default function SettingsAdminView({
     try {
       setIsSnapshotLoading(true);
       onAddNotification('Borrando datos contables y reiniciando libretas... Por favor espere.', 'info');
-      
+
       // Call the global reset function passed from App.tsx
       if (onResetAccounting) {
         await onResetAccounting();
@@ -1141,11 +1092,11 @@ export default function SettingsAdminView({
                         <button onClick={() => handleDeleteLocalShift(selectedShiftId)} className="text-rose-500 text-xs font-bold uppercase hover:underline">
                           Eliminar Turno Local
                         </button>
-                        <button 
+                        <button
                           onClick={() => {
                             const s = localShifts.find(x => x.id === selectedShiftId);
                             if (s) setConfirmPublishShift(s);
-                          }} 
+                          }}
                           disabled={isPublishingShift}
                           className="px-6 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase rounded shadow-[0_0_15px_rgba(245,158,11,0.3)] disabled:opacity-50"
                         >
@@ -1204,7 +1155,7 @@ export default function SettingsAdminView({
                   Sincroniza el coeficiente de deshidratación estimado contra mediciones de báscula reales para Cotija Añejo.
                 </p>
               </button>
-              
+
               <button
                 onClick={handleWipeContabilidad}
                 disabled={isWiping}
@@ -1224,7 +1175,7 @@ export default function SettingsAdminView({
           {/* Maintenance live logger output terminal */}
           <div className="lg:col-span-5 bg-editorial-card border border-editorial-border rounded p-6 space-y-4">
             <h4 className="font-serif text-lg font-bold text-editorial-text-primary">Terminal de Salida de Procesos</h4>
-            
+
             <div className="bg-editorial-bg border border-editorial-border rounded-lg p-4 font-mono text-[11px] text-emerald-400 h-64 overflow-y-auto space-y-2">
               <div className="flex justify-between text-emerald-600 border-b border-emerald-800/40 pb-1.5 font-bold mb-2">
                 <span>CONSOLA DE MANTENIMIENTO</span>
@@ -1261,25 +1212,25 @@ export default function SettingsAdminView({
             <div className="p-5 space-y-4">
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-editorial-text-muted uppercase tracking-wider">Nombre del Turno</label>
-                <input 
-                  type="text" 
-                  value={newShiftName} 
-                  onChange={e => setNewShiftName(e.target.value)} 
+                <input
+                  type="text"
+                  value={newShiftName}
+                  onChange={e => setNewShiftName(e.target.value)}
                   autoFocus
                   onKeyDown={e => e.key === 'Enter' && confirmCreateShift()}
-                  placeholder="Ej: Promo Fin de Semana..." 
-                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none" 
+                  placeholder="Ej: Promo Fin de Semana..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-sm text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
                 />
               </div>
             </div>
             <div className="bg-editorial-card p-4 border-t border-editorial-border flex gap-3 justify-end">
-              <button 
+              <button
                 onClick={() => setShowShiftModal(false)}
                 className="px-4 py-2 text-xs font-bold uppercase text-editorial-text-muted hover:text-white transition-colors"
               >
                 Cancelar
               </button>
-              <button 
+              <button
                 onClick={confirmCreateShift}
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold uppercase rounded transition-colors shadow-lg"
               >
@@ -1300,7 +1251,7 @@ export default function SettingsAdminView({
               </h3>
               <p className="text-xs text-editorial-text-muted mt-1">Sincronización en la nube</p>
             </div>
-            
+
             {isPublishingShift ? (
               <div className="p-5 space-y-4">
                 <div className="flex justify-between text-xs font-bold text-slate-300">
@@ -1308,8 +1259,8 @@ export default function SettingsAdminView({
                   <span className="text-emerald-400">{uploadPercent}%</span>
                 </div>
                 <div className="w-full bg-black/60 rounded-full h-3 overflow-hidden border border-emerald-500/30">
-                  <div 
-                    className="bg-emerald-500 h-full transition-all duration-300 ease-out" 
+                  <div
+                    className="bg-emerald-500 h-full transition-all duration-300 ease-out"
                     style={{ width: `${uploadPercent}%` }}
                   />
                 </div>
@@ -1327,7 +1278,7 @@ export default function SettingsAdminView({
               </div>
             )}
             <div className="bg-editorial-card p-4 border-t border-editorial-border flex gap-3 justify-end">
-              <button 
+              <button
                 onClick={() => {
                   if (isPublishingShift && activeUploadTask) {
                     activeUploadTask.cancel();
@@ -1339,7 +1290,7 @@ export default function SettingsAdminView({
               >
                 Cancelar
               </button>
-              <button 
+              <button
                 onClick={executePublishShift}
                 disabled={isPublishingShift}
                 className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase rounded transition-colors shadow-lg disabled:opacity-50"

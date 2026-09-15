@@ -1,4 +1,4 @@
-import { fetchCollection } from './localApi';
+import { fetchCollection, getCsrfToken } from './localApi';
 
 const isProd = import.meta.env.PROD;
 const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
@@ -45,7 +45,9 @@ export interface BackupData {
 export async function fetchOperationalData(): Promise<BackupData> {
   // Intentar obtener respaldo completo atómico del backend
   try {
-    const res = await fetch(`${BACKUP_API_URL}/full-backup`);
+    const res = await fetch(`${BACKUP_API_URL}/full-backup`, {
+      credentials: 'include'
+    });
     if (res.ok) {
       const data = await res.json();
       if (data && data.collections) {
@@ -82,10 +84,15 @@ export async function restoreFromData(data: BackupData): Promise<any> {
     throw new Error('Formato de respaldo inválido: No se encontraron colecciones para restaurar.');
   }
 
+  const csrf = await getCsrfToken();
   // Enviar al endpoint seguro de restauración en caliente del backend
   const res = await fetch(`${BACKUP_API_URL}/restore-backup`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include',
     body: JSON.stringify(data)
   });
 
@@ -111,7 +118,7 @@ export async function exportToJson(): Promise<void> {
   const dateStr = new Date().toISOString().replace(/:/g, '-').split('.')[0];
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
-  
+
   const a = document.createElement('a');
   a.href = url;
   a.download = `kalu_copia_seguridad_${dateStr}.json`;
@@ -144,43 +151,8 @@ export async function importFromJson(file: File): Promise<any> {
 
 export async function resetAccountingData(): Promise<void> {
   try {
-    const { clearCollection, fetchCollection, updateLocalDoc } = await import('./localApi');
-    const collectionsToClear = [
-      'transactions',
-      'invoices',
-      'shift_transactions',
-      'shift_sessions',
-      'cashClosings',
-      'sales',
-      'expenses',
-      'payments',
-      'bills',
-      'installments',
-      'kardex'
-    ];
-    for (const c of collectionsToClear) {
-      try {
-        await clearCollection(c);
-      } catch (e) {
-        console.warn(`Could not clear ${c}:`, e);
-      }
-    }
-
-    // Reset all clients debts in local database
-    const clis = await fetchCollection('clients');
-    if (Array.isArray(clis)) {
-      for (const d of clis) {
-        await updateLocalDoc('clients', d.id, { outstandingDebt: 0, loyaltyPoints: 0 });
-      }
-    }
-
-    // Reset all suppliers debts in local database
-    const sups = await fetchCollection('suppliers');
-    if (Array.isArray(sups)) {
-      for (const d of sups) {
-        await updateLocalDoc('suppliers', d.id, { balanceOwed: 0, storeDebt: 0 });
-      }
-    }
+    const { resetAccountingApi } = await import('./localApi');
+    await resetAccountingApi();
   } catch (error) {
     console.error("Error resetting accounting:", error);
     throw error;

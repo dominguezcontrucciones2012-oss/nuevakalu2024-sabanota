@@ -7,6 +7,12 @@
     "currencySymbol": "$",
     "secondaryCurrencySymbol": "Bs",
     "environment": "development",
-    "version": "DEV-1.0.0"
+    "version": "DEV-1.0.0",
+    "centralVaultBalance": {
+      "usd": 30,
+      "bs": 0,
+      "bankBs": 0,
+      "bankUsd": 0
+    }
   }
 ]

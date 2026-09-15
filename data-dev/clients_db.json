@@ -9,7 +9,9 @@
     "creditLimitUsd": 500,
     "currentDebtUsd": 0,
     "points": 120,
-    "status": "active"
+    "status": "active",
+    "outstandingDebt": 0,
+    "loyaltyPoints": 0
   },
   {
     "id": "cli-demo-2",
@@ -21,6 +23,8 @@
     "creditLimitUsd": 1000,
     "currentDebtUsd": 50,
     "points": 350,
-    "status": "active"
+    "status": "active",
+    "outstandingDebt": 0,
+    "loyaltyPoints": 0
   }
 ]
