@@ -227,8 +227,22 @@ app.get('/api/auth/me', (req, res) => {
   });
 });
 
-// 4. Logout e invalidación de sesión server-side
-app.post('/api/auth/logout', (req, res) => {
+// Middleware de validación CSRF para operaciones mutadoras
+function verifyCsrf(req, res, next) {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+    return next();
+  }
+  const clientToken = req.headers['x-csrf-token'] || req.body?.csrfToken;
+  const sessionToken = req.session?.csrfToken;
+
+  if (!clientToken || !sessionToken || clientToken !== sessionToken) {
+    return res.status(403).json({ error: 'CSRF token inválido o ausente' });
+  }
+  next();
+}
+
+// 4. Logout e invalidación de sesión server-side (Protegido con verificación CSRF)
+app.post('/api/auth/logout', verifyCsrf, (req, res) => {
   req.session.destroy((err) => {
     if (err) {
       console.error('[Auth Error] Error destruyendo sesión:', err);

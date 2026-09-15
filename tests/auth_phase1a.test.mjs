@@ -252,26 +252,52 @@ async function runTests() {
     assert.notStrictEqual(initialCookie, newCookie, 'El identificador de sesión debe renovarse tras el login');
   });
 
-  // 16. Logout exitoso
-  await test('16. POST /api/auth/logout invalida la sesión en servidor', async () => {
-    const resLogout = await request('/api/auth/logout', {
+  // 16. CSRF Validation: Petición mutadora SIN x-csrf-token -> 403
+  await test('16. POST /api/auth/logout sin x-csrf-token es rechazada con 403 Forbidden', async () => {
+    const res = await request('/api/auth/logout', {
       method: 'POST',
       headers: { 'Cookie': adminCookie }
+    });
+    assert.strictEqual(res.status, 403, `Esperado 403, recibido ${res.status}`);
+    assert.strictEqual(res.data.error, 'CSRF token inválido o ausente');
+  });
+
+  // 17. CSRF Validation: Petición mutadora con token incorrecto -> 403
+  await test('17. POST /api/auth/logout con x-csrf-token falso es rechazada con 403 Forbidden', async () => {
+    const res = await request('/api/auth/logout', {
+      method: 'POST',
+      headers: {
+        'Cookie': adminCookie,
+        'x-csrf-token': 'token_falso_malicioso_12345'
+      }
+    });
+    assert.strictEqual(res.status, 403, `Esperado 403, recibido ${res.status}`);
+    assert.strictEqual(res.data.error, 'CSRF token inválido o ausente');
+  });
+
+  // 18. CSRF Validation: Petición mutadora con token correcto -> 200
+  await test('18. POST /api/auth/logout con x-csrf-token válido es aceptada con 200 OK', async () => {
+    const resLogout = await request('/api/auth/logout', {
+      method: 'POST',
+      headers: {
+        'Cookie': adminCookie,
+        'x-csrf-token': adminCsrf
+      }
     });
     assert.strictEqual(resLogout.status, 200);
     assert.strictEqual(resLogout.data.success, true);
   });
 
-  // 17. GET /api/auth/me después de logout -> 401
-  await test('17. GET /api/auth/me después de logout devuelve 401 Unauthorized', async () => {
+  // 19. GET /api/auth/me después de logout -> 401
+  await test('19. GET /api/auth/me después de logout devuelve 401 Unauthorized', async () => {
     const resMe = await request('/api/auth/me', {
       headers: { 'Cookie': adminCookie }
     });
     assert.strictEqual(resMe.status, 401, `Esperado 401 después de logout, recibido ${resMe.status}`);
   });
 
-  // 18. Sanitización de GET /api/collections/users (No expone hashes al cliente)
-  await test('18. GET /api/collections/users no expone passwordHash ni pinHash', async () => {
+  // 20. Sanitización de GET /api/collections/users (No expone hashes al cliente)
+  await test('20. GET /api/collections/users no expone passwordHash ni pinHash', async () => {
     const resUsers = await request('/api/collections/users');
     assert.strictEqual(resUsers.status, 200);
     assert.ok(Array.isArray(resUsers.data));
@@ -283,15 +309,26 @@ async function runTests() {
     });
   });
 
-  // 19. CSRF Token Endpoint
-  await test('19. GET /api/auth/csrf-token emite token CSRF criptográfico', async () => {
+  // 21. CSRF Token Endpoint
+  await test('21. GET /api/auth/csrf-token emite token CSRF criptográfico', async () => {
     const res = await request('/api/auth/csrf-token');
     assert.strictEqual(res.status, 200);
     assert.ok(res.data.csrfToken && res.data.csrfToken.length >= 32, 'CSRF token debe tener al menos 32 caracteres');
   });
 
-  // 20. Rate Limiter de Login
-  await test('20. Intentos repetidos de login activan Rate Limiter (HTTP 429)', async () => {
+  // 22. Inmunidad a manipulación de localStorage (Sin cookie válida el servidor rechaza)
+  await test('22. Manipular localStorage sin cookie de sesión server-side rechaza con 401 en /api/auth/me', async () => {
+    const res = await request('/api/auth/me', {
+      headers: {
+        // Simular cliente que inyectó localStorage pero no tiene cookie de sesión válida
+        'x-client-storage-state': 'kalu_auth_state=true'
+      }
+    });
+    assert.strictEqual(res.status, 401, 'El servidor debe rechazar cualquier intento sin cookie válida');
+  });
+
+  // 23. Rate Limiter de Login
+  await test('23. Intentos repetidos de login activan Rate Limiter (HTTP 429)', async () => {
     let got429 = false;
     for (let i = 0; i < 15; i++) {
       const res = await request('/api/auth/login', {
