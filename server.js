@@ -179,6 +179,62 @@ function requireRole(...allowedRoles) {
   };
 }
 
+// Rate limiter específico para Login de Portal (10 intentos fallidos por cada 15 minutos)
+const portalLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'Demasiados intentos de acceso al portal. Por favor espere 15 minutos.'
+  }
+});
+
+/**
+ * Middleware requirePortalAuth (Fase 1D-A):
+ * Verifica que exista una identidad portal activa en req.session.portalUser.
+ * Valida la existencia y estado activo del cliente o productor.
+ * Adjunta la identidad sanitizada en req.portalUser.
+ */
+function requirePortalAuth(req, res, next) {
+  if (!req.session || !req.session.portalUser || !req.session.portalUser.id) {
+    return res.status(401).json({ error: 'No autenticado en portal' });
+  }
+
+  const { type, id } = req.session.portalUser;
+  if (type === 'client') {
+    const clients = readCollection('clients');
+    const client = clients.find(c => String(c.id) === String(id));
+    if (!client || (client.status && client.status !== 'active')) {
+      delete req.session.portalUser;
+      return res.status(401).json({ error: 'Sesión de portal inválida o cliente inactivo' });
+    }
+    req.portalUser = {
+      type: 'client',
+      id: client.id,
+      name: client.name
+    };
+  } else if (type === 'producer' || type === 'supplier') {
+    const suppliers = readCollection('suppliers');
+    const supplier = suppliers.find(s => String(s.id) === String(id));
+    if (!supplier || (supplier.status && supplier.status !== 'active')) {
+      delete req.session.portalUser;
+      return res.status(401).json({ error: 'Sesión de portal inválida o productor inactivo' });
+    }
+    req.portalUser = {
+      type: 'producer',
+      id: supplier.id,
+      name: supplier.name
+    };
+  } else {
+    delete req.session.portalUser;
+    return res.status(401).json({ error: 'Tipo de portal no reconocido' });
+  }
+
+  next();
+}
+
 // Políticas de Acceso a Colecciones (Fase 1C)
 const ADMIN_ONLY_COLLECTIONS = new Set(['adminLedger', 'business_debts', 'settings', 'vehicle_trips']);
 const SENSITIVE_CORE_COLLECTIONS = new Set(['users', 'clients', 'transactions', 'installments', 'bills', 'settings', 'adminLedger', 'business_debts', 'products', 'kardex', 'suppliers']);
@@ -382,6 +438,171 @@ app.post('/api/auth/logout', verifyCsrf, (req, res) => {
     res.clearCookie('__kalu_sid');
     res.json({ success: true, message: 'Sesión cerrada correctamente' });
   });
+});
+
+// ============================================================
+// ENDPOINTS DE AUTENTICACIÓN SERVER-SIDE DE PORTALES (FASE 1D-A)
+// ============================================================
+
+// 1. Login de portal para cliente o productor
+app.post('/api/portal/auth/login', portalLoginLimiter, (req, res) => {
+  try {
+    const { portalType, identifier, pin } = req.body || {};
+
+    if (!portalType || !['client', 'producer'].includes(portalType) || !identifier || !pin) {
+      return res.status(400).json({ error: 'Debe ingresar identificador y PIN de acceso' });
+    }
+
+    const genericAuthError = () => res.status(401).json({ error: 'Identificador o PIN incorrecto' });
+    const cleanId = String(identifier).trim().toLowerCase();
+    const cleanDigits = String(identifier).replace(/\D/g, '');
+    const inputPin = String(pin).trim();
+
+    let matchedEntity = null;
+
+    if (portalType === 'client') {
+      const clients = readCollection('clients');
+      matchedEntity = clients.find(c => {
+        if (c.status && c.status !== 'active') return false;
+        const phoneDigits = String(c.phone || c.telefono || '').replace(/\D/g, '');
+        const cedulaDigits = String(c.cedula || c.ci || c.ciRif || c.idNumber || '').replace(/\D/g, '');
+        const emailMatch = c.email && c.email.trim().toLowerCase() === cleanId;
+        const idMatch = c.id && String(c.id).trim().toLowerCase() === cleanId;
+        const nameMatch = c.name && c.name.trim().toLowerCase() === cleanId;
+
+        if (emailMatch || idMatch || nameMatch) return true;
+        if (cleanDigits.length >= 4 && phoneDigits.length >= 4 && phoneDigits.endsWith(cleanDigits)) return true;
+        if (cleanDigits.length >= 4 && cedulaDigits.length >= 4 && cedulaDigits.endsWith(cleanDigits)) return true;
+        return false;
+      });
+
+      if (!matchedEntity) {
+        return genericAuthError();
+      }
+
+      let pinValid = false;
+      if (matchedEntity.pinHash) {
+        pinValid = verifyCredential(inputPin, matchedEntity.pinHash);
+      } else if (matchedEntity.pin) {
+        pinValid = verifyCredential(inputPin, matchedEntity.pin) || String(matchedEntity.pin) === inputPin;
+      } else {
+        const base = matchedEntity.cedula || matchedEntity.ci || matchedEntity.ciRif || matchedEntity.idNumber || matchedEntity.phone || '000000';
+        const expectedPin = String(base).replace(/\D/g, '').slice(-4).padEnd(6, '0');
+        pinValid = inputPin === expectedPin;
+      }
+
+      if (!pinValid) {
+        return genericAuthError();
+      }
+    } else {
+      // Productor
+      const suppliers = readCollection('suppliers');
+      matchedEntity = suppliers.find(s => {
+        if (s.status && s.status !== 'active') return false;
+        const phoneDigits = String(s.phone || s.telefono || '').replace(/\D/g, '');
+        const rifDigits = String(s.rif || s.cedula || s.ci || '').replace(/\D/g, '');
+        const emailMatch = s.email && s.email.trim().toLowerCase() === cleanId;
+        const idMatch = s.id && String(s.id).trim().toLowerCase() === cleanId;
+        const nameMatch = s.name && s.name.trim().toLowerCase() === cleanId;
+
+        if (emailMatch || idMatch || nameMatch) return true;
+        if (cleanDigits.length >= 4 && phoneDigits.length >= 4 && phoneDigits.endsWith(cleanDigits)) return true;
+        if (cleanDigits.length >= 4 && rifDigits.length >= 4 && rifDigits.endsWith(cleanDigits)) return true;
+        return false;
+      });
+
+      if (!matchedEntity) {
+        return genericAuthError();
+      }
+
+      let pinValid = false;
+      if (matchedEntity.pinHash) {
+        pinValid = verifyCredential(inputPin, matchedEntity.pinHash);
+      } else if (matchedEntity.pin) {
+        pinValid = verifyCredential(inputPin, matchedEntity.pin) || String(matchedEntity.pin) === inputPin;
+      } else {
+        const base = matchedEntity.rif || matchedEntity.cedula || matchedEntity.ci || matchedEntity.phone || '000000';
+        const expectedPin = String(base).replace(/\D/g, '').slice(-4).padEnd(6, '0');
+        pinValid = inputPin === expectedPin;
+      }
+
+      if (!pinValid) {
+        return genericAuthError();
+      }
+    }
+
+    const safePortalUser = {
+      type: portalType,
+      id: matchedEntity.id,
+      name: matchedEntity.name
+    };
+
+    // Preservar identidad CRM si existiera en la misma sesión
+    const existingUserId = req.session?.userId;
+    const existingUserRole = req.session?.userRole;
+
+    req.session.regenerate((err) => {
+      if (err) {
+        console.error('[Portal Auth Error] Error regenerando sesión:', err);
+        return res.status(500).json({ error: 'Error interno de autenticación' });
+      }
+
+      if (existingUserId) {
+        req.session.userId = existingUserId;
+        req.session.userRole = existingUserRole;
+      }
+      req.session.portalUser = safePortalUser;
+      req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+
+      req.session.save((saveErr) => {
+        if (saveErr) {
+          console.error('[Portal Auth Error] Error guardando sesión:', saveErr);
+          return res.status(500).json({ error: 'Error interno de sesión' });
+        }
+        res.json({
+          success: true,
+          authenticated: true,
+          portalUser: safePortalUser,
+          csrfToken: req.session.csrfToken
+        });
+      });
+    });
+  } catch (error) {
+    console.error('[Portal Auth Exception]:', error);
+    res.status(500).json({ error: 'Error procesando autenticación de portal' });
+  }
+});
+
+// 2. Obtener sesión activa del portal (Protegido por requirePortalAuth)
+app.get('/api/portal/auth/me', requirePortalAuth, (req, res) => {
+  res.json({
+    authenticated: true,
+    portalUser: req.portalUser,
+    csrfToken: req.session.csrfToken
+  });
+});
+
+// 3. Logout del portal (Protegido con verificación CSRF)
+app.post('/api/portal/auth/logout', verifyCsrf, (req, res) => {
+  if (req.session) {
+    delete req.session.portalUser;
+    // Si no hay sesión CRM activa, destruir la sesión y limpiar cookie
+    if (!req.session.userId) {
+      req.session.destroy((err) => {
+        if (err) console.error('[Portal Logout Error]:', err);
+        res.clearCookie('__kalu_sid');
+        return res.json({ success: true, message: 'Sesión de portal cerrada' });
+      });
+      return;
+    }
+    // Si hay sesión CRM activa, guardar la sesión sin portalUser preservando la sesión CRM
+    req.session.save((err) => {
+      if (err) console.error('[Portal Logout Save Error]:', err);
+      return res.json({ success: true, message: 'Sesión de portal cerrada' });
+    });
+  } else {
+    res.json({ success: true, message: 'Sesión de portal cerrada' });
+  }
 });
 
 // Servir la build estática de producción de Vite si existe la carpeta dist

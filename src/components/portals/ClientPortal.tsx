@@ -1,4 +1,4 @@
-import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc, portalLoginApi, portalLogoutApi, fetchCurrentPortalUserApi } from '../../services/localApi';
 import React, { useState } from 'react';
 import { getUnitLabel } from '../../utils';
 
@@ -70,7 +70,7 @@ export default function ClientPortal({
   isolatedType,
   isolatedId
 }: MobilePortalsViewProps) {
-  // Authentication & Session States for Each Phone Simulator (Zero visual overlap or exposure between users)
+  // Authentication & Session States for Each Phone Simulator (Server-Side Session with req.session.portalUser)
   const [loggedClient, setLoggedClient] = useState<ClientProfile | null>(null);
   const [loggedSupplier, setLoggedSupplier] = useState<SupplierProfile | null>(null);
 
@@ -160,53 +160,58 @@ export default function ClientPortal({
     }
   };
 
-  const get6DigitPin = (user: any) => {
-    const base = user.pin || user.cedula || user.rfc || user.ci || user.ciRif || user.idNumber || user.phone || '000000';
-    return String(base).replace(/\D/g, '').slice(-4).padEnd(6, '0');
-  };
-
-
-  // Initialization splash
+  // Initialization splash and Server-Side Portal Session bootstrap
   const [isInitializing, setIsInitializing] = useState(true);
 
-  // Auto-login logic for isolated mode
   React.useEffect(() => {
-    let timer: any = null;
-    if (isolatedId) {
-      if (isolatedType === 'cliente') {
-        const client = clients.find(c => c.id === isolatedId);
-        if (client) setLoggedClient(client);
-      } else if (isolatedType === 'productor' || isolatedType === 'proveedor') {
-        const supplier = suppliers.find(s => s.id === isolatedId);
-        if (supplier) setLoggedSupplier(supplier);
-      }
-      timer = setTimeout(() => setIsInitializing(false), 800);
-    } else {
-      // Local persistence for non-isolated mode
-      const savedClientId = localStorage.getItem('kaluMobileClientId');
-      if (savedClientId && clients.length > 0) {
-        const client = clients.find(c => c.id === savedClientId);
-        if (client) setLoggedClient(client);
-      }
-      const savedSupplierId = localStorage.getItem('kaluMobileSupplierId');
-      if (savedSupplierId && suppliers.length > 0) {
-        const supplier = suppliers.find(s => s.id === savedSupplierId);
-        if (supplier) setLoggedSupplier(supplier);
-      }
-      timer = setTimeout(() => setIsInitializing(false), 800);
-    }
-    return () => { if (timer) clearTimeout(timer); };
-  }, [isolatedId, isolatedType, clients, suppliers]);
+    let mounted = true;
+    fetchCurrentPortalUserApi()
+      .then((portalUser) => {
+        if (!mounted) return;
+        if (portalUser) {
+          if (portalUser.type === 'client') {
+            const client = clients.find(c => String(c.id) === String(portalUser.id)) || ({
+              id: portalUser.id,
+              name: portalUser.name,
+              phone: '',
+              email: '',
+              cedula: '',
+              address: '',
+              creditLimitUsd: 0,
+              currentDebtUsd: 0,
+              points: 0,
+              loyaltyPoints: 0,
+              outstandingDebt: 0,
+              status: 'active'
+            } as unknown as ClientProfile);
+            setLoggedClient(client);
+          } else if (portalUser.type === 'producer' || portalUser.type === 'supplier') {
+            const supplier = suppliers.find(s => String(s.id) === String(portalUser.id)) || ({
+              id: portalUser.id,
+              name: portalUser.name,
+              contact: '',
+              phone: '',
+              email: '',
+              rif: '',
+              type: 'producer',
+              balanceUsd: 0,
+              balanceOwed: 0,
+              status: 'active'
+            } as unknown as SupplierProfile);
+            setLoggedSupplier(supplier);
+          }
+        } else {
+          setLoggedClient(null);
+          setLoggedSupplier(null);
+        }
+        setIsInitializing(false);
+      })
+      .catch(() => {
+        if (mounted) setIsInitializing(false);
+      });
 
-  React.useEffect(() => {
-    if (loggedClient) localStorage.setItem('kaluMobileClientId', loggedClient.id);
-    else localStorage.removeItem('kaluMobileClientId');
-  }, [loggedClient]);
-
-  React.useEffect(() => {
-    if (loggedSupplier) localStorage.setItem('kaluMobileSupplierId', loggedSupplier.id);
-    else localStorage.removeItem('kaluMobileSupplierId');
-  }, [loggedSupplier]);
+    return () => { mounted = false; };
+  }, [clients, suppliers]);
 
 
 
@@ -362,76 +367,96 @@ export default function ClientPortal({
   // Employee Portal (Daisy)
   const [daisyScanned, setDaisyScanned] = useState(false);
 
-  // Handlers for Client Portal Login
-  const handleClientLoginSubmit = (e: React.FormEvent) => {
+  // Handlers for Client Portal Login (Server-Side)
+  const handleClientLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (clientLockoutUntil > Date.now()) return;
 
     const phoneClean = clientPhoneInput.trim();
-    if (!phoneClean) {
-      setClientLoginError('Por favor ingrese su usuario o teléfono.');
+    if (!phoneClean || !clientPinInput) {
+      setClientLoginError('Por favor ingrese su identificador y PIN.');
       return;
     }
-    
-    const found = clients.find(c => 
-      (c.phone && c.phone.replace(/\D/g, '').includes(phoneClean.replace(/\D/g, ''))) || 
-      (c.name && c.name.toLowerCase().includes(phoneClean.toLowerCase())) ||
-      (c.cedula && c.cedula.includes(phoneClean)) ||
-      (c.rfc && c.rfc.includes(phoneClean)) ||
-      (c.ci && c.ci.includes(phoneClean)) ||
-      (c.ciRif && c.ciRif.includes(phoneClean)) ||
-      (c.idNumber && c.idNumber.includes(phoneClean))
-    );
 
-    if (found) {
-      const expectedPin = get6DigitPin(found);
-      
-      if (clientPinInput === expectedPin) {
-        setLoggedClient(found);
+    try {
+      const res = await portalLoginApi({
+        portalType: 'client',
+        identifier: phoneClean,
+        pin: clientPinInput
+      });
+
+      if (res.portalUser) {
+        const client = clients.find(c => String(c.id) === String(res.portalUser.id)) || ({
+          id: res.portalUser.id,
+          name: res.portalUser.name,
+          phone: phoneClean,
+          email: '',
+          cedula: '',
+          address: '',
+          creditLimitUsd: 0,
+          currentDebtUsd: 0,
+          points: 0,
+          loyaltyPoints: 0,
+          outstandingDebt: 0,
+          status: 'active'
+        } as unknown as ClientProfile);
+
+        setLoggedClient(client);
         setClientCart([]);
         setClientLoginAttempts(0);
         setClientLockoutUntil(0);
         setClientLoginError(null);
-        onAddNotification(`¡Sesión iniciada como Cliente: ${found.name}!`, 'success');
+        onAddNotification(`¡Sesión iniciada como Cliente: ${res.portalUser.name}!`, 'success');
       } else {
         handleFailedLogin('client');
       }
-    } else {
+    } catch (err: any) {
       handleFailedLogin('client');
     }
   };
 
-  // Handlers for Supplier Portal Login (Libreta de Queso)
-  const handleSupplierLoginSubmit = (e: React.FormEvent) => {
+  // Handlers for Supplier Portal Login (Server-Side)
+  const handleSupplierLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (supplierLockoutUntil > Date.now()) return;
 
     const phoneClean = supplierPhoneInput.trim();
-    if (!phoneClean) {
-      setSupplierLoginError('Por favor ingrese su usuario o teléfono.');
+    if (!phoneClean || !supplierPinInput) {
+      setSupplierLoginError('Por favor ingrese su identificador y PIN.');
       return;
     }
-    const found = suppliers.find(
-      s => (s.phone && s.phone.replace(/\D/g, '').includes(phoneClean.replace(/\D/g, ''))) || 
-           (s.name && s.name.toLowerCase().includes(phoneClean.toLowerCase())) ||
-           (s.cedula && s.cedula.includes(phoneClean)) ||
-           (s.rfc && s.rfc.includes(phoneClean))
-    );
 
-    if (found) {
-      const expectedPin = get6DigitPin(found);
+    try {
+      const res = await portalLoginApi({
+        portalType: 'producer',
+        identifier: phoneClean,
+        pin: supplierPinInput
+      });
 
-      if (supplierPinInput === expectedPin) {
-        setLoggedSupplier(found);
+      if (res.portalUser) {
+        const supplier = suppliers.find(s => String(s.id) === String(res.portalUser.id)) || ({
+          id: res.portalUser.id,
+          name: res.portalUser.name,
+          contact: '',
+          phone: phoneClean,
+          email: '',
+          rif: '',
+          type: 'producer',
+          balanceUsd: 0,
+          balanceOwed: 0,
+          status: 'active'
+        } as unknown as SupplierProfile);
+
+        setLoggedSupplier(supplier);
         setSupplierCart([]);
         setSupplierLoginAttempts(0);
         setSupplierLockoutUntil(0);
         setSupplierLoginError(null);
-        onAddNotification(`¡Sesión iniciada como Productor: ${found.name}!`, 'success');
+        onAddNotification(`¡Sesión iniciada como Productor: ${res.portalUser.name}!`, 'success');
       } else {
         handleFailedLogin('supplier');
       }
-    } else {
+    } catch (err: any) {
       handleFailedLogin('supplier');
     }
   };
@@ -1046,7 +1071,12 @@ export default function ClientPortal({
                       kaluPoints={Number((loggedClient as any)?.loyaltyPoints || 0)}
                       activeInstallments={activeInstallments}
                       allTransactions={clientAllTxs}
-                      onLogout={() => {
+                      onLogout={async () => {
+                        try {
+                          await portalLogoutApi();
+                        } catch (e) {
+                          console.warn('Error closing portal session', e);
+                        }
                         setLoggedClient(null);
                         setClientActiveTab('inicio');
                       }}
@@ -1387,7 +1417,12 @@ export default function ClientPortal({
                       </div>
                     </div>
                     <button
-                      onClick={() => {
+                      onClick={async () => {
+                        try {
+                          await portalLogoutApi();
+                        } catch (e) {
+                          console.warn('Error closing portal session', e);
+                        }
                         setLoggedSupplier(null);
                         setSupplierCart([]);
                       }}

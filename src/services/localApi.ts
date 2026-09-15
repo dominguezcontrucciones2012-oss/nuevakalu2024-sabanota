@@ -290,3 +290,59 @@ export const fetchCurrentUserApi = async () => {
   return data.user || null;
 };
 
+// --- PORTAL AUTHENTICATION API (FASE 1D-A) ---
+
+export const portalLoginApi = async (credentials: {
+  portalType: 'client' | 'producer';
+  identifier: string;
+  pin: string;
+}) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/portal/auth/login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include',
+    body: JSON.stringify(credentials)
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Identificador o PIN incorrecto');
+  }
+  if (data.csrfToken) {
+    cachedCsrfToken = data.csrfToken;
+  }
+  return data;
+};
+
+export const portalLogoutApi = async () => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/portal/auth/logout`, {
+    method: 'POST',
+    headers: {
+      'x-csrf-token': csrf
+    },
+    credentials: 'include'
+  });
+  return await res.json();
+};
+
+export const fetchCurrentPortalUserApi = async () => {
+  try {
+    const res = await fetch(`${API_URL}/portal/auth/me`, {
+      credentials: 'include'
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const data = await res.json();
+    if (data.csrfToken) {
+      cachedCsrfToken = data.csrfToken;
+    }
+    return data.portalUser || null;
+  } catch (e) {
+    return null;
+  }
+};

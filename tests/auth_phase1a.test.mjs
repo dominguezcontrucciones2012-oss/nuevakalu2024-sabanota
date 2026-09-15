@@ -36,7 +36,7 @@ async function request(url, options = {}) {
 }
 
 async function runTests() {
-  console.log('🧪 Iniciando Suite de Pruebas Automatizadas — Fases 1A, 1B y 1C: API Hardening (63 Pruebas)\n');
+  console.log('🧪 Iniciando Suite de Pruebas Automatizadas — Fases 1A, 1B, 1C y 1D-A: Portal Server-Side Auth (81 Pruebas)\n');
   let passed = 0;
   let failed = 0;
 
@@ -1073,8 +1073,252 @@ async function runTests() {
     assert.strictEqual(res.data.success, true);
   });
 
-  // 63. Rate Limiter de Login (Se ejecuta al final para no afectar otros tests de login)
-  await test('63. Intentos repetidos de login activan Rate Limiter (HTTP 429)', async () => {
+  // ============================================================
+  // PRUEBAS DE FASE 1D-A: AUTENTICACIÓN SERVER-SIDE DE PORTALES
+  // ============================================================
+
+  // 64. Client portal login correcto -> 200
+  await test('64. 1D-A: POST /api/portal/auth/login con cliente válido devuelve 200 y portalUser sanitizado', async () => {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '678000'
+      })
+    });
+    assert.strictEqual(res.status, 200, `Esperado 200, recibido ${res.status}`);
+    assert.strictEqual(res.data.authenticated, true);
+    assert.strictEqual(res.data.portalUser.type, 'client');
+    assert.strictEqual(res.data.portalUser.id, 'cli-demo-1');
+    assert.ok(res.data.csrfToken, 'Debe devolver un csrfToken');
+    assert.strictEqual(res.data.portalUser.pin, undefined);
+    assert.strictEqual(res.data.portalUser.pinHash, undefined);
+    assert.strictEqual(res.data.portalUser.outstandingDebt, undefined);
+    assert.ok(res.setCookie.includes('__kalu_sid'), 'Debe emitir cookie httpOnly __kalu_sid');
+  });
+
+  // 65. Producer portal login correcto -> 200
+  await test('65. 1D-A: POST /api/portal/auth/login con productor válido devuelve 200 y sesión', async () => {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'producer',
+        identifier: '04125550101',
+        pin: '321900'
+      })
+    });
+    assert.strictEqual(res.status, 200, `Esperado 200, recibido ${res.status}`);
+    assert.strictEqual(res.data.authenticated, true);
+    assert.strictEqual(res.data.portalUser.type, 'producer');
+    assert.strictEqual(res.data.portalUser.id, 'sup-demo-1');
+    assert.strictEqual(res.data.portalUser.balanceOwed, undefined);
+  });
+
+  // 66. PIN incorrecto -> 401
+  await test('66. 1D-A: POST /api/portal/auth/login con PIN erróneo devuelve 401', async () => {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '000000'
+      })
+    });
+    assert.strictEqual(res.status, 401);
+    assert.strictEqual(res.data.error, 'Identificador o PIN incorrecto');
+  });
+
+  // 67. Identificador inexistente -> 401 con mensaje genérico idéntico
+  await test('67. 1D-A: POST /api/portal/auth/login con usuario inexistente no enumera cuentas', async () => {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04999999999',
+        pin: '123456'
+      })
+    });
+    assert.strictEqual(res.status, 401);
+    assert.strictEqual(res.data.error, 'Identificador o PIN incorrecto');
+  });
+
+  // 68. Login sin datos -> 400
+  await test('68. 1D-A: POST /api/portal/auth/login con payload incompleto devuelve 400 Bad Request', async () => {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ portalType: 'client' })
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  // 69. No devuelve datos sensibles ni colección completa
+  await test('69. 1D-A: Login de portal no expone arrays ni campos protegidos', async () => {
+    const res = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04249876543',
+        pin: '543200'
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(Array.isArray(res.data), false);
+    assert.strictEqual(res.data.clients, undefined);
+    assert.strictEqual(res.data.portalUser.creditLimitUsd, undefined);
+  });
+
+  // 70. GET /api/portal/auth/me sin sesión -> 401
+  await test('70. 1D-A: GET /api/portal/auth/me sin cookie devuelve 401 Unauthorized', async () => {
+    const res = await request('/api/portal/auth/me');
+    assert.strictEqual(res.status, 401);
+    assert.strictEqual(res.data.error, 'No autenticado en portal');
+  });
+
+  // 71. GET /api/portal/auth/me con sesión activa de portal -> 200
+  await test('71. 1D-A: GET /api/portal/auth/me con sesión portal devuelve identidad autenticada', async () => {
+    const loginRes = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '678000'
+      })
+    });
+    const cookie = loginRes.setCookie.split(';')[0];
+    const res = await request('/api/portal/auth/me', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.authenticated, true);
+    assert.strictEqual(res.data.portalUser.id, 'cli-demo-1');
+  });
+
+  // 72. Logout invalida sesión portal
+  await test('72. 1D-A: POST /api/portal/auth/logout invalida la sesión de portal', async () => {
+    const loginRes = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '678000'
+      })
+    });
+    const cookie = loginRes.setCookie.split(';')[0];
+    const csrf = loginRes.data.csrfToken;
+
+    const logoutRes = await request('/api/portal/auth/logout', {
+      method: 'POST',
+      headers: {
+        'Cookie': cookie,
+        'x-csrf-token': csrf
+      }
+    });
+    assert.strictEqual(logoutRes.status, 200);
+
+    const meRes = await request('/api/portal/auth/me', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(meRes.status, 401);
+  });
+
+  // 73. isolatedId NO autentica por sí solo en el backend
+  await test('73. 1D-A: isolatedId en URL o parámetros no genera autenticación en backend', async () => {
+    const res = await request('/api/portal/auth/me?isolatedId=cli-demo-1');
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 74. localStorage / Headers falsos no crean sesión
+  await test('74. 1D-A: Headers o valores falsos de cliente no son aceptados como autoridad', async () => {
+    const res = await request('/api/portal/auth/me', {
+      headers: {
+        'x-client-id': 'cli-demo-1',
+        'x-user-id': 'cli-demo-1'
+      }
+    });
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 75. clientId arbitrario enviado en el body no crea sesión
+  await test('75. 1D-A: Peticiones mutadoras sin sesión no autentican por clientId en body', async () => {
+    const res = await request('/api/portal/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify({ clientId: 'cli-demo-1' })
+    });
+    assert.strictEqual(res.status, 403);
+  });
+
+  // 76. supplierId arbitrario enviado no crea sesión
+  await test('76. 1D-A: supplierId en body/query no crea sesión de productor', async () => {
+    const res = await request('/api/portal/auth/me?supplierId=sup-demo-1');
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 77. Separación de identidades CRM y Portal
+  await test('77. 1D-A: Sesión exclusiva de portal no puede acceder a endpoints internos del CRM (/api/auth/me)', async () => {
+    const loginRes = await request('/api/portal/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        portalType: 'client',
+        identifier: '04141234567',
+        pin: '678000'
+      })
+    });
+    const portalCookie = loginRes.setCookie.split(';')[0];
+
+    const crmMeRes = await request('/api/auth/me', {
+      headers: { 'Cookie': portalCookie }
+    });
+    assert.strictEqual(crmMeRes.status, 401, 'Sesión de portal no debe autenticar en CRM interno');
+  });
+
+  // 78. Sesión CRM interna mantiene acceso a colecciones y no es borrada por login portal
+  await test('78. 1D-A: Sesión CRM autenticada mantiene acceso a colecciones autorizadas', async () => {
+    const crmLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        loginMode: 'cajero',
+        cedula: '12345678',
+        pin: '1234'
+      })
+    });
+    const crmCookie = crmLogin.setCookie.split(';')[0];
+
+    const clientsRes = await request('/api/collections/clients', {
+      headers: { 'Cookie': crmCookie }
+    });
+    assert.strictEqual(clientsRes.status, 200);
+    assert.ok(Array.isArray(clientsRes.data));
+  });
+
+  // 79. Usuario anónimo sigue recibiendo 401 en colecciones internas
+  await test('79. 1D-A: Usuario anónimo sin sesión recibe 401 en GET /api/collections/clients', async () => {
+    const res = await request('/api/collections/clients');
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 80. Rate Limiter de Login de Portal (HTTP 429)
+  await test('80. 1D-A: Intentos fallidos repetidos en login de portal activan Rate Limiter (HTTP 429)', async () => {
+    let got429 = false;
+    for (let i = 0; i < 15; i++) {
+      const res = await request('/api/portal/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          portalType: 'client',
+          identifier: '04141234567',
+          pin: '999999'
+        })
+      });
+      if (res.status === 429) {
+        got429 = true;
+        break;
+      }
+    }
+    assert.ok(got429, 'Debe retornar HTTP 429 Too Many Requests ante intentos repetidos en login de portal');
+  });
+
+  // 81. Rate Limiter de Login CRM (Se ejecuta al final)
+  await test('81. Intentos repetidos de login CRM activan Rate Limiter (HTTP 429)', async () => {
     let got429 = false;
     for (let i = 0; i < 15; i++) {
       const res = await request('/api/auth/login', {

@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { MobilePortalsViewProps } from '../MobilePortalsView';
 import { SupplierProfile, Transaction, CheeseProduct, MobileOrder } from '../../types';
-import { addLocalDoc, onCollectionSnapshot } from '../../services/localApi';
+import { addLocalDoc, onCollectionSnapshot, portalLoginApi, portalLogoutApi, fetchCurrentPortalUserApi } from '../../services/localApi';
 import KaluLoader from '../KaluLoader';
 import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
 
@@ -49,52 +49,38 @@ export default function ProducerPortal({
   
   const activeRate = exchangeRate || (settings as any)?.exchangeRate || 45.0;
 
-  const [loggedSupplier, setLoggedSupplier] = useState<SupplierProfile | null>(() => {
-    try {
-      const cached = localStorage.getItem('kaluMobileSupplierData');
-      return cached ? JSON.parse(cached) : null;
-    } catch (e) {
-      return null;
-    }
-  });
+  const [loggedSupplier, setLoggedSupplier] = useState<SupplierProfile | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
 
   useEffect(() => {
-    // Si ya tenemos sesión, simplemente quitamos el splash tras un breve retardo visual
-    if (loggedSupplier) {
-      const t = setTimeout(() => setIsInitializing(false), 800);
-      return () => clearTimeout(t);
-    }
-
-    if (suppliers.length === 0) {
-      setIsInitializing(true);
-      const fallbackT = setTimeout(() => setIsInitializing(false), 2500);
-      return () => clearTimeout(fallbackT);
-    }
-
-    // 1. Prioridad: Si nos pasan un ID específico por URL
-    let foundSupplier = null;
-    if ((isolatedType === 'productor' || isolatedType === 'proveedor') && isolatedId) {
-      foundSupplier = suppliers.find(s => String(s.id) === String(isolatedId));
-    }
-    
-    // 2. Si no hay ID en la URL, buscamos en el localStorage (Legacy fallback)
-    if (!foundSupplier) {
-      const savedSupplierId = localStorage.getItem('kaluMobileSupplierId');
-      if (savedSupplierId) {
-        foundSupplier = suppliers.find(s => String(s.id) === String(savedSupplierId));
-      }
-    }
-
-    // 3. Si encontramos al proveedor por URL o por ID guardado, lo restauramos
-    if (foundSupplier) {
-      setLoggedSupplier(foundSupplier);
-      localStorage.setItem('kaluMobileSupplierData', JSON.stringify(foundSupplier));
-    }
-    
-    const t = setTimeout(() => setIsInitializing(false), 800);
-    return () => clearTimeout(t);
-  }, [isolatedId, isolatedType, suppliers, loggedSupplier]);
+    let mounted = true;
+    fetchCurrentPortalUserApi()
+      .then((portalUser) => {
+        if (!mounted) return;
+        if (portalUser && (portalUser.type === 'producer' || portalUser.type === 'supplier')) {
+          const supplier = suppliers.find(s => String(s.id) === String(portalUser.id)) || ({
+            id: portalUser.id,
+            name: portalUser.name,
+            contact: '',
+            phone: '',
+            email: '',
+            rif: '',
+            type: 'producer',
+            balanceUsd: 0,
+            balanceOwed: 0,
+            status: 'active'
+          } as unknown as SupplierProfile);
+          setLoggedSupplier(supplier);
+        } else {
+          setLoggedSupplier(null);
+        }
+        setIsInitializing(false);
+      })
+      .catch(() => {
+        if (mounted) setIsInitializing(false);
+      });
+    return () => { mounted = false; };
+  }, [suppliers]);
 
   // Mantiene los datos del productor actualizados en tiempo real si hay cambios en Firebase/Backend
   useEffect(() => {
@@ -286,41 +272,48 @@ export default function ProducerPortal({
     }
   };
 
-  const handleSupplierLogin = (e: React.FormEvent | React.MouseEvent) => {
+  const handleSupplierLogin = async (e: React.FormEvent | React.MouseEvent) => {
     e.preventDefault();
     if (lockoutUntil > Date.now()) return;
     
-    const cleanInput = supplierPhoneInput.replace(/\D/g, '');
-    if (!cleanInput) {
-      setLoginError('Por favor ingrese su cédula o teléfono.');
-      return;
-    }
-    
-    const supplier = suppliers.find(s => {
-      const phoneDigits = (s.phone || '').toString().replace(/\D/g, '');
-      const rfcDigits = (s.rfc || s.cedula || s.idNumber || '').toString().replace(/\D/g, '');
-      return (phoneDigits && phoneDigits.includes(cleanInput)) || (rfcDigits && rfcDigits.includes(cleanInput));
-    });
-
-    if (!supplier) {
-      handleFailedLogin();
+    const cleanInput = supplierPhoneInput.trim();
+    if (!cleanInput || !supplierPinInput) {
+      setLoginError('Por favor ingrese su identificador y PIN.');
       return;
     }
 
-    const base = supplier.pin || supplier.cedula || supplier.rfc || supplier.phone || '000000';
-    const expectedPin = String(base).replace(/\D/g, '').slice(-4).padEnd(6, '0');
+    try {
+      const res = await portalLoginApi({
+        portalType: 'producer',
+        identifier: cleanInput,
+        pin: supplierPinInput
+      });
 
-    if (supplierPinInput === expectedPin) {
-      setLoggedSupplier(supplier);
-      localStorage.setItem('kaluMobileSupplierData', JSON.stringify(supplier));
-      localStorage.setItem('kaluMobileSupplierId', supplier.id);
-      setSupplierPhoneInput('');
-      setSupplierPinInput('');
-      setLoginAttempts(0);
-      setLockoutUntil(0);
-      setLoginError(null);
-      onAddNotification(`¡Bienvenido, ${supplier.name}!`, 'success');
-    } else {
+      if (res.portalUser) {
+        const supplier = suppliers.find(s => String(s.id) === String(res.portalUser.id)) || ({
+          id: res.portalUser.id,
+          name: res.portalUser.name,
+          contact: '',
+          phone: cleanInput,
+          email: '',
+          rif: '',
+          type: 'producer',
+          balanceUsd: 0,
+          balanceOwed: 0,
+          status: 'active'
+        } as unknown as SupplierProfile);
+
+        setLoggedSupplier(supplier);
+        setSupplierPhoneInput('');
+        setSupplierPinInput('');
+        setLoginAttempts(0);
+        setLockoutUntil(0);
+        setLoginError(null);
+        onAddNotification(`¡Bienvenido, ${res.portalUser.name}!`, 'success');
+      } else {
+        handleFailedLogin();
+      }
+    } catch (err: any) {
       handleFailedLogin();
     }
   };
@@ -577,11 +570,14 @@ export default function ProducerPortal({
                     <p className="text-[8px] text-slate-400 mt-0.5">Libreta de Queso Activa</p>
                   </div>
                 </div>
-                <button onClick={() => { 
-                  setLoggedSupplier(null); 
-                  setSupplierCart([]); 
-                  localStorage.removeItem('kaluMobileSupplierData');
-                  localStorage.removeItem('kaluMobileSupplierId');
+                <button onClick={async () => {
+                  try {
+                    await portalLogoutApi();
+                  } catch (e) {
+                    console.warn('Error closing portal session', e);
+                  }
+                  setLoggedSupplier(null);
+                  setSupplierCart([]);
                 }} className="p-1 text-slate-500 hover:text-slate-300 rounded">
                   <LogOut className="w-4 h-4" />
                 </button>
