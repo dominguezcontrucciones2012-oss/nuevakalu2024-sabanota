@@ -90,10 +90,17 @@ if (path.resolve(dataDir) === path.resolve(uploadDir)) {
   throw securityError;
 }
 
+// Validación de seguridad de producción: SESSION_SECRET obligatorio
+if (isProd && (!process.env.SESSION_SECRET || !process.env.SESSION_SECRET.trim())) {
+  const sessionSecretErr = new Error('[FATAL SECURITY MISCONFIGURATION] SESSION_SECRET es obligatorio en entorno de producción.');
+  console.error(sessionSecretErr.message);
+  throw sessionSecretErr;
+}
+
 console.log('----------------------------------------------------');
 console.log(`🌐 ENTORNO: ${isDevEnv ? 'DESARROLLO LOCAL (KALU-DEV)' : 'PRODUCCIÓN'}`);
 console.log('🤖 ESTADO DEL ROBOT DE COMUNICACIONES:');
-console.log('📧 Correo Emisor:', mailMode === 'development' ? 'MODO SIMULACIÓN (DEV - Solo consola)' : (process.env.EMAIL_USER ? `SÍ (${process.env.EMAIL_USER})` : 'SÍ (Fallback: cherokejd566@gmail.com)'));
+console.log('📧 Correo Emisor:', mailMode === 'development' ? 'MODO SIMULACIÓN (DEV - Solo consola)' : (process.env.EMAIL_USER ? `SÍ (${process.env.EMAIL_USER})` : 'SÍ (Fallback: dev-simulator@kalu.local)'));
 console.log('🔑 Contraseña Correo (.env):', mailMode === 'development' ? 'PROTEGIDA (Simulación DEV activa)' : (process.env.EMAIL_PASS ? 'SÍ (Presente)' : '❌ NO DETECTADA'));
 console.log('📱 WhatsApp API:', waMode === 'simulation' ? 'MODO SIMULACIÓN (DEV - Solo consola)' : (process.env.WHATSAPP_API_URL || process.env.WHATSAPP_API_KEY ? 'SÍ (Producción)' : 'Modo Simulación / Local'));
 console.log('📂 Directorio de Datos / DB (Privado):', dataDir);
@@ -150,6 +157,14 @@ function isOriginAllowed(origin) {
 const PORT = process.env.PORT || 3001;
 
 const app = express();
+
+// Configuración de trust proxy (Fase 1K: Reverse proxy pre-producción / Single-Process)
+if (process.env.TRUST_PROXY) {
+  const tp = process.env.TRUST_PROXY.trim();
+  app.set('trust proxy', tp === 'true' ? true : (isNaN(Number(tp)) ? tp : Number(tp)));
+} else if (isProd) {
+  app.set('trust proxy', 1);
+}
 
 // ============================================================
 // BASELINE DE CABECERAS DE SEGURIDAD HTTP — FASE 1F-C
@@ -809,10 +824,10 @@ const MAX_OTP_ATTEMPTS = 3;
 
 /**
  * Helper criptográfico para hash seguro de secreto efímero (OTP / Reset Token)
- * Utiliza SHA-256 con salt interno derivado del SESSION_SECRET.
+ * Utiliza HMAC-SHA256 con salt interno derivado de RECOVERY_SECRET o SESSION_SECRET.
  */
 function hashEphemeralSecret(secret, saltKey = '') {
-  const secretKey = process.env.SESSION_SECRET || 'kalu_secure_session_secret_default_2026';
+  const secretKey = process.env.RECOVERY_SECRET || process.env.SESSION_SECRET || (isProd ? '' : 'kalu_secure_recovery_secret_default_2026');
   return crypto.createHmac('sha256', secretKey)
     .update(`${saltKey}:${String(secret)}`)
     .digest('hex');
@@ -1219,10 +1234,39 @@ function requireCollectionWrite(req, res, next) {
   next();
 }
 
+// Helper recursivo de sanitización profunda para metadata de auditoría (Fase 1K)
+function sanitizeAuditMetadataValue(val, depth = 0) {
+  if (!val || depth > 5) return val;
+  if (Array.isArray(val)) {
+    return val.map(item => sanitizeAuditMetadataValue(item, depth + 1));
+  }
+  if (typeof val !== 'object') return val;
+
+  const FORBIDDEN_METADATA_KEYS = [
+    'password', 'passwordhash', 'pin', 'pinhash', 'secret',
+    'token', 'csrftoken', 'resettoken', 'authsignature', 'recoverycode',
+    'apikey', 'cookie', 'authorization', 'sessionsecret',
+    'prompt', 'audio', 'voice', 'ocr', 'rawpayload', 'payload',
+    'base64', 'image', 'document', 'imagedata', 'rawbody'
+  ];
+
+  const sanitized = {};
+  for (const [key, subVal] of Object.entries(val)) {
+    const keyLower = String(key).toLowerCase();
+    if (FORBIDDEN_METADATA_KEYS.some(f => keyLower.includes(f))) {
+      continue;
+    }
+    sanitized[key] = (subVal && typeof subVal === 'object')
+      ? sanitizeAuditMetadataValue(subVal, depth + 1)
+      : subVal;
+  }
+  return sanitized;
+}
+
 /**
- * Helper centralizado para registrar eventos de auditoría (Fase 1I: Append-Only a nivel de aplicación)
+ * Helper centralizado para registrar eventos de auditoría (Fase 1I / 1K: Append-Only y Sanitización Profunda)
  * Identidad 100% server-side desde sesión. Nunca confía en headers/body para actorId o rol.
- * Sanitiza automáticamente cualquier metadata para excluir secretos, tokens o credenciales.
+ * Sanitiza automáticamente cualquier metadata de forma recursiva e insensible a mayúsculas/minúsculas.
  */
 async function recordAuditLog({
   req = null,
@@ -1262,18 +1306,8 @@ async function recordAuditLog({
     const resolvedIp = ip || (req ? (req.ip || req.socket?.remoteAddress || 'unknown') : 'system');
     const resolvedUserAgent = userAgent || (req ? (req.get('user-agent') || 'unknown') : 'system');
 
-    // 3. Sanitizar metadata: remover cualquier secreto, contraseña o token
-    const sanitizedMetadata = { ...metadata };
-    const FORBIDDEN_METADATA_KEYS = [
-      'password', 'passwordHash', 'pin', 'pinHash', 'secret',
-      'token', 'csrfToken', 'resetToken', 'authSignature', 'recoveryCode',
-      'apiKey', 'cookie', 'authorization', 'sessionSecret'
-    ];
-    for (const key of Object.keys(sanitizedMetadata)) {
-      if (FORBIDDEN_METADATA_KEYS.some(f => key.toLowerCase().includes(f.toLowerCase()))) {
-        delete sanitizedMetadata[key];
-      }
-    }
+    // 3. Sanitizar metadata recursivamente
+    const sanitizedMetadata = sanitizeAuditMetadataValue(metadata || {});
 
     const event = {
       id: `audit-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`,
@@ -1448,34 +1482,35 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
   });
 });
 
-// --- ENDPOINTS DE PRUEBA Y VALIDACIÓN RBAC (FASE 1B) ---
-
-// Endpoint exclusivo para Administradores
-app.get('/api/rbac/admin-only', requireAuth, requireRole('admin'), (req, res) => {
-  res.json({
-    success: true,
-    message: 'Operación administrativa autorizada',
-    user: req.user
+// --- ENDPOINTS DE PRUEBA Y VALIDACIÓN RBAC (FASE 1B / 1K: DEV & TEST ONLY) ---
+if (!isProd) {
+  // Endpoint exclusivo para Administradores (Test RBAC)
+  app.get('/api/rbac/admin-only', requireAuth, requireRole('admin'), (req, res) => {
+    res.json({
+      success: true,
+      message: 'Operación administrativa autorizada',
+      user: req.user
+    });
   });
-});
 
-// Endpoint accesible por Administradores y Cajeros
-app.get('/api/rbac/cashier-allowed', requireAuth, requireRole('admin', 'cajero'), (req, res) => {
-  res.json({
-    success: true,
-    message: 'Operación de caja autorizada',
-    user: req.user
+  // Endpoint accesible por Administradores y Cajeros (Test RBAC)
+  app.get('/api/rbac/cashier-allowed', requireAuth, requireRole('admin', 'cajero'), (req, res) => {
+    res.json({
+      success: true,
+      message: 'Operación de caja autorizada',
+      user: req.user
+    });
   });
-});
 
-// Endpoint de prueba que demuestra que el body no puede sobreescribir el rol de sesión
-app.post('/api/rbac/role-change-test', requireAuth, (req, res) => {
-  res.json({
-    success: true,
-    effectiveRole: req.user.role,
-    user: req.user
+  // Endpoint de prueba que demuestra que el body no puede sobreescribir el rol de sesión (DEV/TEST ONLY)
+  app.post('/api/rbac/role-change-test', requireAuth, (req, res) => {
+    res.json({
+      success: true,
+      effectiveRole: req.user.role,
+      user: req.user
+    });
   });
-});
+}
 
 // Middleware de validación CSRF para operaciones mutadoras
 function verifyCsrf(req, res, next) {
@@ -1919,7 +1954,7 @@ app.post('/api/portal/auth/recovery/verify', recoveryVerifyLimiter, (req, res) =
  * POST /api/portal/auth/recovery/reset-pin
  * Payload: { portalType: 'client'|'producer', identifier: string, resetToken: string, newPin: string }
  */
-app.post('/api/portal/auth/recovery/reset-pin', recoveryResetPinLimiter, (req, res) => {
+app.post('/api/portal/auth/recovery/reset-pin', recoveryResetPinLimiter, async (req, res) => {
   try {
     const { portalType, identifier, resetToken, newPin } = req.body || {};
 
@@ -1988,23 +2023,27 @@ app.post('/api/portal/auth/recovery/reset-pin', recoveryResetPinLimiter, (req, r
     // Hashear nuevo PIN usando bcrypt con salt rounds estándar (10)
     const newPinHash = bcrypt.hashSync(pinStr, 10);
 
-    // Actualizar entidad mediante persistencia segura y controlada (whitelist estricta)
+    // Actualizar entidad mediante persistencia segura y controlada (whitelist estricta bajo lock)
     if (portalType === 'client') {
-      const clients = readCollection('clients');
-      const idx = clients.findIndex(c => String(c.id) === String(matchedEntity.id));
-      if (idx !== -1) {
-        clients[idx].pinHash = newPinHash;
-        delete clients[idx].pin; // Eliminar PIN plano si existía
-        writeCollection('clients', clients);
-      }
+      await withCollectionLock('clients', async () => {
+        const clients = readCollection('clients');
+        const idx = clients.findIndex(c => String(c.id) === String(matchedEntity.id));
+        if (idx !== -1) {
+          clients[idx].pinHash = newPinHash;
+          delete clients[idx].pin; // Eliminar PIN plano si existía
+          writeCollection('clients', clients);
+        }
+      });
     } else {
-      const suppliers = readCollection('suppliers');
-      const idx = suppliers.findIndex(s => String(s.id) === String(matchedEntity.id));
-      if (idx !== -1) {
-        suppliers[idx].pinHash = newPinHash;
-        delete suppliers[idx].pin; // Eliminar PIN plano si existía
-        writeCollection('suppliers', suppliers);
-      }
+      await withCollectionLock('suppliers', async () => {
+        const suppliers = readCollection('suppliers');
+        const idx = suppliers.findIndex(s => String(s.id) === String(matchedEntity.id));
+        if (idx !== -1) {
+          suppliers[idx].pinHash = newPinHash;
+          delete suppliers[idx].pin; // Eliminar PIN plano si existía
+          writeCollection('suppliers', suppliers);
+        }
+      });
     }
 
     // Invalidar sesión portal activa si coincide con el cliente/productor que cambió PIN
@@ -2224,20 +2263,24 @@ app.post('/api/portal/client/payments', requirePortalAuth, requirePortalType('cl
       createdAt: new Date().toISOString()
     };
 
-    await withCollectionLock('pwa_payments', async () => {
-      const pwaPayments = readCollection('pwa_payments');
-      pwaPayments.push(newPayment);
-      writeCollection('pwa_payments', pwaPayments, { action: 'add', collection: 'pwa_payments', doc: newPayment });
-    });
-
     if (installmentId) {
-      await withCollectionLock('installments', async () => {
-        const installments = readCollection('installments');
+      await withTransaction(async (tx) => {
+        const pwaPayments = tx.read('pwa_payments');
+        pwaPayments.push(newPayment);
+        tx.write('pwa_payments', pwaPayments, { action: 'add', collection: 'pwa_payments', doc: newPayment });
+
+        const installments = tx.read('installments');
         const inst = installments.find(i => String(i.id) === String(installmentId) && (String(i.clientId) === String(req.portalUser.id) || String(i.client_id) === String(req.portalUser.id)));
         if (inst && inst.status === 'pending') {
           inst.status = 'in_review';
-          writeCollection('installments', installments, { action: 'update', collection: 'installments', doc: inst });
+          tx.write('installments', installments, { action: 'update', collection: 'installments', doc: inst });
         }
+      });
+    } else {
+      await withCollectionLock('pwa_payments', async () => {
+        const pwaPayments = readCollection('pwa_payments');
+        pwaPayments.push(newPayment);
+        writeCollection('pwa_payments', pwaPayments, { action: 'add', collection: 'pwa_payments', doc: newPayment });
       });
     }
 
@@ -2854,18 +2897,31 @@ const ALLOWED_STATIC_EXTENSIONS = new Set([
   '.mp4'
 ]);
 
-// Guardián de seguridad para servicio estático de /uploads (Fase 1F-B)
-// Bloquea categóricamente cualquier intento de acceso a .json, .svg, .html, .js, .bak, .db, etc.
+// Guardián de seguridad para servicio estático de /uploads (Fase 1F-B / 1K)
+// Bloquea categóricamente cualquier intento de acceso a .json, .svg, .html, .js, .bak, .db, traversal, etc.
 app.use('/uploads', (req, res, next) => {
-  const ext = path.extname(req.path || '').toLowerCase();
+  let decodedPath = req.path || '';
+  try {
+    decodedPath = decodeURIComponent(decodedPath);
+  } catch {
+    return res.status(404).json({ error: 'Archivo no encontrado' });
+  }
+
+  if (decodedPath.includes('\0')) {
+    return res.status(404).json({ error: 'Archivo no encontrado' });
+  }
+
+  const ext = path.extname(decodedPath).toLowerCase();
   if (!ext || !ALLOWED_STATIC_EXTENSIONS.has(ext)) {
     return res.status(404).json({ error: 'Archivo no encontrado' });
   }
 
   // Sanitizar path para evitar traversal hacia archivos fuera de uploadDir
-  const normalizedPath = path.normalize(req.path).replace(/^(\.\.[\/\\])+/, '');
-  const resolvedTarget = path.resolve(uploadDir, '.' + normalizedPath);
-  if (!resolvedTarget.startsWith(path.resolve(uploadDir))) {
+  const normalizedPath = path.normalize(decodedPath).replace(/^(\.\.[\/\\])+/, '');
+  const baseDir = path.resolve(uploadDir);
+  const resolvedTarget = path.resolve(baseDir, '.' + normalizedPath);
+  const isContained = resolvedTarget === baseDir || resolvedTarget.startsWith(baseDir + path.sep);
+  if (!isContained) {
     return res.status(404).json({ error: 'Archivo no encontrado' });
   }
 
@@ -2880,7 +2936,39 @@ app.use('/uploads', express.static(uploadDir, {
 }));
 
 const protectedMediaDir = path.join(__dirname, 'protected_media');
-app.use('/protected_media', express.static(protectedMediaDir));
+app.use('/protected_media', (req, res, next) => {
+  let decodedPath = req.path || '';
+  try {
+    decodedPath = decodeURIComponent(decodedPath);
+  } catch {
+    return res.status(404).json({ error: 'Archivo no encontrado' });
+  }
+
+  if (decodedPath.includes('\0')) {
+    return res.status(404).json({ error: 'Archivo no encontrado' });
+  }
+
+  const ext = path.extname(decodedPath).toLowerCase();
+  if (!ext || !ALLOWED_STATIC_EXTENSIONS.has(ext)) {
+    return res.status(404).json({ error: 'Archivo no encontrado' });
+  }
+
+  // Sanitizar path para evitar traversal
+  const normalizedPath = path.normalize(decodedPath).replace(/^(\.\.[\/\\])+/, '');
+  const baseDir = path.resolve(protectedMediaDir);
+  const resolvedTarget = path.resolve(baseDir, '.' + normalizedPath);
+  const isContained = resolvedTarget === baseDir || resolvedTarget.startsWith(baseDir + path.sep);
+  if (!isContained) {
+    return res.status(404).json({ error: 'Archivo no encontrado' });
+  }
+
+  next();
+});
+app.use('/protected_media', express.static(protectedMediaDir, {
+  dotfiles: 'ignore',
+  etag: true,
+  lastModified: true
+}));
 
 const productsDbFile = path.join(dataDir, 'products_db.json');
 
@@ -3089,7 +3177,7 @@ app.post('/api/upload', requireUploadAuth, verifyCsrf, handleMulterUpload, (req,
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: process.env.EMAIL_USER || 'cherokejd566@gmail.com',
+    user: process.env.EMAIL_USER || (isDevEnv ? 'dev-simulator@kalu.local' : ''),
     pass: process.env.EMAIL_PASS // ¡La contraseña de aplicación que pondrá el usuario en el .env!
   }
 });
@@ -3112,7 +3200,7 @@ async function dispatchRecoveryOtp({ channel = 'email', recipient, code, name })
 
     const messageText = `🔒 *Mundo Kalu - Seguridad*\n\nHola *${name || 'Usuario'}*,\nTu código de verificación para restablecer tu PIN es:\n\n👉 *${code}*\n\n_Por seguridad, no compartas este código con nadie._`;
 
-    const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || '1344089325449515';
+    const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
     const waApiKey = process.env.WHATSAPP_API_KEY || process.env.API_KEY || process.env.WHATSAPP_TOKEN;
     const waApiUrl = process.env.WHATSAPP_API_URL || (phoneId ? `https://graph.facebook.com/v20.0/${phoneId}/messages` : null);
 
@@ -3167,7 +3255,7 @@ async function dispatchRecoveryOtp({ channel = 'email', recipient, code, name })
   }
 
   // Email
-  const emailUser = process.env.EMAIL_USER || 'cherokejd566@gmail.com';
+  const emailUser = process.env.EMAIL_USER || (isDevEnv ? 'dev-simulator@kalu.local' : '');
   const emailPass = process.env.EMAIL_PASS;
 
   if (!emailPass) {
@@ -3893,7 +3981,26 @@ function atomicWriteJsonFile(filePath, data) {
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fd = null;
-    fs.renameSync(tempPath, filePath);
+
+    let renamed = false;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        fs.renameSync(tempPath, filePath);
+        renamed = true;
+        break;
+      } catch (renameErr) {
+        lastErr = renameErr;
+        if (renameErr.code === 'EPERM' || renameErr.code === 'EBUSY' || renameErr.code === 'EACCES') {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        } else {
+          throw renameErr;
+        }
+      }
+    }
+    if (!renamed && lastErr) {
+      throw lastErr;
+    }
   } catch (err) {
     if (fd !== null) {
       try { fs.closeSync(fd); } catch {}
@@ -5200,7 +5307,9 @@ async function checkOverdueInstallments() {
     }
 
     if (hasChanges) {
-      writeCollection('installments', installments);
+      await withCollectionLock('installments', async () => {
+        writeCollection('installments', installments);
+      });
       console.log(`[Robot Cobranzas] ✅ Se actualizaron ${markedOverdue} cuotas a estatus 'overdue' y se despacharon ${notifiedCount} avisos.`);
     } else {
       console.log('[Robot Cobranzas] ✨ Todo al día: No se encontraron cuotas vencidas pendientes por actualizar.');
@@ -5253,9 +5362,14 @@ app.get('/api/webhook/whatsapp', (req, res) => {
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
 
-    const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN || 'kalu_dev_verification_token';
+    const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN || (isProd ? '' : 'kalu_dev_verification_token');
 
-    if (mode === 'subscribe' && token && safeTimingCompare(String(token), String(expectedToken))) {
+    if (isProd && !expectedToken) {
+      console.warn('[WhatsApp Webhook] ❌ Verificación rechazada: WHATSAPP_VERIFY_TOKEN no configurado en producción');
+      return res.status(500).json({ error: 'Configuración de verificación incompleta en producción' });
+    }
+
+    if (mode === 'subscribe' && token && expectedToken && safeTimingCompare(String(token), String(expectedToken))) {
       console.log('[WhatsApp Webhook] ✅ Verificación de suscripción exitosa (Handshake)');
       return res.status(200).send(String(challenge || ''));
     }
@@ -5276,7 +5390,12 @@ app.get('/api/webhook/whatsapp', (req, res) => {
 app.post('/api/webhook/whatsapp', whatsappWebhookLimiter, whatsappJsonParser, (req, res) => {
   try {
     const signature = req.headers['x-hub-signature-256'] || req.headers['X-Hub-Signature-256'];
-    const appSecret = process.env.WHATSAPP_APP_SECRET || 'kalu_dev_app_secret_meta_hmac_2026';
+    const appSecret = process.env.WHATSAPP_APP_SECRET || (isProd ? '' : 'kalu_dev_app_secret_meta_hmac_2026');
+
+    if (isProd && !appSecret) {
+      console.error('[WhatsApp Webhook] ❌ Error crítico: WHATSAPP_APP_SECRET no configurado en producción');
+      return res.status(500).json({ error: 'Configuración de seguridad de webhook incompleta en producción' });
+    }
 
     // 1. Validar presencia y validez criptográfica de la firma HMAC-SHA256
     if (!signature) {

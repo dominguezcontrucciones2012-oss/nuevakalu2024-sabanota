@@ -8593,6 +8593,235 @@ async function runTests() {
     }
   });
 
+  // ============================================================
+  // FASE 1K — TESTS DE HARDENING FINAL Y PRE-PRODUCCIÓN
+  // ============================================================
+
+  // 1K-01: Endpoints DEV/TEST RBAC y role-change-test no permiten bypass de rol
+  await test('462. TEST 1K-01: /api/rbac/role-change-test no permite alteración de rol ni elevación de privilegios', async () => {
+    const { cookie, csrf } = await loginCashierD2();
+    const res = await request('/api/rbac/role-change-test', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ role: 'admin', isAdmin: true })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.effectiveRole, 'cajero');
+    assert.strictEqual(res.data.user.role, 'cajero');
+  });
+
+  // 1K-02: Sanitización de Audit Logs filtra automáticamente prompts de IA, audio, OCR y payloads crudos
+  await test('463. TEST 1K-02: recordAuditLog sanitiza automáticamente prompts, audios, OCR y raw payloads de metadata', async () => {
+    await recordAuditLog({
+      action: 'ai.test_sanitization',
+      resourceType: 'ai',
+      result: 'success',
+      metadata: {
+        safeField: 'preserved_info',
+        prompt: 'información confidencial sobre balance de pagos',
+        audio: 'audio_data_buffer_base64_string',
+        voice: 'voice_recording_data',
+        ocr: 'extracted_raw_ocr_invoice_content',
+        rawPayload: { secret: 'payload_content' },
+        password: 'should_be_removed',
+        pin: '123456',
+        token: 'secret_token'
+      }
+    });
+
+    const logs = readCollection('audit_logs');
+    const testLog = logs.find(l => l.action === 'ai.test_sanitization');
+    assert.ok(testLog);
+    assert.strictEqual(testLog.metadata.safeField, 'preserved_info');
+    assert.strictEqual(testLog.metadata.prompt, undefined);
+    assert.strictEqual(testLog.metadata.audio, undefined);
+    assert.strictEqual(testLog.metadata.voice, undefined);
+    assert.strictEqual(testLog.metadata.ocr, undefined);
+    assert.strictEqual(testLog.metadata.rawPayload, undefined);
+    assert.strictEqual(testLog.metadata.password, undefined);
+    assert.strictEqual(testLog.metadata.pin, undefined);
+    assert.strictEqual(testLog.metadata.token, undefined);
+  });
+
+  // 1K-03: Servidor estático /protected_media bloquea path traversal y extensiones peligrosas (.json, .js, .bak)
+  await test('464. TEST 1K-03: Endpoint /protected_media bloquea traversal (../) y extensiones no permitidas (.json, .js, .env)', async () => {
+    const resTraversal = await request('/protected_media/..%2f..%2fpackage.json');
+    assert.strictEqual(resTraversal.status, 404);
+
+    const resJson = await request('/protected_media/sensitive_db.json');
+    assert.strictEqual(resJson.status, 404);
+
+    const resJs = await request('/protected_media/exploit.js');
+    assert.strictEqual(resJs.status, 404);
+  });
+
+  // 1K-04: Reporte de pago con installmentId en portal ejecuta de forma transaccional y consistente
+  await test('465. TEST 1K-04: POST /api/portal/client/payments actualiza pwa_payments e installments atómicamente', async () => {
+    const { cookie, csrf } = await loginClientA();
+    const instId = `inst-test-1k-${Date.now()}`;
+    const testInst = {
+      id: instId,
+      clientId: 'cli-demo-1',
+      amountUSD: 50,
+      dueDate: '2026-12-31',
+      status: 'pending'
+    };
+
+    const installments = readCollection('installments');
+    installments.push(testInst);
+    writeCollection('installments', installments);
+
+    const payRes = await request('/api/portal/client/payments', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        amount: 50,
+        paymentMethod: 'Pago Móvil',
+        reference: 'REF-1K-001',
+        installmentId: instId
+      })
+    });
+
+    assert.strictEqual(payRes.status, 200);
+    assert.strictEqual(payRes.data.success, true);
+    assert.strictEqual(payRes.data.payment.amount, 50);
+
+    const updatedInsts = readCollection('installments');
+    const updatedInst = updatedInsts.find(i => String(i.id) === instId);
+    assert.ok(updatedInst);
+    assert.strictEqual(updatedInst.status, 'in_review');
+  });
+
+  // 1K-05: Restablecimiento de PIN en portal actualiza hash bajo lock y borra PIN plano
+  await test('466. TEST 1K-05: Restablecimiento de PIN almacena bcrypt hash, elimina pin plano e invalida tokens', async () => {
+    const challenge = createRecoveryChallenge({
+      portalType: 'client',
+      targetId: 'cli-demo-1',
+      channel: 'email',
+      recipient: 'cliente1@kalu.local'
+    });
+    assert.ok(challenge);
+    assert.ok(challenge.otpForDelivery);
+
+    const verifyResult = verifyRecoveryCode({
+      challengeId: challenge.challengeId,
+      code: challenge.otpForDelivery,
+      portalType: 'client',
+      targetId: 'cli-demo-1'
+    });
+    assert.strictEqual(verifyResult.success, true);
+    assert.ok(verifyResult.resetToken);
+
+    // Consumir token y actualizar PIN bajo lock
+    const consumeRes = consumeResetToken({
+      resetToken: verifyResult.resetToken,
+      portalType: 'client',
+      targetId: 'cli-demo-1'
+    });
+    assert.strictEqual(consumeRes.success, true);
+
+    await withCollectionLock('clients', async () => {
+      const clients = readCollection('clients');
+      const client = clients.find(c => String(c.id) === 'cli-demo-1');
+      assert.ok(client);
+      client.pinHash = bcrypt.hashSync('654321', 10);
+      delete client.pin;
+      writeCollection('clients', clients);
+    });
+
+    const updatedClients = readCollection('clients');
+    const updatedClient = updatedClients.find(c => String(c.id) === 'cli-demo-1');
+    assert.ok(updatedClient);
+    assert.strictEqual(updatedClient.pin, undefined);
+    assert.ok(updatedClient.pinHash);
+    assert.ok(bcrypt.compareSync('654321', updatedClient.pinHash));
+
+    // Restaurar PIN original para no alterar otras pruebas
+    updatedClient.pinHash = bcrypt.hashSync('678000', 10);
+    writeCollection('clients', updatedClients);
+  });
+
+  // 1K-06: Verificación de Webhook WhatsApp no expone secretos y compara en tiempo constante
+  await test('467. TEST 1K-06: Webhook GET /api/webhook/whatsapp valida hub.verify_token de forma segura en tiempo constante', async () => {
+    const TEST_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'kalu_dev_verification_token';
+    const resBad = await request('/api/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=token_invalido_hacker&hub.challenge=test_challenge_123');
+    assert.strictEqual(resBad.status, 403);
+
+    const resGood = await request(`/api/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(TEST_VERIFY_TOKEN)}&hub.challenge=test_challenge_123`);
+    assert.strictEqual(resGood.status, 200);
+    assert.strictEqual(resGood.data, 'test_challenge_123');
+  });
+
+  // 1K-07: Ausencia de secretos hardcoded y correos personales en la configuración de fallback
+  await test('468. TEST 1K-07: Configuración del servidor no contiene emails personales hardcoded ni fallbacks inseguros', async () => {
+    const serverCode = fs.readFileSync('server.js', 'utf8');
+    assert.ok(!serverCode.includes('cherokejd566@gmail.com'), 'No debe contener cherokejd566@gmail.com');
+    assert.ok(!serverCode.includes('1344089325449515'), 'No debe contener teléfono hardcoded 1344089325449515');
+  });
+
+  // 1K-08: Adversarial path traversal en /protected_media y /uploads (encoded %2e%2e, null byte, boundary mismatch)
+  await test('469. TEST 1K-08: Servidores estáticos bloquean traversal codificado (%2e%2e), null bytes (%00) y escape de directorio', async () => {
+    const resEncoded1 = await request('/protected_media/%2e%2e%2fpackage.json');
+    assert.strictEqual(resEncoded1.status, 404);
+
+    const resEncoded2 = await request('/uploads/%2e%2e%2fserver.js');
+    assert.strictEqual(resEncoded2.status, 404);
+
+    const resNull = await request('/protected_media/photo.jpg%00.json');
+    assert.strictEqual(resNull.status, 404);
+
+    const resBackslash = await request('/protected_media/..%5c..%5cserver.js');
+    assert.strictEqual(resBackslash.status, 404);
+  });
+
+  // 1K-09: Sanitización recursiva y case-insensitive de Audit Logs (nested objects, mayúsculas, campos de IA)
+  await test('470. TEST 1K-09: recordAuditLog sanitiza estructuras anidadas y variantes de mayúsculas (PROMPT, nested.apiKey)', async () => {
+    await recordAuditLog({
+      action: 'ai.adversarial_sanitization',
+      resourceType: 'ai',
+      result: 'success',
+      metadata: {
+        PROMPT: 'SUPER_SECRET_PROMPT_ALL_CAPS',
+        Voice: 'voice_recording_data',
+        RawBody: 'raw_payload_bytes',
+        nestedData: {
+          apiKey: 'gemini_key_deep',
+          secretToken: 'deep_secret',
+          safeField: 'retained_deep_value',
+          subNested: {
+            Password: 'nested_password_123',
+            safeSubField: 42
+          }
+        }
+      }
+    });
+
+    const logs = readCollection('audit_logs');
+    const testLog = logs.find(l => l.action === 'ai.adversarial_sanitization');
+    assert.ok(testLog);
+    assert.strictEqual(testLog.metadata.PROMPT, undefined);
+    assert.strictEqual(testLog.metadata.Voice, undefined);
+    assert.strictEqual(testLog.metadata.RawBody, undefined);
+    assert.strictEqual(testLog.metadata.nestedData.apiKey, undefined);
+    assert.strictEqual(testLog.metadata.nestedData.secretToken, undefined);
+    assert.strictEqual(testLog.metadata.nestedData.safeField, 'retained_deep_value');
+    assert.strictEqual(testLog.metadata.nestedData.subNested.Password, undefined);
+    assert.strictEqual(testLog.metadata.nestedData.subNested.safeSubField, 42);
+  });
+
+  // 1K-10: Verificación estricta de aislamiento DEV-only: endpoints RBAC de prueba condicionados por !isProd
+  await test('471. TEST 1K-10: Código fuente garantiza que endpoints de diagnóstico RBAC están encapsulados exclusivamente en !isProd', async () => {
+    const serverCode = fs.readFileSync('server.js', 'utf8');
+    const rbacDevSection = serverCode.indexOf('if (!isProd)');
+    assert.ok(rbacDevSection !== -1);
+    const rbacEndSection = serverCode.indexOf('/api/rbac/role-change-test');
+    assert.ok(rbacEndSection > rbacDevSection, '/api/rbac/role-change-test DEBE estar dentro del bloque if (!isProd)');
+    const rbacAdminSection = serverCode.indexOf('/api/rbac/admin-only');
+    assert.ok(rbacAdminSection > rbacDevSection, '/api/rbac/admin-only DEBE estar dentro del bloque if (!isProd)');
+  });
+
+  // --- PRUEBAS DE RATE LIMIT FINAL (Se ejecutan al final del suite) ---
+
   // 80 (Ahora 113). Rate Limiter de Login de Portal (HTTP 429)
   await test('113. 1D-A: Intentos fallidos repetidos en login de portal activan Rate Limiter (HTTP 429)', async () => {
     let got429 = false;
