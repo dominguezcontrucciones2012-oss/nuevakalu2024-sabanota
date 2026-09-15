@@ -4746,6 +4746,188 @@ async function runTests() {
     assert.strictEqual(res.status, 403, 'Cajero con body role=admin sigue siendo rechazado por requireRole');
   });
 
+  // ============================================================
+  // PRUEBAS DE FASE 1E-B: MIGRACIÓN FRONTEND GEMINI -> BACKEND SEGURO
+  // ============================================================
+
+  // 1E-B-01: Endpoints backend responden con éxito a todas las funciones migradas
+  await test('250. TEST 1E-B-01: Endpoints backend responden adecuadamente a llamadas simuladas de los wrappers frontend', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const chatRes = await request('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ prompt: 'Verificar estado del inventario' })
+    });
+    assert.strictEqual(chatRes.status, 200);
+    assert.strictEqual(chatRes.data.success, true);
+    assert.ok(typeof chatRes.data.text === 'string');
+  });
+
+  // 1E-B-02: aiApi / endpoints requieren credentials (sesión HTTP con Cookie)
+  await test('251. TEST 1E-B-02: Endpoints AI rechazan solicitudes sin credentials / cookie de sesión (401)', async () => {
+    const res = await request('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'x-csrf-token': 'token_sin_sesion' },
+      body: JSON.stringify({ prompt: 'Test credentials' })
+    });
+    assert.strictEqual(res.status, 401);
+  });
+
+  // 1E-B-03: POST AI requiere token CSRF obligatorio
+  await test('252. TEST 1E-B-03: POST AI sin header x-csrf-token devuelve HTTP 403 Forbidden', async () => {
+    const { cookie } = await loginAdminD2();
+    const res = await request('/api/ai/inventory-command', {
+      method: 'POST',
+      headers: { 'Cookie': cookie },
+      body: JSON.stringify({ command: 'Agregar queso blanco a 3' })
+    });
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(res.data.error, 'CSRF token inválido o ausente');
+  });
+
+  // 1E-B-04: GET /api/ai/status funciona en backend y no llama a Google desde browser
+  await test('253. TEST 1E-B-04: GET /api/ai/status retorna disponibilidad server-side sin interactuar directamente con Google desde cliente', async () => {
+    const { cookie } = await loginAdminD2();
+    const res = await request('/api/ai/status', {
+      headers: { 'Cookie': cookie }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.available, true);
+    assert.strictEqual(typeof res.data.engine, 'string');
+  });
+
+  // 1E-B-05: Verificación de que los archivos de servicios frontend no importan @google/genai ni GoogleGenAI
+  await test('254. TEST 1E-B-05: Código fuente en src/services no contiene llamadas directas ni SDKs de Google en el cliente', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const srcServices = ['gemini.ts', 'geminiInventoryAssistant.ts', 'ocrService.ts', 'aiApi.ts'];
+
+    for (const file of srcServices) {
+      const filePath = path.resolve('src/services', file);
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, 'utf8');
+        assert.strictEqual(content.includes('@google/genai'), false, `${file} no debe importar @google/genai`);
+        assert.strictEqual(content.includes('GoogleGenAI'), false, `${file} no debe usar GoogleGenAI`);
+        assert.strictEqual(content.includes('generativelanguage.googleapis.com'), false, `${file} no debe llamar generativelanguage`);
+        assert.strictEqual(content.includes('x-goog-api-key'), false, `${file} no debe usar x-goog-api-key`);
+      }
+    }
+  });
+
+  // 1E-B-06: Verificación de contratos OCR preservados en /api/ai/ocr-invoice
+  await test('255. TEST 1E-B-06: Contrato de respuesta de OCR conserva formato estructurado con proveedor, factura, fecha e items', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/ocr-invoice', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        imageBase64: 'dGVzdF9mYWN0dXJh',
+        mimeType: 'image/jpeg',
+        bcvRate: 45
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(res.data.data.proveedor);
+    assert.ok(res.data.data.factura);
+    assert.ok(Array.isArray(res.data.data.items));
+  });
+
+  // 1E-B-07: Verificación de contratos de dictado preservados en /api/ai/parse-dictation
+  await test('256. TEST 1E-B-07: Contrato de respuesta de dictado conserva array de items con campos numéricos sanitizados', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/parse-dictation', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        text: 'Llegaron 10 kilos de queso duro',
+        bcvRate: 45
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data.items));
+    assert.strictEqual(res.data.items[0].nombre, 'MANTEQUILLA CRIOLLA');
+  });
+
+  // 1E-B-08: Verificación de contratos de notas de voz preservados en /api/ai/parse-voice-note
+  await test('257. TEST 1E-B-08: Contrato de respuesta de notas de voz conserva categoría, montos y resumen', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/parse-voice-note', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        text: 'Pago de flete de transporte',
+        bcvRate: 45
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.data.category, 'gasto');
+    assert.strictEqual(res.data.data.amountUsd, 25);
+  });
+
+  // 1E-B-09: Verificación de contratos de viajes de queso preservados en /api/ai/parse-trip
+  await test('258. TEST 1E-B-09: Contrato de respuesta de giras conserva driver, kilogramos y adelantos monetarios', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/parse-trip', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        text: 'Salida de Daisy Corro con queso duro',
+        bcvRate: 813
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.data.data.driver, 'Daisy Corro');
+    assert.strictEqual(res.data.data.dispatchedKg, 300);
+  });
+
+  // 1E-B-10: Verificación de comandos de inventario en /api/ai/inventory-command
+  await test('259. TEST 1E-B-10: Contrato de respuesta de asistente de inventario conserva acciones y mensaje', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/inventory-command', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        command: 'Actualizar queso paisa',
+        products: []
+      })
+    });
+    assert.strictEqual(res.status, 200);
+    assert.ok(Array.isArray(res.data.actions));
+    assert.strictEqual(typeof res.data.message, 'string');
+  });
+
+  // 1E-B-11: Prevención estricta de fallback cliente -> Google cuando el backend falla
+  await test('260. TEST 1E-B-11: Fallo en el backend retorna error seguro sin intentar fallbacks directos no autorizados a Google', async () => {
+    const { cookie, csrf } = await loginAdminD2();
+    const res = await request('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({ prompt: 'error_simulado' })
+    });
+    assert.strictEqual(res.status, 500);
+    assert.strictEqual(res.data.success, false);
+    assert.strictEqual(res.data.error, 'Ocurrió un error al procesar la solicitud con la IA');
+  });
+
+  // 1E-B-12: Prevención de inyección de parámetros no confiables en body
+  await test('261. TEST 1E-B-12: Los parámetros de suplantación de identidad en body son completamente ignorados', async () => {
+    const { cookie, csrf } = await loginCashierD2();
+    const res = await request('/api/ai/ocr-invoice', {
+      method: 'POST',
+      headers: { 'Cookie': cookie, 'x-csrf-token': csrf },
+      body: JSON.stringify({
+        role: 'admin',
+        userId: 'admin_override',
+        imageBase64: 'dGVzdA=='
+      })
+    });
+    assert.strictEqual(res.status, 403, 'Cajero intentando elevarse a admin en body sigue bloqueado por RBAC');
+  });
+
+  // ============================================================
+  // PRUEBAS DE RATE LIMITER (SE EJECUTAN AL FINAL)
+  // ============================================================
+
   // 1E-A-20: Rate limiter específico de IA se activa ante peticiones excesivas
   await test('249. TEST 1E-A-20: aiRateLimiter retorna HTTP 429 tras superar el umbral de peticiones', async () => {
     const { cookie, csrf } = await loginAdminD2();
@@ -4766,10 +4948,6 @@ async function runTests() {
     }
     assert.ok(got429, 'Debe activar rate limiting (HTTP 429) ante ráfagas excesivas en endpoints de IA');
   });
-
-  // ============================================================
-  // PRUEBAS DE RATE LIMITER (SE EJECUTAN AL FINAL)
-  // ============================================================
 
   // 80 (Ahora 113). Rate Limiter de Login de Portal (HTTP 429)
   await test('113. 1D-A: Intentos fallidos repetidos en login de portal activan Rate Limiter (HTTP 429)', async () => {
