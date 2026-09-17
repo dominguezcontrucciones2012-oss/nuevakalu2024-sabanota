@@ -419,6 +419,55 @@ function resetProcessedWebhookEventsForTest() {
   processedWebhookEventIds.clear();
 }
 
+// Store en memoria para protección Anti-Spam del Modo Mantenimiento de WhatsApp
+// Mapea recipientPhone -> timestamp del último aviso enviado
+const whatsappMaintenanceAntiSpamStore = new Map();
+const DEFAULT_MAINTENANCE_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutos por defecto
+
+const WHATSAPP_MAINTENANCE_MESSAGE = `👋 ¡Hola! Gracias por comunicarte con nosotros.
+
+En este momento estamos realizando una actualización de nuestro sistema para brindarte una mejor atención.
+
+Estaremos nuevamente en servicio muy pronto.
+
+🙏 Te pedimos disculpas por las molestias y agradecemos mucho tu comprensión.
+
+Mundo Kalu`;
+
+function isMaintenanceAntiSpamActive(phone) {
+  if (!phone) return false;
+  const clean = String(phone).replace(/\D/g, '');
+  const lastSent = whatsappMaintenanceAntiSpamStore.get(clean);
+  if (!lastSent) return false;
+
+  const cooldownMs = parseInt(process.env.WHATSAPP_MAINTENANCE_COOLDOWN_MS, 10) || DEFAULT_MAINTENANCE_COOLDOWN_MS;
+  const now = Date.now();
+  if (now - lastSent < cooldownMs) {
+    return true;
+  }
+  return false;
+}
+
+function recordMaintenanceNoticeSent(phone) {
+  if (!phone) return;
+  const clean = String(phone).replace(/\D/g, '');
+  whatsappMaintenanceAntiSpamStore.set(clean, Date.now());
+
+  // Limpieza preventiva si el mapa crece
+  if (whatsappMaintenanceAntiSpamStore.size > 5000) {
+    const cutoff = Date.now() - ((parseInt(process.env.WHATSAPP_MAINTENANCE_COOLDOWN_MS, 10) || DEFAULT_MAINTENANCE_COOLDOWN_MS) * 2);
+    for (const [key, ts] of whatsappMaintenanceAntiSpamStore.entries()) {
+      if (ts < cutoff) {
+        whatsappMaintenanceAntiSpamStore.delete(key);
+      }
+    }
+  }
+}
+
+function resetMaintenanceAntiSpamForTest() {
+  whatsappMaintenanceAntiSpamStore.clear();
+}
+
 const SESSION_SECRET = process.env.SESSION_SECRET || 'kalu_dev_session_secret_2026_super_safe_and_random';
 
 // Configuración de sesiones server-side (MemoryStore para DEV, modular para SQLite/Redis en producción)
@@ -5657,6 +5706,61 @@ app.post('/api/webhook/whatsapp', whatsappWebhookLimiter, whatsappJsonParser, (r
     const entry = Array.isArray(payload.entry) ? payload.entry[0] : null;
     const changes = entry?.changes?.[0];
     const field = changes?.field || 'unknown';
+    const value = changes?.value || {};
+
+    const isMaintenanceActive = String(process.env.WHATSAPP_MAINTENANCE_MODE || '').trim().toLowerCase() === 'true';
+
+    // FASE MODO MANTENIMIENTO: Si el modo mantenimiento está activo, responder automáticamente con aviso corporativo
+    if (isMaintenanceActive) {
+      const incomingMessages = Array.isArray(value.messages) ? value.messages : [];
+      let maintenanceNoticesSent = 0;
+      let maintenanceNoticesSkippedAntiSpam = 0;
+
+      for (const msg of incomingMessages) {
+        const senderPhone = msg?.from;
+        if (senderPhone) {
+          if (!isMaintenanceAntiSpamActive(senderPhone)) {
+            // Despachar mensaje de mantenimiento corporativo (asíncrono seguro sin bloquear HTTP 200 SLA)
+            sendWhatsAppNotification({
+              phone: senderPhone,
+              name: 'Cliente',
+              message: WHATSAPP_MAINTENANCE_MESSAGE
+            }).catch(err => {
+              console.error('[WhatsApp Maintenance] Error despachando aviso a', senderPhone, err.message);
+            });
+
+            recordMaintenanceNoticeSent(senderPhone);
+            maintenanceNoticesSent++;
+            console.log(`[WhatsApp Maintenance] 📢 Aviso de mantenimiento enviado a contacto (anti-spam registrado).`);
+          } else {
+            maintenanceNoticesSkippedAntiSpam++;
+            console.log(`[WhatsApp Maintenance] 🛡️ Mensaje recibido pero aviso omitido por ventana Anti-Spam activa.`);
+          }
+        }
+      }
+
+      recordAuditLog({
+        req,
+        action: 'webhook.whatsapp_maintenance',
+        resourceType: 'webhook',
+        result: 'success',
+        metadata: {
+          field,
+          newEventsCount,
+          maintenanceNoticesSent,
+          maintenanceNoticesSkippedAntiSpam
+        }
+      });
+
+      console.log(`[WhatsApp Webhook] 🛠️ [MODO MANTENIMIENTO ACTIVO] Evento verificado. Avisos enviados: ${maintenanceNoticesSent}, omitidos anti-spam: ${maintenanceNoticesSkippedAntiSpam}`);
+      return res.status(200).json({
+        status: 'EVENT_RECEIVED',
+        maintenance: true,
+        newEvents: newEventsCount,
+        noticesSent: maintenanceNoticesSent,
+        antiSpamSuppressed: maintenanceNoticesSkippedAntiSpam
+      });
+    }
 
     recordAuditLog({
       req,
@@ -5742,6 +5846,10 @@ export {
   markWebhookEventProcessed,
   extractWebhookEventIds,
   resetProcessedWebhookEventsForTest,
+  isMaintenanceAntiSpamActive,
+  recordMaintenanceNoticeSent,
+  resetMaintenanceAntiSpamForTest,
+  WHATSAPP_MAINTENANCE_MESSAGE,
   hashRateLimitKey,
   loginAccountLimiter,
   portalLoginLimiter,
