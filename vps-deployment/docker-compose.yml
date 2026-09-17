@@ -20,6 +20,7 @@ services:
     env_file:
       - ../.env
     environment:
+      - DATA_DIR=/var/www/app/data
       - UPLOAD_DIR=/var/www/app/uploads
       - PORT=3001
       - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID:-1344089325449515}
@@ -28,4 +29,5 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - VITE_GEMINI_API_KEY=${VITE_GEMINI_API_KEY}
     volumes:
-      - /root/kalu-crm/data:/var/www/app/uploads
+      - /root/kalu-crm/data:/var/www/app/data
+      - /root/kalu-crm/uploads:/var/www/app/uploads

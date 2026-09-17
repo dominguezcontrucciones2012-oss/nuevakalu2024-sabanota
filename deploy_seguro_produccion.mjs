@@ -74,8 +74,8 @@ async function deployDirectoVPS() {
       cd /root/kalu-crm
       
       # Asegurar volumen de datos persistente en el host
-      mkdir -p /root/kalu-crm/data
-      chmod 777 /root/kalu-crm/data || true
+      mkdir -p /root/kalu-crm/data /root/kalu-crm/uploads
+      chmod 777 /root/kalu-crm/data /root/kalu-crm/uploads || true
       
       echo "Instalando dependencias si hay cambios..."
       npm install
@@ -88,9 +88,9 @@ async function deployDirectoVPS() {
       cp package.json vps-deployment/
       
       cd vps-deployment
-      docker-compose down || true
-      docker-compose build api
-      docker-compose up -d
+      docker compose down || true
+      docker compose build api
+      docker compose up -d
     `;
 
     const resBuild = await ssh.execCommand(remoteBuildScript);
