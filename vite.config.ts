@@ -25,7 +25,15 @@ export default defineConfig(() => {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {
-        ignored: ['**/uploads/**', '**/protected_media/**', '**/downloadRealImages.mjs']
+        ignored: [
+          '**/uploads/**',
+          '**/protected_media/**',
+          '**/downloadRealImages.mjs',
+          '**/data-dev/**',
+          '**/data-dev-backup*/**',
+          '**/*.db',
+          '**/scratch/**'
+        ]
       },
       proxy: {
         '/api': {

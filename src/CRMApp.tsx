@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Transaction,
   UserIdentity,
@@ -39,6 +39,7 @@ import {
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import LoginView from './components/LoginView';
+import DestinationSelectorView from './components/DestinationSelectorView';
 import DashboardView from './components/DashboardView';
 import { fetchCurrentUserApi, logoutApi } from './services/localApi';
 
@@ -65,11 +66,11 @@ import {
   updateLocalDoc, 
   deleteLocalDoc, 
   fetchCollection,
+  fetchBootstrapDataApi,
   processSaleAtomic,
   initSocket
 } from './services/localApi';
 import { fetchLocalProducts, updateLocalProduct, addLocalProduct, deleteLocalProduct } from './services/productApi';
-import { fetchOfficialBcvRate } from './services/exchangeRateService';
 import { getUnitLabel } from './utils';
 
 interface ToastNotification {
@@ -81,6 +82,7 @@ interface ToastNotification {
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentUser, setCurrentUser] = useState<UserIdentity | null>(null);
+  const [selectedApp, setSelectedApp] = useState<'crm' | 'contador' | null>(null);
   const [isAuthChecking, setIsAuthChecking] = useState(true);
 
   useEffect(() => {
@@ -89,16 +91,24 @@ export default function App() {
         if (user) {
           setIsAuthenticated(true);
           setCurrentUser(user);
+          if (user.role === 'cajero') {
+            setSelectedApp('crm');
+            setCurrentView('pos-terminal');
+          } else {
+            setSelectedApp(null);
+          }
         } else {
           setIsAuthenticated(false);
           setCurrentUser(null);
+          setSelectedApp(null);
           localStorage.removeItem('kalu_auth_state');
           localStorage.removeItem('kalu_current_user');
         }
       })
-      .catch(() => {
+      .catch((err) => {
         setIsAuthenticated(false);
         setCurrentUser(null);
+        setSelectedApp(null);
       })
       .finally(() => {
         setIsAuthChecking(false);
@@ -106,6 +116,7 @@ export default function App() {
   }, []);
   const [currentView, setCurrentView] = useState<ViewType>('portal-dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 1024);
+
 
   // Unified States for Cheese ERP
   const [cheeseProducts, setCheeseProducts] = useState<CheeseProduct[]>(() => {
@@ -167,14 +178,64 @@ export default function App() {
   const [totalSalesCount, setTotalSalesCount] = useState<number>(0);
   const [totalSalesRevenue, setTotalSalesRevenue] = useState<number>(0);
 
-  // Real-time Local API Listeners -> Local Listeners
+  // Real-time Local API Listeners -> Coordinated Bootstrap & Snapshots
   useEffect(() => {
-    fetchLocalProducts().then(data => {
-      if (data && data.length) setCheeseProducts(data);
-    }).catch(e => console.error("Error loading local products:", e));
+    if (!isAuthenticated) return;
+    let isMounted = true;
 
+    // 1. Fase de Bootstrap Atómico y Consolidado
+    fetchBootstrapDataApi().then((bootstrap) => {
+      if (!isMounted) return;
+
+      if (bootstrap.products && bootstrap.products.length > 0) {
+        setCheeseProducts(bootstrap.products as CheeseProduct[]);
+      }
+      if (bootstrap.transactions && bootstrap.transactions.length > 0) {
+        const txs = [...(bootstrap.transactions as Transaction[])];
+        txs.sort((a, b) => {
+          if (a.id > b.id) return -1;
+          if (a.id < b.id) return 1;
+          return 0;
+        });
+        setTransactions(txs);
+      }
+      if (bootstrap.clients && bootstrap.clients.length > 0) {
+        setClients(bootstrap.clients as ClientProfile[]);
+      }
+      if (bootstrap.suppliers && bootstrap.suppliers.length > 0) {
+        setSuppliers(bootstrap.suppliers as SupplierProfile[]);
+      }
+      if (bootstrap.cheeseTrips && bootstrap.cheeseTrips.length > 0) {
+        const trips = [...(bootstrap.cheeseTrips as CheeseTrip[])];
+        trips.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setCheeseTrips(trips);
+      }
+      if (bootstrap.users && bootstrap.users.length > 0) {
+        setUsers(bootstrap.users as UserIdentity[]);
+      }
+      if (bootstrap.mobileOrders && bootstrap.mobileOrders.length > 0) {
+        setMobileOrders(bootstrap.mobileOrders as MobileOrder[]);
+      }
+      if (bootstrap.settings) {
+        const generalDoc = bootstrap.settings.find((d: any) => d.id === 'general');
+        if (generalDoc) {
+          let newSettings = { ...DEFAULT_SETTINGS, ...generalDoc } as BusinessSettings;
+          if (!generalDoc.centralVaultBalance && generalDoc.sabanotaInitials) {
+            newSettings.centralVaultBalance = {
+              usd: Number(generalDoc.sabanotaInitials.drawerUsd) || 0,
+              bs: Number(generalDoc.sabanotaInitials.drawerBs) || 0,
+              bankBs: Number(generalDoc.sabanotaInitials.bankBalanceBs) || 0,
+              bankUsd: Number(generalDoc.sabanotaInitials.bankBalanceUsd) || 0
+            };
+          }
+          setSettings(newSettings);
+        }
+      }
+    }).catch(e => console.warn("[Bootstrap] Error en carga inicial:", e));
+
+    // 2. Suscripciones Real-time con Snapshots Granulares
     const unsubProducts = onCollectionSnapshot('products', (data) => {
-      if (Array.isArray(data)) {
+      if (Array.isArray(data) && data.length > 0) {
         setCheeseProducts(data as CheeseProduct[]);
       }
     });
@@ -188,12 +249,11 @@ export default function App() {
           return 0;
         });
         setTransactions(txs);
-        localStorage.setItem('kalu_sales_history', JSON.stringify(txs));
       }
     });
 
     const unsubClients = onCollectionSnapshot('clients', (data) => {
-      if (Array.isArray(data)) {
+      if (Array.isArray(data) && data.length > 0) {
         setClients(data as ClientProfile[]);
       }
     });
@@ -207,7 +267,7 @@ export default function App() {
     });
 
     const unsubSuppliers = onCollectionSnapshot('suppliers', (data) => {
-      if (Array.isArray(data)) {
+      if (Array.isArray(data) && data.length > 0) {
         setSuppliers(data as SupplierProfile[]);
       }
     });
@@ -216,8 +276,6 @@ export default function App() {
       const generalDoc = data.find((d: any) => d.id === 'general');
       if (generalDoc) {
         let newSettings = { ...DEFAULT_SETTINGS, ...generalDoc } as BusinessSettings;
-        
-        // MIGRATION LOGIC: If centralVaultBalance is empty but we have sabanotaInitials
         if (!generalDoc.centralVaultBalance && generalDoc.sabanotaInitials) {
           newSettings.centralVaultBalance = {
             usd: Number(generalDoc.sabanotaInitials.drawerUsd) || 0,
@@ -227,16 +285,13 @@ export default function App() {
           };
         }
         setSettings(newSettings);
-        try {
-          localStorage.setItem('kalu_settings', JSON.stringify(newSettings));
-        } catch (e) {
-          // ignore
-        }
       }
     });
 
     const unsubUsers = onCollectionSnapshot('users', (data) => {
-      setUsers(data as UserIdentity[]);
+      if (Array.isArray(data) && data.length > 0) {
+        setUsers(data as UserIdentity[]);
+      }
     });
 
     const unsubMobileOrders = onCollectionSnapshot('mobileOrders', (data) => {
@@ -244,6 +299,7 @@ export default function App() {
     });
 
     return () => {
+      isMounted = false;
       unsubProducts();
       unsubTransactions();
       unsubClients();
@@ -253,59 +309,110 @@ export default function App() {
       unsubCheeseTrips();
       unsubMobileOrders();
     };
-  }, []);
+  }, [isAuthenticated]);
+
+  // Persistencia local asíncrona / debounced para no saturar el event loop en bootstrap
+  useEffect(() => {
+    if (!isAuthenticated || cheeseProducts.length === 0) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem('kalu_inventory', JSON.stringify(cheeseProducts));
+      } catch {}
+    }, 200);
+    return () => clearTimeout(t);
+  }, [cheeseProducts, isAuthenticated]);
 
   useEffect(() => {
-    localStorage.setItem('kalu_inventory', JSON.stringify(cheeseProducts));
-  }, [cheeseProducts]);
+    if (!isAuthenticated || clients.length === 0) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem('kalu_clients', JSON.stringify(clients));
+      } catch {}
+    }, 200);
+    return () => clearTimeout(t);
+  }, [clients, isAuthenticated]);
 
   useEffect(() => {
-    localStorage.setItem('kalu_clients', JSON.stringify(clients));
-  }, [clients]);
+    if (!isAuthenticated || suppliers.length === 0) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem('kalu_suppliers', JSON.stringify(suppliers));
+      } catch {}
+    }, 200);
+    return () => clearTimeout(t);
+  }, [suppliers, isAuthenticated]);
 
   useEffect(() => {
-    localStorage.setItem('kalu_suppliers', JSON.stringify(suppliers));
-  }, [suppliers]);
+    if (!isAuthenticated) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem('kalu_sales_history', JSON.stringify(transactions));
+      } catch {}
+    }, 200);
+    return () => clearTimeout(t);
+  }, [transactions, isAuthenticated]);
 
   useEffect(() => {
-    localStorage.setItem('kalu_supplier_ledger', JSON.stringify(bills));
-  }, [bills]);
+    if (!isAuthenticated) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem('kalu_settings', JSON.stringify(settings));
+      } catch {}
+    }, 200);
+    return () => clearTimeout(t);
+  }, [settings, isAuthenticated]);
 
   useEffect(() => {
-    localStorage.setItem('kalu_sales_history', JSON.stringify(transactions));
-  }, [transactions]);
+    if (!isAuthenticated || users.length === 0) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem('kalu_users', JSON.stringify(users));
+      } catch {}
+    }, 200);
+    return () => clearTimeout(t);
+  }, [users, isAuthenticated]);
 
   useEffect(() => {
-    localStorage.setItem('kalu_activities', JSON.stringify(activities));
-  }, [activities]);
+    if (!isAuthenticated) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem('kalu_supplier_ledger', JSON.stringify(bills));
+      } catch {}
+    }, 200);
+    return () => clearTimeout(t);
+  }, [bills, isAuthenticated]);
 
   useEffect(() => {
-    localStorage.setItem('kalu_balance', balance.toString());
-  }, [balance]);
+    if (!isAuthenticated) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem('kalu_activities', JSON.stringify(activities));
+      } catch {}
+    }, 200);
+    return () => clearTimeout(t);
+  }, [activities, isAuthenticated]);
 
   useEffect(() => {
-    localStorage.setItem('kalu_sales_count', totalSalesCount.toString());
-  }, [totalSalesCount]);
+    if (!isAuthenticated) return;
+    try {
+      localStorage.setItem('kalu_balance', balance.toString());
+      localStorage.setItem('kalu_sales_count', totalSalesCount.toString());
+      localStorage.setItem('kalu_sales_revenue', totalSalesRevenue.toString());
+    } catch {}
+  }, [balance, totalSalesCount, totalSalesRevenue, isAuthenticated]);
 
   useEffect(() => {
-    localStorage.setItem('kalu_sales_revenue', totalSalesRevenue.toString());
-  }, [totalSalesRevenue]);
+    if (!isAuthenticated) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem('kalu_batches', JSON.stringify(cheeseBatches));
+        localStorage.setItem('kalu_expenses', JSON.stringify(expenses));
+        localStorage.setItem('kalu_cheese_trips', JSON.stringify(cheeseTrips));
+      } catch {}
+    }, 200);
+    return () => clearTimeout(t);
+  }, [cheeseBatches, expenses, cheeseTrips, isAuthenticated]);
 
-  useEffect(() => {
-    localStorage.setItem('kalu_batches', JSON.stringify(cheeseBatches));
-  }, [cheeseBatches]);
-
-  useEffect(() => {
-    localStorage.setItem('kalu_expenses', JSON.stringify(expenses));
-  }, [expenses]);
-
-  useEffect(() => {
-    localStorage.setItem('kalu_cheese_trips', JSON.stringify(cheeseTrips));
-  }, [cheeseTrips]);
-
-  useEffect(() => {
-    localStorage.setItem('kalu_users', JSON.stringify(users));
-  }, [users]);
 
   // Help alert helper
   const addNotification = (message: string, type: 'success' | 'info' | 'warning' = 'info') => {
@@ -327,10 +434,23 @@ export default function App() {
   const handleLoginSuccess = (user: UserIdentity, targetView?: ViewType) => {
     setIsAuthenticated(true);
     setCurrentUser(user);
-    if (targetView) {
-      setCurrentView(targetView);
+    if (user.role === 'cajero') {
+      setSelectedApp('crm');
+      setCurrentView(targetView || 'pos-terminal');
     } else {
-      setCurrentView('pos-terminal');
+      setSelectedApp(null);
+      if (targetView) {
+        setCurrentView(targetView);
+      }
+    }
+  };
+
+  const handleSelectApp = (app: 'crm' | 'contador') => {
+    if (app === 'contador') {
+      window.location.href = '/portal.html?type=contador';
+    } else {
+      setSelectedApp('crm');
+      setCurrentView('portal-dashboard');
     }
   };
 
@@ -342,6 +462,7 @@ export default function App() {
     }
     setIsAuthenticated(false);
     setCurrentUser(null);
+    setSelectedApp(null);
     setCurrentView('portal-dashboard');
     localStorage.removeItem('kalu_auth_state');
     localStorage.removeItem('kalu_current_user');
@@ -980,7 +1101,7 @@ export default function App() {
     );
     try {
       await updateLocalDoc('products', id, updated);
-    } catch (error) {
+    } catch (error: any) {
       console.warn("Product not in Local API or network error, updated locally:", error);
     }
   };
@@ -1800,6 +1921,16 @@ export default function App() {
         users={users}
         onLoginSuccess={handleLoginSuccess}
         onAddNotification={(msg, type) => addNotification(msg, type as 'info' | 'success' | 'warning' || 'info')}
+      />
+    );
+  }
+
+  if (isAuthenticated && !selectedApp && currentUser?.role !== 'cajero') {
+    return (
+      <DestinationSelectorView
+        user={currentUser!}
+        onSelectApp={handleSelectApp}
+        onLogout={handleLogout}
       />
     );
   }

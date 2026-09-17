@@ -19,6 +19,8 @@ export const initSocket = () => {
     socket.on('connect', () => {
       console.log('Connected to local WebSocket server', socket?.id);
     });
+    socket.on('disconnect', (_reason) => {
+    });
   }
   return socket;
 };
@@ -41,7 +43,7 @@ export const onCollectionSnapshot = (collectionName: string, callback: (data: an
   const currentSocket = initSocket();
   const cacheMap = new Map<string, any>();
 
-  const notifyCallback = () => {
+  const notifyCallback = (_source: string) => {
     callback(Array.from(cacheMap.values()));
   };
 
@@ -54,7 +56,7 @@ export const onCollectionSnapshot = (collectionName: string, callback: (data: an
         cacheMap.set(String(item.id), item);
       }
     });
-    notifyCallback();
+    notifyCallback('initial_fetch');
   });
 
   // Listen for full collection updates (Fallback)
@@ -68,7 +70,7 @@ export const onCollectionSnapshot = (collectionName: string, callback: (data: an
             cacheMap.set(String(item.id), item);
           }
         });
-        notifyCallback();
+        notifyCallback('fallback_refetch');
       });
     }
   };
@@ -85,7 +87,7 @@ export const onCollectionSnapshot = (collectionName: string, callback: (data: an
       } else if (payload.action === 'clear') {
         cacheMap.clear();
       }
-      notifyCallback();
+      notifyCallback('delta');
     }
   };
 
@@ -98,6 +100,7 @@ export const onCollectionSnapshot = (collectionName: string, callback: (data: an
     currentSocket.off('collection_delta', deltaListener);
   };
 };
+
 
 export const fetchCollection = async (collectionName: string) => {
   try {
@@ -309,6 +312,7 @@ export const fetchCurrentUserApi = async () => {
   return data.user || null;
 };
 
+
 // --- PORTAL AUTHENTICATION API (FASE 1D-A) ---
 
 export const portalLoginApi = async (credentials: {
@@ -361,13 +365,28 @@ export const fetchCurrentPortalUserApi = async () => {
       return null;
     }
     const data = await res.json();
-    if (data.csrfToken) {
-      cachedCsrfToken = data.csrfToken;
-    }
     return data.portalUser || null;
   } catch (e) {
     return null;
   }
+};
+
+export const portalChangePinApi = async (payload: { currentPin: string; newPin: string }) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/portal/auth/change-pin`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include',
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || 'Error al cambiar el PIN de seguridad');
+  }
+  return data;
 };
 
 // --- PORTAL RECOVERY API HELPERS (FASE 1D-C.3) ---
@@ -662,4 +681,21 @@ export const uploadFilesApi = async (files: File[] | Blob[], customFileName?: st
     urls: data.urls || [],
     fileUrls: data.urls || []
   };
+};
+
+// 18. Bootstrap Atómico de Colecciones de CRM (Consolidación de arranque)
+export const fetchBootstrapDataApi = async () => {
+  const collectionNames = ['products', 'transactions', 'clients', 'suppliers', 'settings', 'users', 'mobileOrders', 'cheeseTrips'];
+  const results = await Promise.all(
+    collectionNames.map(async (name) => {
+      try {
+        const data = await fetchCollection(name);
+        return [name, Array.isArray(data) ? data : (data ? [data] : [])];
+      } catch (err) {
+        console.warn(`[Bootstrap] Error precargando colección ${name}:`, err);
+        return [name, []];
+      }
+    })
+  );
+  return Object.fromEntries(results);
 };

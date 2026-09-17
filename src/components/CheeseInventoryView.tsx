@@ -1067,6 +1067,7 @@ export default function CheeseInventoryView({
                           {isEditing ? (
                             <div key="edit-actions" className="flex justify-center gap-1.5">
                               <button
+                                type="button"
                                 onClick={(e) => handleSaveInlineEdit(e)}
                                 className="p-1 border border-emerald-800 bg-emerald-950/20 text-emerald-400 rounded hover:bg-emerald-500 hover:text-white cursor-pointer active:scale-95 transition-transform"
                                 title="Guardar"
@@ -1074,7 +1075,12 @@ export default function CheeseInventoryView({
                                 <Check className="w-3.5 h-3.5" />
                               </button>
                               <button
-                                onClick={() => setEditingProduct(null)}
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setEditingProduct(null);
+                                }}
                                 className="p-1 border border-editorial-border text-rose-400 rounded hover:bg-rose-500 hover:text-white cursor-pointer"
                                 title="Cancelar"
                               >
@@ -1096,7 +1102,10 @@ export default function CheeseInventoryView({
                                 />
                               </label>
                               <button
-                                onClick={() => {
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
                                   console.log('Producto a editar:', p);
                                   setEditingProduct({ ...p, unit: getUnitLabel(p) as any });
                                 }}
@@ -1106,7 +1115,10 @@ export default function CheeseInventoryView({
                                 <Edit2 className="w-3.5 h-3.5" />
                               </button>
                               <button
-                                onClick={() => {
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
                                   if (confirm(`¿Seguro que desea eliminar el producto ${p.name}?`)) {
                                     onDeleteProduct(p.id);
                                     onAddNotification(`Producto ${p.name} eliminado de la base de datos.`, 'info');

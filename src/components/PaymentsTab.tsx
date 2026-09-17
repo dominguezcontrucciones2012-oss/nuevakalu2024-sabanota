@@ -115,147 +115,180 @@ export default function PaymentsTab({
     }
   };
 
-  const currentDebt = debtList
-    .filter((item: any) => item.status !== 'paid')
-    .reduce((acc: number, curr: any) => acc + (Number(curr.amountUSD) || Number(curr.amount) || 0), 0);
-  const debtTotalBs = Number(currentDebt * bcvRate).toFixed(2);
+    const safeClientDebt = Number(clientData?.outstandingDebt || 0);
+    const cuotasDebt = debtList
+      .filter((item: any) => item.status !== 'paid')
+      .reduce((acc: number, curr: any) => acc + (Number(curr.amountUSD) || Number(curr.amount) || 0), 0);
+    const openDebtAmount = Math.max(0, safeClientDebt - cuotasDebt);
+    const currentDebt = Math.max(safeClientDebt, cuotasDebt);
+    const debtTotalBs = Number(currentDebt * bcvRate).toFixed(2);
 
-  return (
-    <div className="flex-1 flex flex-col min-h-0 relative bg-zinc-950 pb-20 animate-fade-in text-white overflow-y-auto">
-      
-      {/* Header Overview */}
-      <div className="p-5 bg-gradient-to-b from-emerald-900/40 to-zinc-950 border-b border-zinc-900">
-        <h2 className="text-xl font-black mb-1">Pagos y Deudas</h2>
-        <p className="text-[10px] text-zinc-400 font-mono tracking-widest uppercase mb-6">Tasa BCV: {bcvRate.toFixed(2)} Bs/USD</p>
+    const openOpenDebtPaymentModal = (suggestedUsd: number) => {
+      setSelectedDebt(null);
+      const amountBs = (suggestedUsd * bcvRate).toFixed(2);
+      setPaymentAmountBs(amountBs);
+      setPaymentType('parcial');
+      setReference('');
+      setImageFile(null);
+      setImagePreview(null);
+      setShowPaymentModal(true);
+    };
+
+    return (
+      <div className="flex-1 flex flex-col min-h-0 relative bg-zinc-950 pb-20 animate-fade-in text-white overflow-y-auto">
         
-        <div className="bg-zinc-900/80 border border-emerald-500/30 rounded-3xl p-6 shadow-[0_0_30px_rgba(16,185,129,0.1)] relative overflow-hidden text-center">
-          <div className="absolute -top-10 -right-10 w-32 h-32 bg-emerald-500/10 blur-3xl rounded-full"></div>
-          <p className="text-xs font-bold text-emerald-500 uppercase tracking-widest mb-2">Total Pendiente</p>
-          <h3 className="text-4xl font-black text-white">${Number(currentDebt || 0).toFixed(2)}</h3>
-          <p className="text-sm text-zinc-400 mt-1 font-mono">≈ Bs. {debtTotalBs}</p>
-        </div>
-      </div>
+        {/* Header Overview */}
+        <div className="p-5 bg-gradient-to-b from-emerald-900/40 to-zinc-950 border-b border-zinc-900">
+          <h2 className="text-xl font-black mb-1">Pagos y Deudas</h2>
+          <p className="text-[10px] text-zinc-400 font-mono tracking-widest uppercase mb-6">Tasa BCV: {bcvRate.toFixed(2)} Bs/USD</p>
 
-      <div className="p-5 space-y-6">
-        {/* Active Debts List */}
-        <div>
-          <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-widest mb-4 flex items-center gap-2">
-            <CreditCard className="w-4 h-4 text-emerald-500" />
-            Cuotas Activas
-          </h3>
-          
-          <div className="space-y-3">
-            {debtList.length === 0 ? (
-              <div className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 text-center">
-                <CheckCircle className="w-8 h-8 text-emerald-500/50 mx-auto mb-2" />
-                <p className="text-xs text-zinc-400">No tienes deudas pendientes</p>
-              </div>
-            ) : (
-              (() => {
-                const groups: Record<string, DebtInstallment[]> = {};
-                debtList.forEach(debt => {
-                  const fallbackDate = debt.dueDate ? new Date(debt.dueDate).toLocaleDateString('es-ES') : 'Deuda Antigua';
-                  const txId = (debt as any).transactionId || (debt as any).saleId || `Compra del ${fallbackDate}`;
-                  if (!groups[txId]) groups[txId] = [];
-                  groups[txId].push(debt);
-                });
-                return Object.keys(groups).map(txId => {
-                  const group = groups[txId];
-                  const isExpanded = expandedTx === txId;
-                  const totalGroupUSD = group.reduce((sum, d) => sum + (Number((d as any).amountUSD) || Number(d.amount) || 0), 0);
-                  
-                  const isFallback = txId.startsWith('Compra del');
-                  const headerTitle = isFallback ? txId : `Venta #${txId.slice(-6)}`;
-
-                  return (
-                    <div key={txId} className="bg-zinc-900 border border-emerald-500/20 rounded-2xl overflow-hidden shadow-sm">
-                      <div 
-                        onClick={() => setExpandedTx(isExpanded ? null : txId)}
-                        className="p-4 flex justify-between items-center cursor-pointer hover:bg-zinc-800/50 transition-colors"
-                      >
-                        <div>
-                          <h4 className="font-bold text-sm text-zinc-100 uppercase">{headerTitle}</h4>
-                          <p className="text-[10px] text-zinc-400 mt-0.5">{group.length} Cuota{group.length > 1 ? 's' : ''} pendiente{group.length > 1 ? 's' : ''}</p>
-                        </div>
-                        <div className="text-right">
-                          <p className="font-black text-white text-lg">${totalGroupUSD.toFixed(2)}</p>
-                          <p className="text-[9px] text-emerald-500 font-bold uppercase mt-1">{isExpanded ? 'Cerrar' : 'Ver Deuda'}</p>
-                        </div>
-                      </div>
-                      
-                      {isExpanded && (
-                        <div className="bg-zinc-950/50 p-4 border-t border-zinc-800 space-y-3">
-                          {group.map((debt, index) => (
-                            <div key={debt.id} className="flex flex-col gap-2 bg-zinc-900 border border-zinc-800 p-3 rounded-xl">
-                              <div className="flex justify-between items-start">
-                                <div>
-                                  <p className="text-xs font-bold text-zinc-200 uppercase">Cuota {(debt as any).installmentNumber || index + 1} de {(debt as any).totalInstallments || group.length}</p>
-                                  <p className="text-[10px] text-zinc-400">Vence: {debt.dueDate ? new Date(debt.dueDate).toLocaleDateString('es-ES') : 'Sin fecha'}</p>
-                                </div>
-                                <div className="text-right">
-                                  <p className="font-black text-white text-sm">${Number((debt as any).amountUSD || debt.amount || 0).toFixed(2)}</p>
-                                </div>
-                              </div>
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); openPaymentModal(debt); }}
-                                className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold uppercase tracking-widest text-[10px] py-2 rounded-lg transition-all"
-                              >
-                                Pagar Cuota
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                });
-              })()
-            )}
+          <div className="bg-zinc-900/80 border border-emerald-500/30 rounded-3xl p-6 shadow-[0_0_30px_rgba(16,185,129,0.1)] relative overflow-hidden text-center">
+            <div className="absolute -top-10 -right-10 w-32 h-32 bg-emerald-500/10 blur-3xl rounded-full"></div>
+            <p className="text-xs font-bold text-emerald-500 uppercase tracking-widest mb-2">Total Pendiente</p>
+            <h3 className="text-4xl font-black text-white">${Number(currentDebt || 0).toFixed(2)}</h3>
+            <p className="text-sm text-zinc-400 mt-1 font-mono">≈ Bs. {debtTotalBs}</p>
           </div>
         </div>
 
-        {/* Payment History */}
-        <div>
-          <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-widest mb-4 flex items-center gap-2">
-            <Clock className="w-4 h-4 text-emerald-500" />
-            Historial de Pagos
-          </h3>
-          
-          <div className="space-y-2">
-            {paymentHistory.length === 0 ? (
-              <p className="text-center text-[10px] text-zinc-500 py-4 font-mono">Sin historial</p>
-            ) : (
-              paymentHistory.map(hist => (
-                <div key={hist.id} className="flex justify-between items-center bg-zinc-900/50 border border-zinc-800 p-3 rounded-xl">
-                  <div className="flex items-center gap-3">
-                    {(hist.status === 'approved' || hist.status === 'Completado') && <CheckCircle className="w-6 h-6 text-emerald-500" />}
-                    {(hist.status === 'pending_approval' || hist.status === 'Pendiente') && <Clock className="w-6 h-6 text-amber-500" />}
-                    {hist.status === 'rejected' && <XCircle className="w-6 h-6 text-red-500" />}
-                    
-                    <div>
-                      <p className="text-xs font-bold text-zinc-200">{new Date(hist.date).toLocaleDateString('es-ES')}</p>
-                      <p className={`text-[9px] uppercase tracking-wider font-bold ${
-                        (hist.status === 'approved' || hist.status === 'Completado') ? 'text-emerald-500' :
-                        (['pending_approval', 'Pendiente', 'pending', 'in_review', 'pending_verification'].includes(hist.status as string)) ? 'text-amber-400' : 'text-red-500'
-                      }`}>
-                        {hist.status === 'approved' || hist.status === 'Completado' ? 'Aprobado / Conciliado' :
-                         (['pending_approval', 'Pendiente', 'pending', 'in_review', 'pending_verification'].includes(hist.status as string)) ? 'POR VERIFICAR / EN REVISIÓN' : 'Rechazado'}
-                      </p>
-                    </div>
-                  </div>
-                  <p className="font-black text-sm text-white">${Number(hist.amount || 0).toFixed(2)}</p>
+        <div className="p-5 space-y-6">
+          {/* Deuda Abierta (Fiado Total / Saldo sin cuotas fijas) */}
+          {(openDebtAmount > 0.01 || (debtList.length === 0 && safeClientDebt > 0.01)) && (
+            <div className="bg-zinc-900 border border-amber-500/30 rounded-2xl p-4 shadow-sm">
+              <div className="flex justify-between items-center mb-3">
+                <div>
+                  <h4 className="font-bold text-sm text-amber-400 uppercase">Deuda Abierta / Fiado Total</h4>
+                  <p className="text-[10px] text-zinc-400">Saldo pendiente sin cuotas fijas</p>
                 </div>
-              ))
-            )}
+                <div className="text-right">
+                  <p className="font-black text-white text-lg">${(openDebtAmount > 0.01 ? openDebtAmount : safeClientDebt).toFixed(2)}</p>
+                  <p className="text-[10px] text-zinc-400 font-mono">≈ Bs. {((openDebtAmount > 0.01 ? openDebtAmount : safeClientDebt) * bcvRate).toFixed(2)}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => openOpenDebtPaymentModal(openDebtAmount > 0.01 ? openDebtAmount : safeClientDebt)}
+                className="w-full bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold uppercase tracking-widest text-[10px] py-2.5 rounded-lg transition-all cursor-pointer"
+              >
+                Reportar Abono a Deuda Abierta
+              </button>
+            </div>
+          )}
+
+          {/* Active Debts List */}
+          {debtList.length > 0 && (
+            <div>
+              <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-widest mb-4 flex items-center gap-2">
+                <CreditCard className="w-4 h-4 text-emerald-500" />
+                Cuotas Activas
+              </h3>
+
+              <div className="space-y-3">
+                {(() => {
+                  const groups: Record<string, DebtInstallment[]> = {};
+                  debtList.forEach(debt => {
+                    const fallbackDate = debt.dueDate ? new Date(debt.dueDate).toLocaleDateString('es-ES') : 'Deuda Antigua';
+                    const txId = (debt as any).transactionId || (debt as any).saleId || `Compra del ${fallbackDate}`;
+                    if (!groups[txId]) groups[txId] = [];
+                    groups[txId].push(debt);
+                  });
+                  return Object.keys(groups).map(txId => {
+                    const group = groups[txId];
+                    const isExpanded = expandedTx === txId;
+                    const totalGroupUSD = group.reduce((sum, d) => sum + (Number((d as any).amountUSD) || Number(d.amount) || 0), 0);
+
+                    const isFallback = txId.startsWith('Compra del');
+                    const headerTitle = isFallback ? txId : `Venta #${txId.slice(-6)}`;
+
+                    return (
+                      <div key={txId} className="bg-zinc-900 border border-emerald-500/20 rounded-2xl overflow-hidden shadow-sm">
+                        <div
+                          onClick={() => setExpandedTx(isExpanded ? null : txId)}
+                          className="p-4 flex justify-between items-center cursor-pointer hover:bg-zinc-800/50 transition-colors"
+                        >
+                          <div>
+                            <h4 className="font-bold text-sm text-zinc-100 uppercase">{headerTitle}</h4>
+                            <p className="text-[10px] text-zinc-400 mt-0.5">{group.length} Cuota{group.length > 1 ? 's' : ''} pendiente{group.length > 1 ? 's' : ''}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="font-black text-white text-lg">${totalGroupUSD.toFixed(2)}</p>
+                            <p className="text-[9px] text-emerald-500 font-bold uppercase mt-1">{isExpanded ? 'Cerrar' : 'Ver Deuda'}</p>
+                          </div>
+                        </div>
+
+                        {isExpanded && (
+                          <div className="bg-zinc-950/50 p-4 border-t border-zinc-800 space-y-3">
+                            {group.map((debt, index) => (
+                              <div key={debt.id} className="flex flex-col gap-2 bg-zinc-900 border border-zinc-800 p-3 rounded-xl">
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <p className="text-xs font-bold text-zinc-200 uppercase">Cuota {(debt as any).installmentNumber || index + 1} de {(debt as any).totalInstallments || group.length}</p>
+                                    <p className="text-[10px] text-zinc-400">Vence: {debt.dueDate ? new Date(debt.dueDate).toLocaleDateString('es-ES') : 'Sin fecha'}</p>
+                                  </div>
+                                  <div className="text-right">
+                                    <p className="font-black text-white text-sm">${Number((debt as any).amountUSD || debt.amount || 0).toFixed(2)}</p>
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); openPaymentModal(debt); }}
+                                  className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold uppercase tracking-widest text-[10px] py-2 rounded-lg transition-all cursor-pointer"
+                                >
+                                  Pagar Cuota
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+          )}
+
+          {/* Payment History */}
+          <div>
+            <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-widest mb-4 flex items-center gap-2">
+              <Clock className="w-4 h-4 text-emerald-500" />
+              Historial de Pagos
+            </h3>
+
+            <div className="space-y-2">
+              {paymentHistory.length === 0 ? (
+                <p className="text-center text-[10px] text-zinc-500 py-4 font-mono">Sin historial</p>
+              ) : (
+                paymentHistory.map(hist => (
+                  <div key={hist.id} className="flex justify-between items-center bg-zinc-900/50 border border-zinc-800 p-3 rounded-xl">
+                    <div className="flex items-center gap-3">
+                      {(hist.status === 'approved' || hist.status === 'Completado') && <CheckCircle className="w-6 h-6 text-emerald-500" />}
+                      {(hist.status === 'pending_approval' || hist.status === 'Pendiente') && <Clock className="w-6 h-6 text-amber-500" />}
+                      {hist.status === 'rejected' && <XCircle className="w-6 h-6 text-red-500" />}
+
+                      <div>
+                        <p className="text-xs font-bold text-zinc-200">{new Date(hist.date).toLocaleDateString('es-ES')}</p>
+                        <p className={`text-[9px] uppercase tracking-wider font-bold ${
+                          (hist.status === 'approved' || hist.status === 'Completado') ? 'text-emerald-500' :
+                          (['pending_approval', 'Pendiente', 'pending', 'in_review', 'pending_verification'].includes(hist.status as string)) ? 'text-amber-400' : 'text-red-500'
+                        }`}>
+                          {hist.status === 'approved' || hist.status === 'Completado' ? 'Aprobado / Conciliado' :
+                           (['pending_approval', 'Pendiente', 'pending', 'in_review', 'pending_verification'].includes(hist.status as string)) ? 'POR VERIFICAR / EN REVISIÓN' : 'Rechazado'}
+                        </p>
+                      </div>
+                    </div>
+                    <p className="font-black text-sm text-white">${Number(hist.amount || 0).toFixed(2)}</p>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Immersive Payment Modal */}
-      {showPaymentModal && selectedDebt && (() => {
-        const saleInstallments = debtList.filter(i => ((i as any).saleId === (selectedDebt as any).saleId || (i as any).transactionId === (selectedDebt as any).transactionId) && i.status !== 'paid');
-        const saleTotalUSD = saleInstallments.reduce((acc, curr) => acc + (Number((curr as any).amountUSD) || Number(curr.amount) || 0), 0);
-        const safeSingleUSD = Number((selectedDebt as any).amountUSD) || Number(selectedDebt.amount) || 0;
+        {/* Immersive Payment Modal */}
+        {showPaymentModal && (() => {
+          const saleInstallments = selectedDebt
+            ? debtList.filter(i => ((i as any).saleId === (selectedDebt as any).saleId || (i as any).transactionId === (selectedDebt as any).transactionId) && i.status !== 'paid')
+            : [];
+          const saleTotalUSD = saleInstallments.reduce((acc, curr) => acc + (Number((curr as any).amountUSD) || Number(curr.amount) || 0), 0);
+          const safeSingleUSD = selectedDebt ? (Number((selectedDebt as any).amountUSD) || Number(selectedDebt.amount) || 0) : 0;
         
         return (
         <div className="fixed inset-0 z-[100] bg-slate-950 flex flex-col animate-in slide-in-from-bottom duration-300 overflow-y-auto">
@@ -326,45 +359,47 @@ export default function PaymentsTab({
             {/* Step 3: Amount Type */}
             <div className="space-y-3">
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">3. Monto del Pago</label>
-              <div className="flex flex-col gap-2">
-                <button 
-                  onClick={() => {
-                    setPaymentType('cuota');
-                    const safeRate = Number(bcvRate) || 36.50;
-                    const amountBs = (safeSingleUSD * safeRate).toFixed(2);
-                    setPaymentAmountBs(amountBs);
-                    handleCopy(amountBs, setCopiedAmount);
-                  }}
-                  className={`py-3 px-3 rounded-xl text-xs font-bold transition-all flex justify-between items-center ${
-                    paymentType === 'cuota' ? 'bg-emerald-500 text-slate-950 shadow-md' : 'bg-slate-900 text-slate-400 border border-slate-800 hover:border-slate-700'
-                  }`}
-                >
-                  <span>PAGAR CUOTA</span>
-                  <span className="font-black">Bs. {(safeSingleUSD * (Number(bcvRate) || 36.50)).toFixed(2)}</span>
-                </button>
-                <button 
-                  onClick={() => {
-                    setPaymentType('venta_completa');
-                    const safeRate = Number(bcvRate) || 36.50;
-                    const amountBs = (saleTotalUSD * safeRate).toFixed(2);
-                    setPaymentAmountBs(amountBs);
-                    handleCopy(amountBs, setCopiedAmount);
-                  }}
-                  className={`py-3 px-3 rounded-xl text-xs font-bold transition-all flex justify-between items-center ${
-                    paymentType === 'venta_completa' ? 'bg-emerald-500 text-slate-950 shadow-md' : 'bg-slate-900 text-slate-400 border border-slate-800 hover:border-slate-700'
-                  }`}
-                >
-                  <span>PAGAR VENTA COMPLETA</span>
-                  <span className="font-black">Bs. {(saleTotalUSD * (Number(bcvRate) || 36.50)).toFixed(2)}</span>
-                </button>
-              </div>
+              {selectedDebt && (
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={() => {
+                      setPaymentType('cuota');
+                      const safeRate = Number(bcvRate) || 36.50;
+                      const amountBs = (safeSingleUSD * safeRate).toFixed(2);
+                      setPaymentAmountBs(amountBs);
+                      handleCopy(amountBs, setCopiedAmount);
+                    }}
+                    className={`py-3 px-3 rounded-xl text-xs font-bold transition-all flex justify-between items-center ${
+                      paymentType === 'cuota' ? 'bg-emerald-500 text-slate-950 shadow-md' : 'bg-slate-900 text-slate-400 border border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <span>PAGAR CUOTA</span>
+                    <span className="font-black">Bs. {(safeSingleUSD * (Number(bcvRate) || 36.50)).toFixed(2)}</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setPaymentType('venta_completa');
+                      const safeRate = Number(bcvRate) || 36.50;
+                      const amountBs = (saleTotalUSD * safeRate).toFixed(2);
+                      setPaymentAmountBs(amountBs);
+                      handleCopy(amountBs, setCopiedAmount);
+                    }}
+                    className={`py-3 px-3 rounded-xl text-xs font-bold transition-all flex justify-between items-center ${
+                      paymentType === 'venta_completa' ? 'bg-emerald-500 text-slate-950 shadow-md' : 'bg-slate-900 text-slate-400 border border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <span>PAGAR VENTA COMPLETA</span>
+                    <span className="font-black">Bs. {(saleTotalUSD * (Number(bcvRate) || 36.50)).toFixed(2)}</span>
+                  </button>
+                </div>
+              )}
 
               <div className="relative mt-2">
                 <span className="absolute left-4 top-1/2 -translate-y-1/2 text-lg font-black text-emerald-500">Bs.</span>
                 <input
                   type="number"
                   placeholder="0.00"
-                  disabled={paymentType === 'cuota' || paymentType === 'venta_completa'}
+                  disabled={Boolean(selectedDebt && (paymentType === 'cuota' || paymentType === 'venta_completa'))}
                   value={paymentAmountBs}
                   onChange={(e) => setPaymentAmountBs(e.target.value)}
                   className="w-full bg-slate-900 border-2 border-slate-800 rounded-2xl py-4 pl-12 pr-12 text-2xl font-black text-white focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-80"

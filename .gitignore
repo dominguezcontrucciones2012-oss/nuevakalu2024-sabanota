@@ -24,3 +24,8 @@ uploads*/
 uploads_*
 *.eml
 scratch/
+data-dev/
+data-dev-*/
+db/
+*.db
+*.db-journal

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Mail, Lock, ArrowRight, Smartphone, Terminal, Users, KeyRound, Github, Building2, Calculator } from 'lucide-react';
+import { Mail, Lock, ArrowRight, Users } from 'lucide-react';
 import { UserIdentity } from '../types';
 import { loginApi } from '../services/localApi';
 
@@ -21,10 +21,7 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
   const [pin, setPin] = useState('');
   
   const [rememberMe, setRememberMe] = useState(true);
-
   const [isLoading, setIsLoading] = useState(false);
-  const [showRoleSelection, setShowRoleSelection] = useState(false);
-  const [validatedUser, setValidatedUser] = useState<UserIdentity | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,8 +39,7 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
         onLoginSuccess(user, 'pos-terminal');
         onAddNotification(`Bienvenido ${user.name}. Ingresando al Punto de Venta.`, 'success');
       } else {
-        setValidatedUser(user);
-        setShowRoleSelection(true);
+        onLoginSuccess(user);
         onAddNotification(`Credenciales validadas para ${user.name}. Seleccione el módulo de ingreso.`, 'success');
       }
     } catch (err: any) {
@@ -53,15 +49,6 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
     }
   };
 
-  const handleRoleSelect = (role: 'crm' | 'contador') => {
-    if (validatedUser) {
-      if (role === 'contador') {
-        window.location.href = '/portal.html?type=contador';
-      } else {
-        onLoginSuccess(validatedUser, 'portal-dashboard');
-      }
-    }
-  };
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden bg-editorial-bg select-none">
@@ -113,7 +100,6 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
         <div className="lg:col-span-6 flex justify-center lg:justify-end">
           <div className="w-full max-w-[450px] bg-editorial-card border border-editorial-border rounded p-8 sm:p-10 shadow-2xl flex flex-col gap-6 relative">
             
-            {!showRoleSelection ? (
               <>
                 {/* Section Header Text */}
                 <div className="space-y-1">
@@ -247,57 +233,6 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
                   </button>
                 </p>
               </>
-            ) : (
-              <div className="animate-fade-in flex flex-col gap-6">
-                <div className="text-center space-y-2">
-                  <div className="w-16 h-16 bg-brand-accent/10 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <Users className="w-8 h-8 text-brand-accent" />
-                  </div>
-                  <h2 className="font-serif text-2xl font-bold text-editorial-text-primary">
-                    Selecciona tu Destino
-                  </h2>
-                  <p className="text-xs text-editorial-text-muted">
-                    Has iniciado sesión como <strong>{validatedUser?.name}</strong> ({validatedUser?.role}). ¿Qué módulo deseas utilizar hoy?
-                  </p>
-                </div>
-
-                <div className="space-y-4 mt-2">
-                  <button
-                    onClick={() => handleRoleSelect('crm')}
-                    className="w-full p-4 border-2 border-editorial-border hover:border-brand-accent bg-editorial-bg hover:bg-brand-accent/5 rounded-xl transition-all cursor-pointer flex items-center gap-4 group text-left"
-                  >
-                    <div className="w-12 h-12 rounded-lg bg-editorial-card border border-editorial-border flex items-center justify-center group-hover:bg-brand-accent group-hover:text-white transition-colors shrink-0">
-                      <Building2 className="w-6 h-6 text-editorial-text-muted group-hover:text-white" />
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-editorial-text-primary group-hover:text-brand-accent transition-colors">
-                        🏢 Administradora CRM
-                      </h3>
-                      <p className="text-[10px] text-editorial-text-muted leading-tight mt-1">
-                        Acceso completo a inventario, finanzas, ventas y portal maestro.
-                      </p>
-                    </div>
-                  </button>
-
-                  <button
-                    onClick={() => handleRoleSelect('contador')}
-                    className="w-full p-4 border-2 border-editorial-border hover:border-emerald-500 bg-editorial-bg hover:bg-emerald-500/5 rounded-xl transition-all cursor-pointer flex items-center gap-4 group text-left"
-                  >
-                    <div className="w-12 h-12 rounded-lg bg-editorial-card border border-editorial-border flex items-center justify-center group-hover:bg-emerald-500 group-hover:text-white transition-colors shrink-0">
-                      <Calculator className="w-6 h-6 text-editorial-text-muted group-hover:text-white" />
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-editorial-text-primary group-hover:text-emerald-500 transition-colors">
-                        📊 Mini-App Contador IA
-                      </h3>
-                      <p className="text-[10px] text-editorial-text-muted leading-tight mt-1">
-                        Carga rápida de facturas, notas de voz y control de presupuesto en campo.
-                      </p>
-                    </div>
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         </div>
 

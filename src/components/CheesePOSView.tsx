@@ -39,6 +39,7 @@ interface CheesePOSViewProps {
 }
 
 import { getVIPLevelInfo } from '../config/vipMatrix';
+import { KaluCreditOption, calculateKaluCreditBreakdown } from '../utils/kaluCreditCalculator';
 
 const getClientLevelPct = (points: number): number => {
   return getVIPLevelInfo(points).initialPct;
@@ -149,6 +150,7 @@ export default function CheesePOSView({
     }
   };
 
+
   
   const [mixedChangeUsd, setMixedChangeUsd] = useState('');
   const [mixedChangeBs, setMixedChangeBs] = useState('');
@@ -217,6 +219,9 @@ export default function CheesePOSView({
   const [isSupplierDropdownOpen, setIsSupplierDropdownOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<string>('Efectivo $');
   const [kaluCreditType, setKaluCreditType] = useState<'cotidiano'|'repuestos'>('cotidiano');
+  const [kaluOption, setKaluOption] = useState<KaluCreditOption>('1_inicial');
+  const [isCotidianoModalOpen, setIsCotidianoModalOpen] = useState(false);
+  const [isRepuestosModalOpen, setIsRepuestosModalOpen] = useState(false);
   const [paymentReference, setPaymentReference] = useState<string>('');
   const [paidAmountInput, setPaidAmountInput] = useState<string>('');
   const [addedPayments, setAddedPayments] = useState<{ id: string; method: string; amount: number; reference: string; currency?: string; originalAmount?: number }[]>([]);
@@ -504,9 +509,8 @@ export default function CheesePOSView({
        }
        
        const foundClient = currentClient;
-       
-       const initialPct = getClientLevelPct(foundClient?.loyaltyPoints || 0);
-       rawAmount = total * initialPct; // Fuerza la inicial para Kalu
+       const breakdown = calculateKaluCreditBreakdown(kaluOption, total, foundClient?.loyaltyPoints || 0);
+       rawAmount = breakdown.initialAmount; // Fuerza la inicial calculada (o 0 para fiado_total)
     } else if (rawAmount <= 0) {
       onAddNotification('Ingrese un monto válido a abonar.', 'warning');
       return;
@@ -535,15 +539,15 @@ export default function CheesePOSView({
     setPaymentReference('');
     // El método de pago (paymentMethod) se mantiene seleccionado durante la transacción para comodidad visual del cajero.
 
-    // ========    // INTERCEPT: MUNDO KALU LOCK (Aprobación PWA)
+    // ==========================================
+    // INTERCEPT: MUNDO KALU LOCK (Aprobación PWA)
     // ==========================================
     if (paymentMethod === 'Mundo Kalu') {
       const client = customerType === 'client' ? clients.find(c => c.id === selectedClientId) : null;
-      const initialPct = getClientLevelPct(client?.loyaltyPoints || 0);
-      const kaluInitial = parseNum(total * initialPct);
-      const kaluDebt = parseNum(total * (1 - initialPct));
-      const numCuotas = getKaluInstallmentsCount(kaluCreditType, client?.loyaltyPoints || 0);
-      const kaluCuota = parseNum(kaluDebt / numCuotas);
+      const breakdown = calculateKaluCreditBreakdown(kaluOption, total, client?.loyaltyPoints || 0);
+      const kaluInitial = breakdown.initialAmount;
+      const kaluDebt = breakdown.financedAmount;
+      const numCuotas = breakdown.installmentsCount;
 
       const pendingTx: Partial<Transaction> = {
         category: 'credito',
@@ -564,7 +568,8 @@ export default function CheesePOSView({
         kaluCreditData: {
           inicial: kaluInitial,
           aFinanciar: kaluDebt,
-          cuotas: kaluCuota
+          cuotas: breakdown.installments.map(i => i.amount),
+          modalidad: kaluOption
         }
       };
 
@@ -579,7 +584,7 @@ export default function CheesePOSView({
           if (!docRef || !docRef.id) throw new Error("Fallo al guardar transacción");
           
           setIsWaitingForApproval(true);
-        setPendingApprovalId(docRef.id);
+          setPendingApprovalId(docRef.id);
         
         // Setup listener via WebSocket for real-time approval with strict cryptographic verification
         const handleApprovedDoc = async (updatedDoc: any) => {
@@ -587,34 +592,31 @@ export default function CheesePOSView({
                    setIsWaitingForApproval(false);
                    setPendingApprovalId(null);
     
-                   // FASE 1: GENERACIÓN DE CUOTAS
-                   if (updatedDoc.kaluCreditData && client) {
+                   // FASE 1: GENERACIÓN DE CUOTAS EXACTAS CON CONTROL DE CENTAVOS
+                   if (breakdown.installments.length > 0 && client) {
                      let nextDate = new Date();
-                     nextDate.setDate(nextDate.getDate() + 15);
                      
-                     const totalCuotas = updatedDoc.installmentsCount || getKaluInstallmentsCount(kaluCreditType, client.loyaltyPoints || 0);
-                     const cuotaVal = parseNum(kaluDebt / totalCuotas);
-                     
-                     for (let i = 0; i < totalCuotas; i++) {
+                     for (const inst of breakdown.installments) {
+                       nextDate.setDate(nextDate.getDate() + 15);
                        const installmentDoc = {
-                         id: `INST-${updatedDoc.id}-${i + 1}`,
+                         id: `INST-${updatedDoc.id}-${inst.installmentNumber}`,
                          clientId: client.id,
                          clientName: client.name || '',
                          saleId: updatedDoc.id,
                          transactionId: updatedDoc.id,
-                         amount: cuotaVal,
-                         amountUSD: cuotaVal,
+                         amount: inst.amount,
+                         amountUSD: inst.amount,
                          dueDate: nextDate.toISOString().split('T')[0],
                          status: 'pending',
-                         installmentNumber: i + 1,
-                         totalInstallments: totalCuotas,
-                         pointsEarned: Math.round(cuotaVal),
+                         installmentNumber: inst.installmentNumber,
+                         totalInstallments: breakdown.installmentsCount,
+                         pointsEarned: Math.round(inst.amount),
                          pointsAwarded: false,
                          createdAt: new Date().toISOString(),
-                         type: kaluCreditType
+                         type: kaluOption === 'fiado_total' ? 'fiado_total' : (kaluOption === '1_inicial' || kaluOption === '2_iniciales') ? 'cotidiano' : 'repuestos',
+                         kaluOption: kaluOption
                        };
                        await addLocalDoc('installments', installmentDoc);
-                       nextDate.setDate(nextDate.getDate() + 15);
                      }
                    }
                    
@@ -678,7 +680,7 @@ export default function CheesePOSView({
              handleApprovedDoc(updatedDoc);
           }
         });
-      } catch (err) {
+      } catch (err: any) {
         console.error("Error creating pending approval", err);
         setIsWaitingForApproval(false);
         onAddNotification('Error: No se pudo registrar la orden en el servidor. Verifica la conexión', 'warning');
@@ -687,6 +689,7 @@ export default function CheesePOSView({
     }
     // ==========================================
   };
+
 
   const handleRemovePayment = (id: string) => {
     setAddedPayments(addedPayments.filter(p => p.id !== id));
@@ -2006,31 +2009,146 @@ export default function CheesePOSView({
                             ))}
                           </div>
 
-                          {/* Toggle Kalu Credit Type */}
+                          {/* Toggle Kalu Credit Type & Modal Triggers */}
                           {paymentMethod === 'Mundo Kalu' && (
-                             <div className="grid grid-cols-2 gap-3 mb-4 animate-in fade-in">
-                                <button
-                                   type="button"
-                                   onClick={() => setKaluCreditType('cotidiano')}
-                                   className={`h-9 rounded border flex items-center justify-center text-[10px] font-mono font-bold uppercase tracking-wider transition-colors ${
-                                      kaluCreditType === 'cotidiano'
-                                         ? 'bg-amber-500/20 text-amber-400 border-amber-500/50 shadow-inner'
-                                         : 'bg-editorial-card text-editorial-text-muted border-editorial-border hover:border-amber-500/30'
-                                   }`}
-                                >
-                                   Cotidiano
-                                </button>
-                                <button
-                                   type="button"
-                                   onClick={() => setKaluCreditType('repuestos')}
-                                   className={`h-9 rounded border flex items-center justify-center text-[10px] font-mono font-bold uppercase tracking-wider transition-colors ${
-                                      kaluCreditType === 'repuestos'
-                                         ? 'bg-amber-500/20 text-amber-400 border-amber-500/50 shadow-inner'
-                                         : 'bg-editorial-card text-editorial-text-muted border-editorial-border hover:border-amber-500/30'
-                                   }`}
-                                >
-                                   Repuestos / Gen
-                                </button>
+                             <div className="space-y-3 mb-4 animate-in fade-in">
+                                <div className="grid grid-cols-2 gap-3">
+                                   <button
+                                      type="button"
+                                      onClick={() => setIsCotidianoModalOpen(true)}
+                                      className={`h-10 rounded border flex items-center justify-center text-[10px] font-mono font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                                         kaluOption === '1_inicial' || kaluOption === '2_iniciales'
+                                            ? 'bg-amber-500/20 text-amber-400 border-amber-500 shadow-sm'
+                                            : 'bg-editorial-card text-editorial-text-muted border-editorial-border hover:border-amber-500/30'
+                                      }`}
+                                   >
+                                      COTIDIANO
+                                   </button>
+                                   <button
+                                      type="button"
+                                      onClick={() => setIsRepuestosModalOpen(true)}
+                                      className={`h-10 rounded border flex items-center justify-center text-[10px] font-mono font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                                         kaluOption === '3_cuotas' || kaluOption === '6_cuotas' || kaluOption === 'fiado_total'
+                                            ? 'bg-amber-500/20 text-amber-400 border-amber-500 shadow-sm'
+                                            : 'bg-editorial-card text-editorial-text-muted border-editorial-border hover:border-amber-500/30'
+                                      }`}
+                                   >
+                                      REPUESTOS / GEN
+                                   </button>
+                                </div>
+
+                                {/* Modal Pequeño: CRÉDITO COTIDIANO */}
+                                {isCotidianoModalOpen && (
+                                   <div className="p-3 bg-neutral-900 border-2 border-amber-500 rounded-lg space-y-2 animate-in zoom-in-95">
+                                      <div className="flex justify-between items-center border-b border-amber-500/30 pb-1.5">
+                                         <span className="text-[11px] font-mono font-bold text-amber-400 uppercase tracking-wider">CRÉDITO COTIDIANO</span>
+                                         <button
+                                            type="button"
+                                            onClick={() => setIsCotidianoModalOpen(false)}
+                                            className="text-neutral-400 hover:text-white text-xs font-bold font-mono px-1"
+                                         >
+                                            ✕
+                                         </button>
+                                      </div>
+                                      <p className="text-[10px] font-mono text-neutral-400">Seleccione la modalidad de crédito para consumo diario:</p>
+                                      <div className="grid grid-cols-2 gap-2 pt-1">
+                                         <button
+                                            type="button"
+                                            onClick={() => {
+                                               setKaluCreditType('cotidiano');
+                                               setKaluOption('1_inicial');
+                                               setIsCotidianoModalOpen(false);
+                                            }}
+                                            className={`py-2 px-3 rounded text-[10px] font-mono font-bold tracking-wider uppercase border transition-all cursor-pointer ${
+                                               kaluOption === '1_inicial'
+                                                  ? 'bg-amber-500 text-black border-amber-400 font-black shadow'
+                                                  : 'bg-neutral-800 text-amber-300 border-neutral-700 hover:border-amber-500/50'
+                                            }`}
+                                         >
+                                            1 INICIAL
+                                         </button>
+                                         <button
+                                            type="button"
+                                            onClick={() => {
+                                               setKaluCreditType('cotidiano');
+                                               setKaluOption('2_iniciales');
+                                               setIsCotidianoModalOpen(false);
+                                            }}
+                                            className={`py-2 px-3 rounded text-[10px] font-mono font-bold tracking-wider uppercase border transition-all cursor-pointer ${
+                                               kaluOption === '2_iniciales'
+                                                  ? 'bg-amber-500 text-black border-amber-400 font-black shadow'
+                                                  : 'bg-neutral-800 text-amber-300 border-neutral-700 hover:border-amber-500/50'
+                                            }`}
+                                         >
+                                            2 INICIALES
+                                         </button>
+                                      </div>
+                                   </div>
+                                )}
+
+                                {/* Modal Pequeño: CRÉDITO REPUESTOS / GENERAL */}
+                                {isRepuestosModalOpen && (
+                                   <div className="p-3 bg-neutral-900 border-2 border-amber-500 rounded-lg space-y-2 animate-in zoom-in-95">
+                                      <div className="flex justify-between items-center border-b border-amber-500/30 pb-1.5">
+                                         <span className="text-[11px] font-mono font-bold text-amber-400 uppercase tracking-wider">CRÉDITO REPUESTOS / GENERAL</span>
+                                         <button
+                                            type="button"
+                                            onClick={() => setIsRepuestosModalOpen(false)}
+                                            className="text-neutral-400 hover:text-white text-xs font-bold font-mono px-1"
+                                         >
+                                            ✕
+                                         </button>
+                                      </div>
+                                      <p className="text-[10px] font-mono text-neutral-400">Seleccione el esquema de financiamiento:</p>
+                                      <div className="grid grid-cols-3 gap-2 pt-1">
+                                         <button
+                                            type="button"
+                                            onClick={() => {
+                                               setKaluCreditType('repuestos');
+                                               setKaluOption('3_cuotas');
+                                               setIsRepuestosModalOpen(false);
+                                            }}
+                                            className={`py-2 px-2 rounded text-[9px] font-mono font-bold tracking-wider uppercase border text-center transition-all cursor-pointer ${
+                                               kaluOption === '3_cuotas'
+                                                  ? 'bg-amber-500 text-black border-amber-400 font-black shadow'
+                                                  : 'bg-neutral-800 text-amber-300 border-neutral-700 hover:border-amber-500/50'
+                                            }`}
+                                         >
+                                            3 CUOTAS
+                                         </button>
+                                         <button
+                                            type="button"
+                                            onClick={() => {
+                                               setKaluCreditType('repuestos');
+                                               setKaluOption('6_cuotas');
+                                               setIsRepuestosModalOpen(false);
+                                            }}
+                                            className={`py-2 px-2 rounded text-[9px] font-mono font-bold tracking-wider uppercase border text-center transition-all cursor-pointer ${
+                                               kaluOption === '6_cuotas'
+                                                  ? 'bg-amber-500 text-black border-amber-400 font-black shadow'
+                                                  : 'bg-neutral-800 text-amber-300 border-neutral-700 hover:border-amber-500/50'
+                                            }`}
+                                         >
+                                            6 CUOTAS
+                                         </button>
+                                         <button
+                                            type="button"
+                                            onClick={() => {
+                                               setKaluCreditType('repuestos');
+                                               setKaluOption('fiado_total');
+                                               setIsRepuestosModalOpen(false);
+                                            }}
+                                            className={`py-2 px-2 rounded text-[9px] font-mono font-bold tracking-wider uppercase border text-center transition-all cursor-pointer ${
+                                               kaluOption === 'fiado_total'
+                                                  ? 'bg-amber-500 text-black border-amber-400 font-black shadow'
+                                                  : 'bg-neutral-800 text-amber-300 border-neutral-700 hover:border-amber-500/50'
+                                            }`}
+                                         >
+                                            PASAR DEUDA TOTAL
+                                         </button>
+                                      </div>
+                                   </div>
+                                )}
                              </div>
                           )}
 
@@ -2089,26 +2207,53 @@ export default function CheesePOSView({
                                 (c.ciRif && c.ciRif === paymentReference) ||
                                 (c.idNumber && c.idNumber === paymentReference)
                               ) || (customerType === 'client' ? clients.find(c => c.id === selectedClientId) : null);
-                              const initialPct = getClientLevelPct(foundClient?.loyaltyPoints || 0);
+
+                              const breakdown = calculateKaluCreditBreakdown(kaluOption, total, foundClient?.loyaltyPoints || 0);
+
+                              const modalLabels: Record<KaluCreditOption, string> = {
+                                '1_inicial': 'COTIDIANO (1 INICIAL — 1 Pago de Saldo)',
+                                '2_iniciales': 'COTIDIANO (2 INICIALES — 2 Pagos de Saldo)',
+                                '3_cuotas': 'REPUESTOS (3 CUOTAS)',
+                                '6_cuotas': 'REPUESTOS (6 CUOTAS)',
+                                'fiado_total': 'REPUESTOS (PASAR DEUDA TOTAL / FIADO 100%)'
+                              };
+
                               return (
                                 <div className="mb-4 p-3 border border-amber-500/30 bg-amber-500/5 rounded animate-in fade-in space-y-2">
-                                  <div className="flex justify-between items-center">
-                                    <span className="text-[10px] text-editorial-text-muted uppercase tracking-widest font-mono">Inicial Requerida ({initialPct * 100}%)</span>
-                                    <span className="text-xs font-bold text-amber-500">${(total * initialPct).toFixed(2)}</span>
+                                  <div className="flex justify-between items-center text-[10px] font-mono">
+                                    <span className="text-editorial-text-muted uppercase">Opción Activa</span>
+                                    <span className="font-bold text-amber-400">{modalLabels[kaluOption]}</span>
                                   </div>
                                   <div className="flex justify-between items-center">
-                                    <span className="text-[10px] text-editorial-text-muted uppercase tracking-widest font-mono">A Financiar</span>
-                                    <span className="text-xs font-bold text-editorial-text-primary">${(total * (1 - initialPct)).toFixed(2)}</span>
+                                    <span className="text-[10px] text-editorial-text-muted uppercase tracking-widest font-mono">
+                                      Inicial Requerida ({breakdown.initialPct * 100}%)
+                                    </span>
+                                    <span className="text-xs font-bold text-amber-500">${breakdown.initialAmount.toFixed(2)}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-[10px] text-editorial-text-muted uppercase tracking-widest font-mono">A Financiar / Deuda</span>
+                                    <span className="text-xs font-bold text-editorial-text-primary">${breakdown.financedAmount.toFixed(2)}</span>
                                   </div>
                                   <div className="h-px bg-amber-500/20 my-1"></div>
-                                  <div className="flex justify-between items-center">
-                                    <span className="text-[10px] text-editorial-text-muted uppercase tracking-widest font-mono">Cuotas Sugeridas</span>
-                                    <span className="text-[10px] font-bold text-amber-500 uppercase">
-                                      {(() => {
-                                        const c = getKaluInstallmentsCount(kaluCreditType, foundClient?.loyaltyPoints || 0);
-                                        return `${c}x $${( (total * (1 - initialPct)) / c ).toFixed(2)}`;
-                                      })()}
+                                  <div className="flex justify-between items-start">
+                                    <span className="text-[10px] text-editorial-text-muted uppercase tracking-widest font-mono">
+                                      {kaluOption === 'fiado_total' ? 'Modalidad' : 'Cuotas Programadas'}
                                     </span>
+                                    <div className="text-right">
+                                      {kaluOption === 'fiado_total' ? (
+                                        <span className="text-[10px] font-bold text-amber-400 uppercase">
+                                          Deuda Abierta ($0 inicial, saldo total)
+                                        </span>
+                                      ) : (
+                                        <div className="space-y-0.5">
+                                          {breakdown.installments.map((inst) => (
+                                            <div key={inst.installmentNumber} className="text-[10px] font-mono text-amber-400 font-bold">
+                                              Cuota #{inst.installmentNumber} (+{inst.daysOffset}d): ${inst.amount.toFixed(2)}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
                               );
@@ -3417,6 +3562,7 @@ export default function CheesePOSView({
             </p>
             <div className="flex gap-4">
               <button
+                type="button"
                 onClick={() => {
                   if (pendingApprovalId) {
                     deleteLocalDoc('transactions', pendingApprovalId).catch(console.error);
@@ -3426,7 +3572,7 @@ export default function CheesePOSView({
                   setIsProcessing(false);
                   setAddedPayments(prev => prev.filter(p => p.method !== 'Mundo Kalu'));
                 }}
-                className="w-full py-3 border border-rose-500/50 text-rose-500 font-serif font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-rose-500/10 transition-colors"
+                className="w-full py-3 border border-rose-500/50 text-rose-500 font-serif font-bold text-xs uppercase tracking-wider rounded-xl hover:bg-rose-500/10 transition-colors cursor-pointer"
               >
                 Cancelar Solicitud
               </button>
@@ -3435,6 +3581,7 @@ export default function CheesePOSView({
           </div>
         </div>
       )}
+
 
       {/* MODAL MANDATORIO PASO 2: Cobro Físico de Inicial para Crédito Kalu */}
       {kaluApprovedPendingInitial && (

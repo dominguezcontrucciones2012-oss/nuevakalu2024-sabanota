@@ -5,17 +5,20 @@ import { Receipt, CheckCircle, XCircle, Clock, Bot, ShieldCheck, Image as ImageI
 
 interface PWAPayment {
   id: string;
-  type: 'cliente' | 'productor' | 'credito_cashea';
+  type?: 'cliente' | 'productor' | 'credito_cashea';
+  clientId?: string;
   entityId: string;
   entityName: string;
   amount: number;
   amountBs?: number;
-  currency: 'USD' | 'VES';
+  currency?: 'USD' | 'VES' | string;
   reference: string;
-  method: string;
+  method?: string;
+  paymentMethod?: string;
   status: 'pending' | 'approved' | 'rejected';
   date: string;
   timestamp?: any;
+  installmentId?: string;
   installmentIds?: string[];
   receiptImageUrl?: string;
   receiptImage?: string;
@@ -61,18 +64,24 @@ export default function CollectionsView({
   }, []);
 
   const handleApprovePayment = async (payment: PWAPayment) => {
-    try {
-      await updateLocalDoc('pwa_payments', payment.id, {
-        status: 'approved',
-        approvedAt: new Date().toISOString()
-      });
+    if (payment.status !== 'pending') {
+      onAddNotification?.('El comprobante ya fue procesado anteriormente.', 'warning');
+      return;
+    }
 
+    try {
       if (payment.type === 'credito_cashea') {
+        await updateLocalDoc('pwa_payments', payment.id, {
+          status: 'approved',
+          approvedAt: new Date().toISOString()
+        });
+
         const clientsRes = await fetchCollection('clients');
-        const clients = await clientsRes.json();
-        const c = clients.find((x: any) => x.id === payment.entityId);
+        const clients = Array.isArray(clientsRes) ? clientsRes : (clientsRes.json ? await clientsRes.json() : []);
+        const targetId = payment.clientId || payment.entityId;
+        const c = clients.find((x: any) => String(x.id) === String(targetId));
         if (c) {
-          await updateLocalDoc('clients', payment.entityId, {
+          await updateLocalDoc('clients', targetId, {
             outstandingDebt: (c.outstandingDebt || 0) + payment.amount
           });
         }
@@ -81,7 +90,7 @@ export default function CollectionsView({
         const saleId = `CASHEA-${Date.now()}`;
         const newTx = {
           id: saleId,
-          clientId: payment.entityId,
+          clientId: targetId,
           entity: payment.entityName,
           category: 'ventas',
           date: new Date().toISOString(),
@@ -103,7 +112,7 @@ export default function CollectionsView({
           await addLocalDoc('installments', {
              id: `INST-${saleId}-${i}`,
              saleId: saleId,
-             clientId: payment.entityId,
+             clientId: targetId,
              amountUSD: payment.casheaData?.cuotas || 0,
              dueDate: dueDate.toISOString(),
              status: 'pending'
@@ -113,38 +122,53 @@ export default function CollectionsView({
         onAddNotification?.('Crédito QR Aprobado Exitosamente', 'success');
 
       } else {
-        // Normal Payment (Abono)
-        if (payment.type === 'cliente') {
-          const clientsRes = await fetchCollection('clients');
-          const clients = await clientsRes.json();
-          const c = clients.find((x: any) => x.id === payment.entityId);
-          if (c) {
-            await updateLocalDoc('clients', payment.entityId, {
-              outstandingDebt: Math.max(0, (c.outstandingDebt || 0) - payment.amount)
-            });
-          }
-          
-          // Mark installments as paid
-          if (payment.installmentIds && payment.installmentIds.length > 0) {
-            await Promise.all(payment.installmentIds.map(id => 
-              updateLocalDoc('installments', id, { status: 'paid', paidAt: new Date().toISOString() })
-            ));
-          }
-        } else if (payment.type === 'productor') {
+        const isSupplier = payment.type === 'productor';
+        const targetId = payment.clientId || payment.entityId;
+
+        if (isSupplier) {
           const suppliersRes = await fetchCollection('suppliers');
-          const suppliers = await suppliersRes.json();
-          const s = suppliers.find((x: any) => x.id === payment.entityId);
+          const suppliers = Array.isArray(suppliersRes) ? suppliersRes : (suppliersRes.json ? await suppliersRes.json() : []);
+          const s = suppliers.find((x: any) => String(x.id) === String(targetId));
           if (s) {
-            await updateLocalDoc('suppliers', payment.entityId, {
+            await updateLocalDoc('suppliers', targetId, {
               storeDebt: Math.max(0, (s.storeDebt || 0) - payment.amount)
             });
+          }
+        } else {
+          // Normal Payment (Abono de Cliente)
+          const clientsRes = await fetchCollection('clients');
+          const clients = Array.isArray(clientsRes) ? clientsRes : (clientsRes.json ? await clientsRes.json() : []);
+          const c = clients.find((x: any) => String(x.id) === String(targetId));
+
+          if (c) {
+            const currentDebt = Number(c.outstandingDebt || 0);
+            if (payment.amount > currentDebt + 0.05 && currentDebt > 0) {
+              onAddNotification?.(`Aviso: El abono ($${payment.amount.toFixed(2)}) supera la deuda actual ($${currentDebt.toFixed(2)}). Se ajusta al saldo pendiente.`, 'info');
+            }
+
+            const newDebt = Math.max(0, Math.round((currentDebt - payment.amount) * 100) / 100);
+            const currentPoints = Number(c.loyaltyPoints || 0);
+            const pointsToAdd = Math.round(payment.amount);
+
+            await updateLocalDoc('clients', targetId, {
+              outstandingDebt: newDebt,
+              loyaltyPoints: currentPoints + pointsToAdd
+            });
+          }
+
+          // Mark installments as paid if provided
+          const instIds = payment.installmentIds || (payment.installmentId ? [payment.installmentId] : []);
+          if (instIds.length > 0) {
+            await Promise.all(instIds.map(id =>
+              updateLocalDoc('installments', id, { status: 'paid', paidAt: new Date().toISOString() })
+            ));
           }
         }
 
         const newTx = {
           id: `TX-${Date.now()}`,
-          clientId: payment.type === 'cliente' ? payment.entityId : undefined,
-          supplierId: payment.type === 'productor' ? payment.entityId : undefined,
+          clientId: !isSupplier ? targetId : undefined,
+          supplierId: isSupplier ? targetId : undefined,
           entity: payment.entityName,
           category: 'ingresos_cobranza',
           date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
@@ -153,33 +177,45 @@ export default function CollectionsView({
           amount: payment.amount,
           isIncome: true,
           status: 'Completado',
-          paymentMethod: payment.method,
+          paymentMethod: payment.method || payment.paymentMethod || 'Pago Móvil',
           notes: `Cobranza PWA aprobada. Ref: ${payment.reference}`
         };
         await addLocalDoc('transactions', newTx);
+
+        await updateLocalDoc('pwa_payments', payment.id, {
+          status: 'approved',
+          approvedAt: new Date().toISOString()
+        });
+
         onAddNotification?.('Pago aprobado y conciliado exitosamente', 'success');
       }
     } catch (e) {
       console.error(e);
-      onAddNotification?.('Error al aprobar', 'warning');
+      onAddNotification?.('Error al aprobar el pago', 'warning');
     }
   };
 
   const handleRejectPayment = async (payment: PWAPayment) => {
+    if (payment.status !== 'pending') {
+      onAddNotification?.('El comprobante ya fue procesado.', 'warning');
+      return;
+    }
+
     try {
       await updateLocalDoc('pwa_payments', payment.id, {
         status: 'rejected',
         rejectedAt: new Date().toISOString()
       });
-      
+
       // If it's a normal payment, reset the installments back to 'pending' from 'in_review'
-      if (payment.type === 'cliente' && payment.installmentIds && payment.installmentIds.length > 0) {
-        await Promise.all(payment.installmentIds.map(id => 
+      const instIds = payment.installmentIds || (payment.installmentId ? [payment.installmentId] : []);
+      if (instIds.length > 0) {
+        await Promise.all(instIds.map(id =>
            updateLocalDoc('installments', id, { status: 'pending' })
         ));
       }
       
-      onAddNotification?.('Solicitud rechazada', 'info');
+      onAddNotification?.('Solicitud rechazada. La deuda permanece intacta.', 'info');
     } catch (e) {
       console.error(e);
       onAddNotification?.('Error al rechazar', 'warning');

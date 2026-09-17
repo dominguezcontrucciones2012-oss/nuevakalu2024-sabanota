@@ -22,7 +22,7 @@ import {
   RotateCw,
   ShieldCheck
 } from 'lucide-react';
-import { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { fetchOfficialBcvRate } from '../services/exchangeRateService';
 
 interface SidebarProps {
@@ -42,14 +42,11 @@ interface SidebarProps {
 export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, userRole = 'cajero', userName = 'Invitado', isOpen = true, onToggle, exchangeRate = 0, lastRateSync, onSyncRate }: SidebarProps) {
   const [isSyncingRate, setIsSyncingRate] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 1024);
-
-  import('react').then(React => {
-    React.useEffect(() => {
-      const handleResize = () => setIsMobile(window.innerWidth < 1024);
-      window.addEventListener('resize', handleResize);
-      return () => window.removeEventListener('resize', handleResize);
-    }, []);
-  });
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 1024);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const getInitials = (name: string) => {
     return name.substring(0, 2).toUpperCase();
@@ -292,6 +289,7 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
           </div>
 
           <button
+            id="btn-sidebar-logout"
             onClick={onLogout}
             title="Cerrar sesión del sistema"
             className="p-2 rounded border border-editorial-border text-editorial-text-muted hover:text-amber-500 hover:bg-editorial-card transition-all cursor-pointer"

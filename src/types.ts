@@ -19,7 +19,8 @@ export interface Transaction {
   kaluCreditData?: {
     inicial: number;
     aFinanciar: number;
-    cuotas: number;
+    cuotas?: number | number[];
+    modalidad?: string;
   };
   authNonce?: string;
   authSignature?: string;

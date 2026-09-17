@@ -12,7 +12,7 @@ import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import bcrypt from 'bcryptjs';
 import session from 'express-session';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { MemoryStore } from 'express-rate-limit';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -628,10 +628,21 @@ io.on('connection', (socket) => {
   });
 });
 
+const loginLimiterStore = new MemoryStore();
+const loginAccountLimiterStore = new MemoryStore();
+const portalLoginLimiterStore = new MemoryStore();
+const portalAccountLoginLimiterStore = new MemoryStore();
+const recoveryRequestLimiterStore = new MemoryStore();
+const recoveryVerifyLimiterStore = new MemoryStore();
+const recoveryResetPinLimiterStore = new MemoryStore();
+const syncRateLimiterStore = new MemoryStore();
+const debtCheckLimiterStore = new MemoryStore();
+
 // Rate limiter específico para Login por IP (10 intentos fallidos por cada ventana de 15 minutos)
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
+  store: loginLimiterStore,
   skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
@@ -652,6 +663,7 @@ function hashRateLimitKey(prefix, identifier) {
 const loginAccountLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
+  store: loginAccountLimiterStore,
   skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
@@ -756,7 +768,9 @@ function requireRole(...allowedRoles) {
 const portalLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
+  store: portalLoginLimiterStore,
   skipSuccessfulRequests: true,
+  skip: (req, res) => req.skipRateLimit === true,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -768,7 +782,9 @@ const portalLoginLimiter = rateLimit({
 const portalAccountLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
+  store: portalAccountLoginLimiterStore,
   skipSuccessfulRequests: true,
+  skip: (req, res) => req.skipRateLimit === true,
   standardHeaders: true,
   legacyHeaders: false,
   validate: { default: false },
@@ -1069,6 +1085,7 @@ function invalidateRecoveryChallenge(challengeId) {
 const recoveryRequestLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5, // Máximo 5 solicitudes fallidas por IP en 15 minutos
+  store: recoveryRequestLimiterStore,
   skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
@@ -1080,6 +1097,7 @@ const recoveryRequestLimiter = rateLimit({
 const recoveryVerifyLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10, // Máximo 10 intentos de verificación fallidos por IP en 15 minutos
+  store: recoveryVerifyLimiterStore,
   skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
@@ -1091,6 +1109,7 @@ const recoveryVerifyLimiter = rateLimit({
 const recoveryResetPinLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 50, // Máximo 50 intentos fallidos de reseteo de PIN por IP en 15 minutos (Previene flood y bcrypt abuse sin bloquear flujos normales)
+  store: recoveryResetPinLimiterStore,
   skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
@@ -1510,6 +1529,46 @@ if (!isProd) {
       user: req.user
     });
   });
+
+  // Endpoint para resetear rate limiters en pruebas (DEV/TEST ONLY)
+  app.post('/api/dev/reset-rate-limits', (req, res) => {
+    portalLoginLimiterStore.resetAll();
+    portalAccountLoginLimiterStore.resetAll();
+    loginLimiterStore.resetAll();
+    loginAccountLimiterStore.resetAll();
+    recoveryRequestLimiterStore.resetAll();
+    recoveryVerifyLimiterStore.resetAll();
+    recoveryResetPinLimiterStore.resetAll();
+    syncRateLimiterStore.resetAll();
+    debtCheckLimiterStore.resetAll();
+    res.json({ success: true, message: 'Rate limits reseteados para pruebas DEV' });
+  });
+
+  // Endpoint para generar un resetToken válido de prueba en ambiente de test (DEV/TEST ONLY)
+  app.post('/api/dev/test-recovery-challenge', (req, res) => {
+    const { portalType = 'client', targetId, targetName, channel = 'whatsapp', recipient } = req.body || {};
+    if (!targetId || !recipient) {
+      return res.status(400).json({ error: 'Faltan parámetros' });
+    }
+    const challenge = createRecoveryChallenge({
+      portalType,
+      targetId,
+      targetName: targetName || 'Test User',
+      channel,
+      recipient
+    });
+    const verRes = verifyRecoveryCode({
+      challengeId: challenge.challengeId,
+      portalType,
+      targetId,
+      code: challenge.otpForDelivery
+    });
+    res.json({
+      success: true,
+      challengeId: challenge.challengeId,
+      resetToken: verRes.resetToken
+    });
+  });
 }
 
 // Middleware de validación CSRF para operaciones mutadoras
@@ -1558,6 +1617,26 @@ app.post('/api/auth/logout', verifyCsrf, (req, res) => {
 // ENDPOINTS DE AUTENTICACIÓN SERVER-SIDE DE PORTALES (FASE 1D-A)
 // ============================================================
 
+/**
+ * Función centralizada y reutilizable para generar la contraseña inicial del cliente.
+ * Contrato obligatorio: ÚLTIMOS 4 DÍGITOS DE LA CÉDULA/IDENTIFICACIÓN + "00" (Exactamente 6 dígitos numéricos).
+ * Si la identificación no contiene al menos 4 dígitos válidos, devuelve null (FAIL CLOSED).
+ */
+function getClientInitialPin(client) {
+  if (!client || typeof client !== 'object') return null;
+  const rawId = client.cedula || client.ci || client.ciRif || client.idNumber || '';
+  const digits = String(rawId).replace(/\D/g, '');
+  if (digits.length < 4) {
+    return null; // Fail closed: no inventar números ni credenciales inseguras
+  }
+  const last4 = digits.slice(-4);
+  const initialPin = `${last4}00`;
+  if (!/^\d{6}$/.test(initialPin)) {
+    return null;
+  }
+  return initialPin;
+}
+
 // 1. Login de portal para cliente o productor (Protegido por IP + Identificador de Cuenta)
 app.post('/api/portal/auth/login', portalLoginLimiter, portalAccountLoginLimiter, (req, res) => {
   try {
@@ -1565,6 +1644,12 @@ app.post('/api/portal/auth/login', portalLoginLimiter, portalAccountLoginLimiter
 
     if (!portalType || !['client', 'producer'].includes(portalType) || !identifier || !pin) {
       return res.status(400).json({ error: 'Debe ingresar identificador y PIN de acceso' });
+    }
+
+    const inputPin = String(pin).trim();
+    // Validación de contrato de 6 dígitos numéricos en backend (FAIL CLOSED ante formatos inválidos)
+    if (!/^\d{6}$/.test(inputPin)) {
+      return res.status(400).json({ error: 'El PIN debe contener exactamente 6 dígitos numéricos' });
     }
 
     const genericAuthError = () => {
@@ -1580,7 +1665,6 @@ app.post('/api/portal/auth/login', portalLoginLimiter, portalAccountLoginLimiter
     };
     const cleanId = String(identifier).trim().toLowerCase();
     const cleanDigits = String(identifier).replace(/\D/g, '');
-    const inputPin = String(pin).trim();
 
     let matchedEntity = null;
 
@@ -1610,9 +1694,12 @@ app.post('/api/portal/auth/login', portalLoginLimiter, portalAccountLoginLimiter
       } else if (matchedEntity.pin) {
         pinValid = verifyCredential(inputPin, matchedEntity.pin) || String(matchedEntity.pin) === inputPin;
       } else {
-        const base = matchedEntity.cedula || matchedEntity.ci || matchedEntity.ciRif || matchedEntity.idNumber || matchedEntity.phone || '000000';
-        const expectedPin = String(base).replace(/\D/g, '').slice(-4).padEnd(6, '0');
-        pinValid = inputPin === expectedPin;
+        const expectedPin = getClientInitialPin(matchedEntity);
+        if (expectedPin) {
+          pinValid = (inputPin === expectedPin);
+        } else {
+          pinValid = false; // Fail closed si no tiene 4 dígitos válidos
+        }
       }
 
       if (!pinValid) {
@@ -1645,9 +1732,14 @@ app.post('/api/portal/auth/login', portalLoginLimiter, portalAccountLoginLimiter
       } else if (matchedEntity.pin) {
         pinValid = verifyCredential(inputPin, matchedEntity.pin) || String(matchedEntity.pin) === inputPin;
       } else {
-        const base = matchedEntity.rif || matchedEntity.cedula || matchedEntity.ci || matchedEntity.phone || '000000';
-        const expectedPin = String(base).replace(/\D/g, '').slice(-4).padEnd(6, '0');
-        pinValid = inputPin === expectedPin;
+        const base = matchedEntity.rif || matchedEntity.cedula || matchedEntity.ci || matchedEntity.phone || '';
+        const baseDigits = String(base).replace(/\D/g, '');
+        if (baseDigits.length >= 4) {
+          const expectedPin = `${baseDigits.slice(-4)}00`;
+          pinValid = (inputPin === expectedPin);
+        } else {
+          pinValid = false;
+        }
       }
 
       if (!pinValid) {
@@ -1754,6 +1846,110 @@ app.post('/api/portal/auth/logout', verifyCsrf, (req, res) => {
     });
   } else {
     res.json({ success: true, message: 'Sesión de portal cerrada' });
+  }
+});
+
+// 3.1 Cambio directo de PIN autenticado desde el portal (Protegido por requirePortalAuth + verifyCsrf)
+app.post('/api/portal/auth/change-pin', requirePortalAuth, verifyCsrf, async (req, res) => {
+  try {
+    const { currentPin, newPin } = req.body || {};
+    const { type: portalType, id: targetId } = req.portalUser;
+
+    if (!currentPin || !newPin) {
+      return res.status(400).json({ error: 'Debe ingresar el PIN actual y el nuevo PIN' });
+    }
+
+    const newPinStr = String(newPin).trim();
+    if (!/^\d{6}$/.test(newPinStr)) {
+      return res.status(400).json({ error: 'El nuevo PIN debe contener exactamente 6 dígitos numéricos' });
+    }
+
+    const currentPinStr = String(currentPin).trim();
+    let currentEntity = null;
+    let isCurrentPinValid = false;
+
+    if (portalType === 'client') {
+      const clients = readCollection('clients');
+      currentEntity = clients.find(c => String(c.id) === String(targetId));
+      if (!currentEntity || (currentEntity.status && currentEntity.status !== 'active')) {
+        return res.status(401).json({ error: 'Cliente no encontrado o inactivo' });
+      }
+
+      if (currentEntity.pinHash) {
+        isCurrentPinValid = verifyCredential(currentPinStr, currentEntity.pinHash);
+      } else if (currentEntity.pin) {
+        isCurrentPinValid = verifyCredential(currentPinStr, currentEntity.pin) || String(currentEntity.pin) === currentPinStr;
+      } else {
+        const expectedPin = getClientInitialPin(currentEntity);
+        isCurrentPinValid = Boolean(expectedPin && expectedPin === currentPinStr);
+      }
+    } else {
+      const suppliers = readCollection('suppliers');
+      currentEntity = suppliers.find(s => String(s.id) === String(targetId));
+      if (!currentEntity || (currentEntity.status && currentEntity.status !== 'active')) {
+        return res.status(401).json({ error: 'Productor no encontrado o inactivo' });
+      }
+
+      if (currentEntity.pinHash) {
+        isCurrentPinValid = verifyCredential(currentPinStr, currentEntity.pinHash);
+      } else if (currentEntity.pin) {
+        isCurrentPinValid = verifyCredential(currentPinStr, currentEntity.pin) || String(currentEntity.pin) === currentPinStr;
+      } else {
+        const baseDigits = String(currentEntity.rif || currentEntity.cedula || currentEntity.ci || currentEntity.phone || '').replace(/\D/g, '');
+        const expectedPin = baseDigits.length >= 4 ? `${baseDigits.slice(-4)}00` : null;
+        isCurrentPinValid = Boolean(expectedPin && expectedPin === currentPinStr);
+      }
+    }
+
+    if (!isCurrentPinValid) {
+      recordAuditLog({
+        req,
+        actorType: 'portal',
+        actorId: targetId,
+        actorRole: portalType,
+        action: 'portal.change_pin',
+        resourceType: 'portal_auth',
+        resourceId: targetId,
+        result: 'denied',
+        metadata: { reason: 'invalid_current_pin' }
+      });
+      return res.status(401).json({ error: 'El PIN actual ingresado es incorrecto' });
+    }
+
+    // Hashear nuevo PIN con bcrypt con 10 salt rounds
+    const newPinHash = bcrypt.hashSync(newPinStr, 10);
+
+    // Persistir nuevo pinHash bajo lock exclusivo eliminando PIN plano
+    const collectionName = portalType === 'client' ? 'clients' : 'suppliers';
+    await withCollectionLock(collectionName, async () => {
+      const items = readCollection(collectionName);
+      const idx = items.findIndex(item => String(item.id) === String(targetId));
+      if (idx !== -1) {
+        items[idx].pinHash = newPinHash;
+        delete items[idx].pin; // Eliminar PIN plano si existía
+        writeCollection(collectionName, items);
+      }
+    });
+
+    recordAuditLog({
+      req,
+      actorType: 'portal',
+      actorId: targetId,
+      actorRole: portalType,
+      action: 'portal.change_pin',
+      resourceType: 'portal_auth',
+      resourceId: targetId,
+      result: 'success',
+      metadata: { portalType }
+    });
+
+    return res.json({
+      success: true,
+      message: 'PIN de seguridad actualizado correctamente'
+    });
+  } catch (error) {
+    console.error('[Portal Change PIN Exception]:', error);
+    res.status(500).json({ error: 'Error procesando el cambio de PIN' });
   }
 });
 
@@ -3337,6 +3533,7 @@ const aiRateLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { default: false },
   keyGenerator: (req) => {
     // Clave por ID de usuario autenticado si existe, fallback a IP
     if (req.user?.id) return `user_${req.user.id}`;
@@ -3353,6 +3550,7 @@ const aiRateLimiter = rateLimit({
 const syncRateLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 15,
+  store: syncRateLimiterStore,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -3364,6 +3562,7 @@ const syncRateLimiter = rateLimit({
 const debtCheckLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
+  store: debtCheckLimiterStore,
   standardHeaders: true,
   legacyHeaders: false,
   validate: { default: false },
@@ -5477,21 +5676,28 @@ app.post('/api/webhook/whatsapp', whatsappWebhookLimiter, whatsappJsonParser, (r
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Backend server (Uploader & WS) running on port ${PORT}`);
-  console.log(`Saving databases and files to: ${uploadDir}`);
+const isDirectExecution = process.argv[1] && (
+  process.argv[1].endsWith('server.js') ||
+  process.argv[1].endsWith('server')
+);
 
-  // Ejecución inicial al arrancar el backend (tras 5 segundos de gracia)
-  setTimeout(() => {
-    checkOverdueInstallments();
-  }, 5000);
+if (isDirectExecution || process.env.AUTO_START_SERVER === 'true') {
+  server.listen(PORT, () => {
+    console.log(`Backend server (Uploader & WS) running on port ${PORT}`);
+    console.log(`Saving databases and files to: ${uploadDir}`);
 
-  // Intervalo de revisión programada: Cada 12 Horas (12 * 60 * 60 * 1000 ms)
-  const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
-  setInterval(() => {
-    checkOverdueInstallments();
-  }, CHECK_INTERVAL_MS);
-});
+    // Ejecución inicial al arrancar el backend (tras 5 segundos de gracia)
+    setTimeout(() => {
+      checkOverdueInstallments();
+    }, 5000);
+
+    // Intervalo de revisión programada: Cada 12 Horas (12 * 60 * 60 * 1000 ms)
+    const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
+    setInterval(() => {
+      checkOverdueInstallments();
+    }, CHECK_INTERVAL_MS);
+  });
+}
 
 // Exportaciones del Recovery Core y Socket.IO para pruebas y consumo interno seguro
 export {
@@ -5538,6 +5744,7 @@ export {
   resetProcessedWebhookEventsForTest,
   hashRateLimitKey,
   loginAccountLimiter,
+  portalLoginLimiter,
   portalAccountLoginLimiter,
   recoveryResetPinLimiter,
   syncRateLimiter,
@@ -5555,5 +5762,7 @@ export {
   withTransaction,
   readCollection,
   withCollectionLock,
-  recordAuditLog
+  recordAuditLog,
+  getClientInitialPin,
+  server
 };

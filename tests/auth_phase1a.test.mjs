@@ -96,6 +96,19 @@ async function request(url, options = {}) {
 async function runTests() {
   console.log('🧪 Iniciando Suite de Pruebas Automatizadas — Fases 1A, 1B, 1C y 1D-A: Portal Server-Side Auth (81 Pruebas)\n');
 
+  // Snapshot de seguridad de data-dev para restauración exacta al finalizar la suite
+  const devDir = path.resolve('data-dev');
+  const devSnapshot = {};
+  if (fs.existsSync(devDir)) {
+    const files = fs.readdirSync(devDir);
+    for (const file of files) {
+      const fullPath = path.join(devDir, file);
+      if (fs.statSync(fullPath).isFile() && file.endsWith('.json')) {
+        devSnapshot[file] = fs.readFileSync(fullPath, 'utf8');
+      }
+    }
+  }
+
   // Inicializar fixtures de desarrollo para ejecución determinista
   const clientsPath = path.resolve('data-dev/clients_db.json');
   if (fs.existsSync(clientsPath)) {
@@ -3024,7 +3037,7 @@ async function runTests() {
     if (fs.existsSync(clientsPath)) {
       const clientsData = JSON.parse(fs.readFileSync(clientsPath, 'utf8'));
       const c1 = clientsData.find(item => item.id === 'cli-demo-1');
-      if (c1) c1.pinHash = bcrypt.hashSync('678000', 10);
+      if (c1) c1.pinHash = bcrypt.hashSync('778899', 10);
       const c2 = clientsData.find(item => item.id === 'cli-demo-2');
       if (c2) c2.pinHash = bcrypt.hashSync('112233', 10);
       fs.writeFileSync(clientsPath, JSON.stringify(clientsData, null, 2));
@@ -3034,7 +3047,7 @@ async function runTests() {
     if (fs.existsSync(suppliersPath)) {
       const suppliersData = JSON.parse(fs.readFileSync(suppliersPath, 'utf8'));
       const s1 = suppliersData.find(item => item.id === 'sup-demo-1');
-      if (s1) s1.pinHash = bcrypt.hashSync('321900', 10);
+      if (s1) s1.pinHash = bcrypt.hashSync('445566', 10);
       const s2 = suppliersData.find(item => item.id === 'sup-demo-2');
       if (s2) s2.pinHash = bcrypt.hashSync('998877', 10);
       fs.writeFileSync(suppliersPath, JSON.stringify(suppliersData, null, 2));
@@ -6838,6 +6851,7 @@ async function runTests() {
 
   // 1G-B-04: /api/sync-rate responde normalmente a llamadas legítimas
   await test('390. TEST 1G-B-04: GET /api/sync-rate funciona correctamente bajo flujo normal', async () => {
+    await request('/api/dev/reset-rate-limits', { method: 'POST' });
     const res = await request('/api/sync-rate');
     // Puede ser 200 o 500 si falla fetch externo en sandbox, pero no 429 en la primera llamada
     assert.notStrictEqual(res.status, 429, 'No debe responder 429 en primer intento');
@@ -8882,7 +8896,7 @@ async function runTests() {
     assert.ok(got429, 'Debe retornar HTTP 429 Too Many Requests ante intentos repetidos');
   });
 
-  // Limpiar archivos sintéticos generados durante las pruebas de upload
+  // Limpiar archivos sintéticos generados durante las pruebas de upload y restaurar data-dev exacto
   try {
     const devDir = path.resolve('data-dev');
     if (fs.existsSync(devDir)) {
@@ -8891,6 +8905,12 @@ async function runTests() {
         if (file.startsWith('upload-') && (file.endsWith('.jpg') || file.endsWith('.png') || file.endsWith('.webp') || file.endsWith('.pdf') || file.endsWith('.mp4'))) {
           try { fs.unlinkSync(path.join(devDir, file)); } catch {}
         }
+      }
+      // Restaurar el snapshot exacto de todos los archivos .json para no mutar persistentemente data-dev
+      for (const [filename, content] of Object.entries(devSnapshot)) {
+        try {
+          fs.writeFileSync(path.join(devDir, filename), content, 'utf8');
+        } catch {}
       }
     }
   } catch {}
