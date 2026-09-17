@@ -1,6 +1,7 @@
 import { NodeSSH } from 'node-ssh';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -30,11 +31,12 @@ const DIRS_TO_SYNC = [
 
 async function deployDirectoVPS() {
   try {
-    console.log('📡 [1/3] Conectando por SSH al VPS Contabo (144.126.153.184)...');
+    const privateKeyPath = process.env.SSH_KEY_PATH || path.join(os.homedir(), '.ssh', 'kalu_contabo_ed25519');
+    console.log('📡 [1/3] Conectando por SSH al VPS Contabo (144.126.153.184) usando clave SSH...');
     await ssh.connect({
       host: '144.126.153.184',
       username: 'root',
-      password: process.env.SSH_PASSWORD || 'REDACTED_CREDENTIAL',
+      privateKeyPath: privateKeyPath,
       readyTimeout: 45000
     });
     console.log('✅ Conectado exitosamente al servidor VPS.');
