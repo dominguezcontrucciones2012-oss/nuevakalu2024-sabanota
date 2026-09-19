@@ -267,10 +267,11 @@ export default function SuppliersDebtsView({
       setCreateNewProduct(false);
     } else if (modal === 'pagar') {
       const s = suppliers.find(sup => sup.id === supplierId);
-      setPayToThemAmount(s && (s.balanceOwed || 0) > 0 ? (s.balanceOwed || 0).toString() : '');
+      const dynamicNet = s ? calculateDynamicBalances(s, transactions).payable : 0;
+      setPayToThemAmount(dynamicNet > 0 ? dynamicNet.toFixed(2) : '');
       setPayToThemCurrency('USD');
       setPayToThemSource('Efectivo / Caja Chica');
-      setPayToThemConcept((s && (s.balanceOwed || 0) > 0) ? 'Pago de Saldo / Liquidación de Queso' : 'Adelanto de Dinero');
+      setPayToThemConcept(dynamicNet > 0 ? 'Pago de Saldo / Liquidación de Queso' : 'Adelanto de Dinero');
       setPayToThemNotes('');
 
     } else if (modal === 'abonar') {
@@ -1430,8 +1431,9 @@ export default function SuppliersDebtsView({
                 const usdAmount = payToThemCurrency === 'VES' ? (inputAmt / (exchangeRate || 1)) : inputAmt;
                 
                 // Cálculo de saldo y tope de crédito dinámico (última entrega / arrime de queso)
-                const currentBalanceOwed = Number(s.balanceOwed) || 0;
-                const currentStoreDebt = Number(s.storeDebt) || 0;
+                const { payable: dynamicPayable, debt: dynamicDebt } = calculateDynamicBalances(s, transactions);
+                const currentBalanceOwed = dynamicPayable;
+                const currentStoreDebt = dynamicDebt;
 
                 const dynamicProducerCreditLimit = (() => {
                   const supNameClean = (s.name || '').trim().toLowerCase();
@@ -1563,9 +1565,9 @@ export default function SuppliersDebtsView({
                             type="button"
                             onClick={() => {
                               if (payToThemCurrency === 'VES') {
-                                setPayToThemAmount(((s.balanceOwed || 0) * exchangeRate).toFixed(2));
+                                setPayToThemAmount((currentBalanceOwed * exchangeRate).toFixed(2));
                               } else {
-                                setPayToThemAmount((s.balanceOwed || 0).toFixed(2));
+                                setPayToThemAmount(currentBalanceOwed.toFixed(2));
                               }
                               setPayToThemConcept('Pago de Saldo / Liquidación de Queso');
                             }}

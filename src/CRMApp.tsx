@@ -1605,16 +1605,10 @@ export default function App() {
     const currentBalanceOwed = Number(selectedSup.balanceOwed) || 0;
     const currentStoreDebt = Number(selectedSup.storeDebt) || 0;
 
-    let newBalanceOwed = 0;
-    let newStoreDebt = currentStoreDebt;
-
-    if (amount <= currentBalanceOwed) {
-      newBalanceOwed = currentBalanceOwed - amount;
-    } else {
-      newBalanceOwed = 0;
-      const excess = amount - currentBalanceOwed;
-      newStoreDebt = currentStoreDebt + excess;
-    }
+    const currentNet = currentBalanceOwed - currentStoreDebt;
+    const finalNet = Math.round((currentNet - Number(amount)) * 100) / 100;
+    const newBalanceOwed = Math.max(0, finalNet);
+    const newStoreDebt = Math.max(0, -finalNet);
 
     setSuppliers(prev => prev.map(s => {
       if (s.id === supplierId) {
