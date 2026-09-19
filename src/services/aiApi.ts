@@ -4,11 +4,7 @@
 // Server-side Gemini AI Client with Session Auth and CSRF
 // ============================================================
 
-import { getCsrfToken } from './localApi';
-
-const isProd = import.meta.env.PROD;
-const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-const API_URL = isProd ? `/api` : `http://${hostname}:3001/api`;
+import { getCsrfToken, API_URL } from './localApi';
 
 export interface AIStatusResponse {
   available: boolean;
@@ -82,6 +78,9 @@ export async function getAIStatusApi(): Promise<AIStatusResponse> {
     method: 'GET',
     credentials: 'include'
   });
+  if (res.status === 401) {
+    throw new Error('401: No autenticado');
+  }
   if (!res.ok) {
     return { available: false, engine: 'unavailable' };
   }
@@ -152,7 +151,10 @@ export async function extractInvoiceDataApi(imageBase64: string, mimeType: strin
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.success) {
-    throw new Error(data.error || 'No fue posible procesar la factura con la IA.');
+    const err: any = new Error(data.error || 'No fue posible procesar la factura con la IA.');
+    err.code = data.code;
+    err.status = res.status;
+    throw err;
   }
   return data.data as InvoiceData;
 }

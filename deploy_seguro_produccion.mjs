@@ -18,6 +18,7 @@ const FILES_TO_SYNC = [
   'tsconfig.app.json',
   'tsconfig.node.json',
   'index.html',
+  'portal.html',
   'vps-deployment/docker-compose.yml',
   'vps-deployment/Dockerfile',
   'vps-deployment/nginx.conf'
@@ -73,9 +74,9 @@ async function deployDirectoVPS() {
       set -e
       cd /root/kalu-crm
       
-      # Asegurar volumen de datos persistente en el host
-      mkdir -p /root/kalu-crm/data /root/kalu-crm/uploads
-      chmod 777 /root/kalu-crm/data /root/kalu-crm/uploads || true
+      # Asegurar volumen de datos persistente en el host con permisos estrictos de mínimo privilegio (750)
+      mkdir -p /root/kalu-crm/data /root/kalu-crm/uploads /root/kalu-crm/protected_media /root/kalu-crm/protected_media/captures
+      chmod 750 /root/kalu-crm/data /root/kalu-crm/uploads /root/kalu-crm/protected_media /root/kalu-crm/protected_media/captures || true
       
       echo "Instalando dependencias si hay cambios..."
       npm install

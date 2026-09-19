@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ClientProfile, Transaction, DebtInstallment } from '../types';
-import { Users, Search, Plus, CreditCard, Award, BadgeAlert, Coins, Phone, Mail, FileCheck, Eye, Clock, X, CheckCircle, XCircle, Zap, ArrowDownLeft, ShieldCheck, Sparkles } from 'lucide-react';
+import { Users, Search, Plus, CreditCard, Award, BadgeAlert, Coins, Phone, Mail, FileCheck, Eye, Clock, X, CheckCircle, XCircle, Zap, ArrowDownLeft, ShieldCheck, Sparkles, Receipt } from 'lucide-react';
 import { fetchCollection, onCollectionSnapshot, updateLocalDoc } from '../services/localApi';
 import { parseSafeDecimal } from '../utils';
 import { getVIPLevelInfo, VIP_LEVELS_MATRIX } from '../config/vipMatrix';
@@ -30,6 +30,8 @@ export default function ClientsCreditView({
   // Mundo Kalu Conciliation States
   const [pendingPayments, setPendingPayments] = useState<Transaction[]>([]);
   const [allInstallments, setAllInstallments] = useState<DebtInstallment[]>([]);
+  const [allPwaPayments, setAllPwaPayments] = useState<any[]>([]);
+  const [selectedReceipt, setSelectedReceipt] = useState<{ imageUrl: string; title: string; reference?: string; amount?: number; date?: string } | null>(null);
   const [isProcessingApproval, setIsProcessingApproval] = useState(false);
 
   useEffect(() => {
@@ -47,9 +49,15 @@ export default function ClientsCreditView({
       setAllInstallments(arr);
     });
 
+    // Escuchar Pagos PWA para resolver comprobantes / captures
+    const unsubPwa = onCollectionSnapshot('pwa_payments', (data) => {
+      setAllPwaPayments(data || []);
+    });
+
     return () => {
       unsubPayments();
       unsubInstallments();
+      unsubPwa();
     };
   }, []);
 
@@ -79,7 +87,7 @@ export default function ClientsCreditView({
 
   // Pay Debt States
   const [payingClientId, setPayingClientId] = useState<string | null>(null);
-  
+
   // Multipago States
   const [payCashUsd, setPayCashUsd] = useState<string>('');
   const [payCashBs, setPayCashBs] = useState<string>('');
@@ -123,11 +131,11 @@ export default function ClientsCreditView({
   const handleUpdateClientSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingClient || !onUpdateClient) return;
-    
+
     const ced4 = editCedula.length >= 4 ? editCedula.slice(-4) : '';
     const ph = editingClient.phone ? editingClient.phone.replace(/\D/g, '') : '';
     const ph4 = ph.length >= 4 ? ph.slice(-4) : '0000';
-    
+
     onUpdateClient(editingClient.id, {
       name: editName,
       cedula: editCedula,
@@ -146,11 +154,11 @@ export default function ClientsCreditView({
   const handleCreateClient = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name) return;
-    
+
     const ced4 = cedula.length >= 4 ? cedula.slice(-4) : '';
     const ph = phone ? phone.replace(/\D/g, '') : '';
     const ph4 = ph.length >= 4 ? ph.slice(-4) : '0000';
-    
+
     onAddClient({
       name,
       email,
@@ -183,13 +191,13 @@ export default function ClientsCreditView({
     try {
       // 1. Update Transaction
       await updateLocalDoc('transactions', tx.id, { status: 'approved' });
-      
+
       let pointsToAward = 0;
       if ((tx.kaluCreditData as any)?.installmentIds) {
         for (const iId of (tx.kaluCreditData as any).installmentIds) {
           const matchingInst = allInstallments.find(inst => String(inst.id) === String(iId));
           const isOverdue = matchingInst && (matchingInst.status === 'overdue' || (matchingInst.dueDate && new Date(matchingInst.dueDate).getTime() < Date.now()));
-          
+
           // Regla: Si pagó a tiempo (no en mora), se le abona 1 punto por cada $1 de la cuota
           const installmentPts = matchingInst ? Math.round(Number(matchingInst.amount || 0)) : 0;
           if (!isOverdue && installmentPts > 0) {
@@ -209,12 +217,12 @@ export default function ClientsCreditView({
       if (client && onUpdateClient) {
         const newDebt = Math.max(0, client.outstandingDebt - tx.amount);
         const newPoints = Number(client.loyaltyPoints || 0) + pointsToAward;
-        onUpdateClient(client.id, { 
+        onUpdateClient(client.id, {
           outstandingDebt: newDebt,
           loyaltyPoints: newPoints
         });
       }
-      
+
       const ptsMsg = pointsToAward > 0 ? ` (+${pointsToAward} pts Mundo Kalu por pago a tiempo)` : ' (Sin puntos adicionales por mora en la cuota)';
       onAddNotification(`Pago aprobado. Cuotas y balance actualizados.${ptsMsg}`, 'success');
     } catch (e) {
@@ -230,7 +238,7 @@ export default function ClientsCreditView({
     setIsProcessingApproval(true);
     try {
       await updateLocalDoc('transactions', tx.id, { status: 'rejected' });
-      
+
       if ((tx as any).installmentIds && (tx as any).installmentIds.length > 0) {
         for (const iId of (tx as any).installmentIds) {
           await updateLocalDoc('installments', iId, {
@@ -238,7 +246,7 @@ export default function ClientsCreditView({
           });
         }
       }
-      
+
       onAddNotification('Pago rechazado. Las cuotas volvieron a estado Pendiente.', 'info');
     } catch (e) {
       console.error(e);
@@ -251,7 +259,7 @@ export default function ClientsCreditView({
   const handlePayDebtSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!payingClientId) return;
-    
+
     const client = clients.find(c => c.id === payingClientId);
     if (!client) return;
 
@@ -296,7 +304,7 @@ export default function ClientsCreditView({
 
     onRecordDebtPayment(payingClientId, calculatedAmount, primaryMethod, refDetails, breakdown);
     onAddNotification('Abono registrado con éxito en el Arqueo de Caja.', 'success');
-    
+
     setPayingClientId(null);
     setPayCashUsd('');
     setPayCashBs('');
@@ -628,7 +636,7 @@ export default function ClientsCreditView({
                     </div>
 
                     <div className="pt-2 border-t border-editorial-border/40 grid grid-cols-2 gap-2">
-                      <div 
+                      <div
                         onClick={() => fillAllIn('usd')}
                         className="bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 rounded p-2 text-center cursor-pointer transition-all group"
                         title="Clic para llenar deuda total en Dólares ($)"
@@ -639,7 +647,7 @@ export default function ClientsCreditView({
                         </span>
                       </div>
 
-                      <div 
+                      <div
                         onClick={() => fillAllIn('pagoMovil')}
                         className="bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded p-2 text-center cursor-pointer transition-all group"
                         title="Clic para llenar deuda total en Bolívares (Bs)"
@@ -680,14 +688,14 @@ export default function ClientsCreditView({
                               Llenar Total
                             </button>
                           </div>
-                          <input 
+                          <input
                             type="text"
                             inputMode="decimal"
-                            value={payCashUsd} 
-                            onChange={e => setPayCashUsd(e.target.value)} 
+                            value={payCashUsd}
+                            onChange={e => setPayCashUsd(e.target.value)}
                             onFocus={e => e.target.select()}
-                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
-                            placeholder="$0.00" 
+                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono"
+                            placeholder="$0.00"
                           />
                         </div>
 
@@ -702,14 +710,14 @@ export default function ClientsCreditView({
                               Llenar Total
                             </button>
                           </div>
-                          <input 
+                          <input
                             type="text"
                             inputMode="decimal"
-                            value={payCashBs} 
-                            onChange={e => setPayCashBs(e.target.value)} 
+                            value={payCashBs}
+                            onChange={e => setPayCashBs(e.target.value)}
                             onFocus={e => e.target.select()}
-                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
-                            placeholder="Bs 0.00" 
+                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono"
+                            placeholder="Bs 0.00"
                           />
                         </div>
                       </div>
@@ -726,23 +734,23 @@ export default function ClientsCreditView({
                             Llenar Total
                           </button>
                         </div>
-                        <input 
+                        <input
                           type="text"
                           inputMode="decimal"
-                          value={payPagoMovil} 
-                          onChange={e => setPayPagoMovil(e.target.value)} 
+                          value={payPagoMovil}
+                          onChange={e => setPayPagoMovil(e.target.value)}
                           onFocus={e => e.target.select()}
-                          className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
-                          placeholder="Bs 0.00" 
+                          className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono"
+                          placeholder="Bs 0.00"
                         />
                         {(parseSafeDecimal(payPagoMovil) > 0) && (
-                          <input 
-                            type="text" 
-                            value={refPagoMovil} 
-                            onChange={e => setRefPagoMovil(e.target.value)} 
+                          <input
+                            type="text"
+                            value={refPagoMovil}
+                            onChange={e => setRefPagoMovil(e.target.value)}
                             onFocus={e => e.target.select()}
-                            placeholder="Referencia Pago Móvil..." 
-                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-[10px] text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
+                            placeholder="Referencia Pago Móvil..."
+                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-[10px] text-editorial-text-primary focus:border-amber-500 outline-none font-mono"
                           />
                         )}
                       </div>
@@ -759,23 +767,23 @@ export default function ClientsCreditView({
                             Llenar Total
                           </button>
                         </div>
-                        <input 
+                        <input
                           type="text"
                           inputMode="decimal"
-                          value={payPos} 
-                          onChange={e => setPayPos(e.target.value)} 
+                          value={payPos}
+                          onChange={e => setPayPos(e.target.value)}
                           onFocus={e => e.target.select()}
-                          className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
-                          placeholder="Bs 0.00" 
+                          className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono"
+                          placeholder="Bs 0.00"
                         />
                         {(parseSafeDecimal(payPos) > 0) && (
-                          <input 
-                            type="text" 
-                            value={refPos} 
-                            onChange={e => setRefPos(e.target.value)} 
+                          <input
+                            type="text"
+                            value={refPos}
+                            onChange={e => setRefPos(e.target.value)}
                             onFocus={e => e.target.select()}
-                            placeholder="Referencia Punto..." 
-                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-[10px] text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
+                            placeholder="Referencia Punto..."
+                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-[10px] text-editorial-text-primary focus:border-amber-500 outline-none font-mono"
                           />
                         )}
                       </div>
@@ -792,23 +800,23 @@ export default function ClientsCreditView({
                             Llenar Total
                           </button>
                         </div>
-                        <input 
+                        <input
                           type="text"
                           inputMode="decimal"
-                          value={payBiopago} 
-                          onChange={e => setPayBiopago(e.target.value)} 
+                          value={payBiopago}
+                          onChange={e => setPayBiopago(e.target.value)}
                           onFocus={e => e.target.select()}
-                          className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
-                          placeholder="Bs 0.00" 
+                          className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-xs text-editorial-text-primary focus:border-amber-500 outline-none font-mono"
+                          placeholder="Bs 0.00"
                         />
                         {(parseSafeDecimal(payBiopago) > 0) && (
-                          <input 
-                            type="text" 
-                            value={refBiopago} 
-                            onChange={e => setRefBiopago(e.target.value)} 
+                          <input
+                            type="text"
+                            value={refBiopago}
+                            onChange={e => setRefBiopago(e.target.value)}
                             onFocus={e => e.target.select()}
-                            placeholder="Referencia Biopago..." 
-                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-[10px] text-editorial-text-primary focus:border-amber-500 outline-none font-mono" 
+                            placeholder="Referencia Biopago..."
+                            className="w-full h-8 px-2 bg-black/40 border border-editorial-border rounded text-[10px] text-editorial-text-primary focus:border-amber-500 outline-none font-mono"
                           />
                         )}
                       </div>
@@ -849,7 +857,7 @@ export default function ClientsCreditView({
       {selectedHistoryClientId && (() => {
         const hClient = clients.find(c => c.id === selectedHistoryClientId);
         const hName = (hClient?.name || '').trim().toLowerCase();
-        
+
         // Extract both sales with debt (Cargos) and abonos (Abonos) from transactions / sales history
         const cSales = (salesHistory || [])
           .filter(s => {
@@ -865,7 +873,7 @@ export default function ClientsCreditView({
             const timeB = b.createdAt || (b.timestamp ? (typeof b.timestamp === 'number' ? b.timestamp : 0) : 0);
             return timeA - timeB;
           });
-        
+
         let rollingBalance = 0;
         const timeline = cSales.map(s => {
           const isAbonoMovement = s.isAbono || s.isIncome || s.category === 'credito' || s.category === 'ingresos_cobranza';
@@ -878,6 +886,18 @@ export default function ClientsCreditView({
             rollingBalance += amt;
           }
 
+          // Resolver comprobante por paymentId o fallback a receiptImageUrl
+          let matchedReceiptUrl: string | null = null;
+          if (s.paymentId) {
+            const pwa = allPwaPayments.find(p => String(p.id) === String(s.paymentId));
+            if (pwa) {
+              matchedReceiptUrl = pwa.receiptImageUrl || pwa.receiptImage || null;
+            }
+          }
+          if (!matchedReceiptUrl && s.receiptImageUrl) {
+            matchedReceiptUrl = s.receiptImageUrl;
+          }
+
           return {
             id: s.id || `hist-${Math.random()}`,
             date: s.date || 'Reciente',
@@ -887,7 +907,9 @@ export default function ClientsCreditView({
             notes: s.notes || (isAbonoMovement ? 'Abono a Cuenta' : 'Compra a Crédito'),
             amount: amt,
             balance: rollingBalance,
-            items: s.items
+            items: s.items,
+            receiptUrl: matchedReceiptUrl,
+            reference: s.invoiceNumber || s.id
           };
         });
 
@@ -902,7 +924,7 @@ export default function ClientsCreditView({
               >
                 <X className="w-5 h-5" />
               </button>
-              
+
               <div className="p-6 border-b border-editorial-border/60 bg-editorial-bg/50">
                 <h3 className="font-serif text-xl font-bold text-editorial-text-primary flex items-center gap-2">
                   <Clock className="w-5 h-5 text-amber-500" />
@@ -957,9 +979,27 @@ export default function ClientsCreditView({
                               )}
                             </td>
                             <td className="py-4 px-4">
-                              <span className={`inline-block px-2 py-0.5 rounded text-[9px] uppercase border font-extrabold ${isAbono ? 'bg-amber-950/30 border-amber-800 text-amber-400' : 'bg-rose-950/30 border-rose-800 text-rose-400'}`}>
-                                {t.type}
-                              </span>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={`inline-block px-2 py-0.5 rounded text-[9px] uppercase border font-extrabold ${isAbono ? 'bg-amber-950/30 border-amber-800 text-amber-400' : 'bg-rose-950/30 border-rose-800 text-rose-400'}`}>
+                                  {t.type}
+                                </span>
+                                {t.receiptUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedReceipt({
+                                      imageUrl: t.receiptUrl!,
+                                      title: `Comprobante - ${hClient?.name || 'Cliente'}`,
+                                      reference: t.reference,
+                                      amount: t.amount,
+                                      date: t.date
+                                    })}
+                                    className="inline-flex items-center gap-1 text-[9px] font-bold text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-2 py-0.5 rounded transition-colors cursor-pointer"
+                                    title="Ver comprobante de pago"
+                                  >
+                                    <Receipt className="w-3 h-3" /> Ver Comprobante
+                                  </button>
+                                )}
+                              </div>
                               <div className="text-[9px] text-editorial-text-muted mt-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
                                 Vía {t.method} {t.notes && `• ${t.notes}`}
                               </div>
@@ -1183,6 +1223,53 @@ export default function ClientsCreditView({
                 <button type="submit" className="px-6 h-10 bg-amber-500 hover:bg-amber-400 text-editorial-bg font-serif font-bold text-xs tracking-wider uppercase rounded transition-all cursor-pointer">Guardar Cambios</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE AMPLIACIÓN DE COMPROBANTE / CAPTURE */}
+      {selectedReceipt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-neutral-900 border border-neutral-700 rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-4 border-b border-neutral-800 bg-neutral-950">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Receipt className="w-5 h-5 text-amber-400" />
+                  {selectedReceipt.title}
+                </h3>
+                <p className="text-xs font-mono text-neutral-400">
+                  {selectedReceipt.reference && <>Ref: <strong className="text-amber-400">{selectedReceipt.reference}</strong> · </>}
+                  {selectedReceipt.amount != null && <>Monto: <strong className="text-emerald-400">${Number(selectedReceipt.amount).toFixed(2)}</strong></>}
+                </p>
+              </div>
+              <button
+                onClick={() => setSelectedReceipt(null)}
+                className="p-2 hover:bg-neutral-800 text-neutral-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Image Body */}
+            <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-black/40 min-h-[300px]">
+              <img
+                src={selectedReceipt.imageUrl}
+                alt="Comprobante Completo"
+                className="max-w-full max-h-[65vh] object-contain rounded-lg shadow-lg border border-neutral-800"
+              />
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-3 bg-neutral-950 border-t border-neutral-800 flex justify-between items-center text-xs font-mono text-neutral-500">
+              <span>{selectedReceipt.date ? `Fecha: ${selectedReceipt.date}` : ''}</span>
+              <button
+                onClick={() => setSelectedReceipt(null)}
+                className="px-4 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg font-bold transition-colors cursor-pointer"
+              >
+                Cerrar Visor
+              </button>
+            </div>
           </div>
         </div>
       )}

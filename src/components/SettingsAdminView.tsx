@@ -883,13 +883,13 @@ export default function SettingsAdminView({
                   className="px-6 py-3 bg-amber-500 hover:brightness-110 text-white font-serif font-bold text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2 mx-auto"
                 >
                   <Cpu className="w-4 h-4 animate-pulse" />
-                  Descargar Respaldo JSON Local
+                  Descargar Respaldo Completo (Datos + Comprobantes)
                 </button>
                 <div className="pt-4 mt-4 border-t border-editorial-border/40">
                   <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 bg-editorial-bg border border-editorial-border rounded text-[10px] font-mono font-bold uppercase hover:bg-editorial-card transition-all text-editorial-text-primary">
                     <Upload className="w-3.5 h-3.5 text-editorial-text-muted" />
-                    <span>Importar Datos desde JSON Local</span>
-                    <input type="file" accept=".json" className="hidden" onChange={handleImportJson} />
+                    <span>Restaurar Respaldo (.tar.gz o .json)</span>
+                    <input type="file" accept=".tar.gz,.tgz,.json" className="hidden" onChange={handleImportJson} />
                   </label>
                 </div>
               </div>

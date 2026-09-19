@@ -20,6 +20,33 @@ let testServerInstance;
 const TEST_SECRET = process.env.WHATSAPP_APP_SECRET || 'kalu_dev_app_secret_meta_hmac_2026';
 const TEST_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'kalu_dev_mock_token_2026';
 
+// Configurar credenciales sintéticas para el entorno de prueba
+process.env.WHATSAPP_API_KEY = 'test_whatsapp_api_key_mock_2026';
+process.env.WHATSAPP_PHONE_NUMBER_ID = '1344089325449515';
+
+// Interceptor de fetch para Graph API en tests
+const originalFetch = globalThis.fetch;
+let mockGraphResponseHandler = null;
+
+globalThis.fetch = async (url, options) => {
+  const urlStr = String(url);
+  if (urlStr.includes('graph.facebook.com')) {
+    if (mockGraphResponseHandler) {
+      return mockGraphResponseHandler(urlStr, options);
+    }
+    // Por defecto, responder 200 OK con estructura válida de Meta Graph API
+    return new Response(JSON.stringify({
+      messaging_product: 'whatsapp',
+      contacts: [{ input: '584120001122', wa_id: '584120001122' }],
+      messages: [{ id: 'wamid.HBgLMOCKED_MESSAGE_ID' }]
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  return originalFetch(url, options);
+};
+
 function createHmacSignature(rawBody, secret = TEST_SECRET) {
   return 'sha256=' + crypto.createHmac('sha256', secret).update(Buffer.from(rawBody, 'utf8')).digest('hex');
 }
@@ -346,11 +373,97 @@ Mundo Kalu`;
       assert.strictEqual(res2.data.status, 'EVENT_ALREADY_PROCESSED');
     });
 
+    // ------------------------------------------------------------------------
+    // TEST 8: Graph / sendWhatsAppDirectMessage Falla -> No registra cooldown y no invoca Gemini
+    // ------------------------------------------------------------------------
+    await runTest('8. Fallo en Graph API: No registra cooldown y permite reintento posterior', async () => {
+      process.env.WHATSAPP_MAINTENANCE_MODE = 'true';
+      resetMaintenanceAntiSpamForTest();
+      resetProcessedWebhookEventsForTest();
+
+      const failPhone = '584129990011';
+      const failMsgId1 = `wamid.fail1_${Date.now()}`;
+      const failMsgId2 = `wamid.fail2_${Date.now() + 1}`;
+
+      // Simular fallo en Graph API (500 Error)
+      mockGraphResponseHandler = async () => new Response(JSON.stringify({
+        error: { message: 'Meta Graph Service Unavailable', code: 2 }
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      const p1 = JSON.stringify({
+        object: 'whatsapp_business_account',
+        entry: [{
+          id: '1344089325449515',
+          changes: [{
+            field: 'messages',
+            value: {
+              messages: [{
+                from: failPhone,
+                id: failMsgId1,
+                timestamp: '1789482020',
+                text: { body: 'Hola, intento con fallo' },
+                type: 'text'
+              }]
+            }
+          }]
+        }]
+      });
+
+      const res1 = await request('/api/webhook/whatsapp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': createHmacSignature(p1) },
+        body: p1
+      });
+
+      assert.strictEqual(res1.status, 200);
+      assert.strictEqual(res1.data.status, 'EVENT_RECEIVED');
+      assert.strictEqual(res1.data.noticesSent, 0); // No se contó como enviado
+      assert.strictEqual(isMaintenanceAntiSpamActive(failPhone), false); // Cooldown NO registrado
+
+      // Restaurar Graph API funcional para el segundo intento
+      mockGraphResponseHandler = null;
+
+      const p2 = JSON.stringify({
+        object: 'whatsapp_business_account',
+        entry: [{
+          id: '1344089325449515',
+          changes: [{
+            field: 'messages',
+            value: {
+              messages: [{
+                from: failPhone,
+                id: failMsgId2,
+                timestamp: '1789482025',
+                text: { body: 'Hola, intento posterior exitoso' },
+                type: 'text'
+              }]
+            }
+          }]
+        }]
+      });
+
+      const res2 = await request('/api/webhook/whatsapp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': createHmacSignature(p2) },
+        body: p2
+      });
+
+      assert.strictEqual(res2.status, 200);
+      assert.strictEqual(res2.data.status, 'EVENT_RECEIVED');
+      assert.strictEqual(res2.data.noticesSent, 1); // Ahora sí despachó
+      assert.strictEqual(res2.data.antiSpamSuppressed, 0);
+      assert.strictEqual(isMaintenanceAntiSpamActive(failPhone), true); // Ahora sí registró cooldown
+    });
+
     console.log('\n============================================================');
     console.log(`🎉 TODAS LAS PRUEBAS DE MODO MANTENIMIENTO PASARON (${passedTests}/${totalTests})`);
     console.log('============================================================\n');
 
   } finally {
+    globalThis.fetch = originalFetch;
     if (testServerInstance) {
       await new Promise((resolve) => testServerInstance.close(resolve));
     }

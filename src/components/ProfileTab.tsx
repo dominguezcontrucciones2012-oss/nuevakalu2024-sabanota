@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
-import { User, ShoppingBag, HelpCircle, Gift, ShieldCheck, Info, LogOut, ChevronRight, ArrowLeft, MapPin, Calendar, Wind, Sparkles, Lock, Key, MessageCircle, MessageSquare, Mail, Trash2, Award, Zap } from 'lucide-react';
+import { User, ShoppingBag, HelpCircle, Gift, ShieldCheck, Info, LogOut, ChevronRight, ChevronDown, ArrowLeft, MapPin, Calendar, Wind, Sparkles, Lock, Key, MessageCircle, MessageSquare, Mail, Trash2, Award, Zap, CheckCircle2, Clock, AlertTriangle, XCircle, Package, Receipt, CreditCard } from 'lucide-react';
 import { ClientProfile, DebtInstallment, Transaction } from '../types';
 import { getVIPLevelInfo, VIP_LEVELS_MATRIX } from '../config/vipMatrix';
 import { portalRecoveryRequestApi, portalRecoveryVerifyApi, portalRecoveryResetPinApi } from '../services/localApi';
+import { buildClientPurchaseHistory, ClientPurchaseRecord } from '../utils/clientPurchases';
+import { formatDisplayDate } from '../utils/debtGrouping';
 
 interface ProfileTabProps {
   clientData: ClientProfile | null;
@@ -10,6 +12,7 @@ interface ProfileTabProps {
   kaluPoints: number;
   activeInstallments?: DebtInstallment[];
   allTransactions?: Transaction[];
+  paymentHistory?: any[];
   onLogout: () => void;
   onNavigateSubView?: (view: string) => void;
   onNavigateTab?: (tab: 'inicio' | 'tienda' | 'qr' | 'pagos' | 'perfil') => void;
@@ -26,6 +29,7 @@ export default function ProfileTab({
   kaluPoints,
   activeInstallments = [],
   allTransactions = [],
+  paymentHistory = [],
   onLogout,
   onNavigateSubView,
   onNavigateTab,
@@ -34,6 +38,14 @@ export default function ProfileTab({
   const [activeSubView, setActiveSubView] = useState<SubViewType>('main');
   const [filterTab, setFilterTab] = useState<FilterTabType>('por_pagar');
   const [rewardTab, setRewardTab] = useState<RewardTabType>('disponibles');
+  const [expandedPurchases, setExpandedPurchases] = useState<Record<string, boolean>>({});
+
+  const togglePurchaseExpand = (purchaseId: string) => {
+    setExpandedPurchases(prev => ({
+      ...prev,
+      [purchaseId]: !prev[purchaseId]
+    }));
+  };
 
   // Seguridad States
   const [useBiometrics, setUseBiometrics] = useState(false);
@@ -320,210 +332,430 @@ export default function ProfileTab({
     </div>
   );
 
-  const renderMisCompras = () => (
-    <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col overflow-y-auto animate-in slide-in-from-right duration-300">
-      <div className="sticky top-0 z-50 bg-slate-950/80 backdrop-blur-md border-b border-slate-900 p-4 flex items-center gap-3">
-        <button onClick={() => setActiveSubView('main')} className="w-8 h-8 rounded-full bg-slate-900 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
-          <ArrowLeft className="w-5 h-5" />
-        </button>
-        <h2 className="text-base font-black text-white">Mis compras</h2>
-      </div>
+  // Fase 3D: Mis Compras con Helper Puro buildClientPurchaseHistory
+  const renderMisCompras = () => {
+    // Filtrar transacciones del cliente actual
+    const clientFilteredTxs = allTransactions.filter(
+      (t: any) => !clientData?.id || t.clientId === clientData.id || String(t.clientId) === String(clientData.id)
+    );
 
-      <div className="p-5 space-y-6">
-        <div
-          onClick={() => {
-            setActiveSubView('main');
-            if (onNavigateTab) onNavigateTab('pagos');
-          }}
-          className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex justify-between items-center cursor-pointer active:scale-[0.99] transition-transform shadow-md"
-        >
-          <div>
-            <h4 className="font-bold text-sm text-white mb-1">Consulta y paga desde un mismo lugar</h4>
-            <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest flex items-center gap-1">
-              Ir a Pagos <ChevronRight className="w-3 h-3" />
-            </p>
-          </div>
-          <div className="w-10 h-10 bg-slate-800/50 rounded-full flex items-center justify-center border border-slate-700/50">
-            <Calendar className="w-5 h-5 text-emerald-500" />
-          </div>
+    const purchaseOverview = buildClientPurchaseHistory({
+      transactions: clientFilteredTxs,
+      installments: activeInstallments,
+      payments: paymentHistory
+    });
+
+    const currentList =
+      filterTab === 'por_pagar'
+        ? purchaseOverview.porPagar
+        : filterTab === 'pagadas'
+        ? purchaseOverview.pagadas
+        : purchaseOverview.canceladas;
+
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col overflow-y-auto animate-in slide-in-from-right duration-300">
+        {/* Header */}
+        <div className="sticky top-0 z-50 bg-slate-950/80 backdrop-blur-md border-b border-slate-900 p-4 flex items-center gap-3">
+          <button
+            onClick={() => setActiveSubView('main')}
+            className="w-8 h-8 rounded-full bg-slate-900 flex items-center justify-center text-slate-400 hover:text-white transition-colors"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-base font-black text-white">Mis compras</h2>
         </div>
 
-        <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
-          <button
-            onClick={() => setFilterTab('por_pagar')}
-            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${filterTab === 'por_pagar' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
-              }`}
+        <div className="p-4 sm:p-5 space-y-4">
+          {/* Banner de Acceso a Pagos */}
+          <div
+            onClick={() => {
+              setActiveSubView('main');
+              if (onNavigateTab) onNavigateTab('pagos');
+            }}
+            className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex justify-between items-center cursor-pointer active:scale-[0.99] transition-transform shadow-md"
           >
-            Por pagar
-          </button>
-          <button
-            onClick={() => setFilterTab('pagadas')}
-            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${filterTab === 'pagadas' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
-              }`}
-          >
-            Pagadas
-          </button>
-          <button
-            onClick={() => setFilterTab('canceladas')}
-            className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${filterTab === 'canceladas' ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]' : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
-              }`}
-          >
-            Canceladas
-          </button>
-        </div>
+            <div>
+              <h4 className="font-bold text-sm text-white mb-1">Consulta y paga desde un mismo lugar</h4>
+              <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest flex items-center gap-1">
+                Ir a Pagos <ChevronRight className="w-3 h-3" />
+              </p>
+            </div>
+            <div className="w-10 h-10 bg-slate-800/50 rounded-full flex items-center justify-center border border-slate-700/50">
+              <Calendar className="w-5 h-5 text-emerald-500" />
+            </div>
+          </div>
 
-        <div className="space-y-3">
-          {filterTab === 'por_pagar' && (() => {
-            const pendingList = activeInstallments.filter((i: any) => i.status === 'pending' || i.status === 'in_review');
-            if (pendingList.length === 0) {
-              return (
-                <div className="py-12 flex flex-col items-center justify-center text-center animate-in fade-in">
-                  <Wind className="w-12 h-12 text-slate-700 mb-4" />
-                  <p className="text-sm font-bold text-slate-400">Respira, no tienes pagos pendientes.</p>
-                </div>
-              );
-            }
-            return pendingList.map((compra: any, idx: number) => {
-              const amount = Number(compra.amountUSD || compra.amount || 0);
-              const dueStr = compra.dueDate ? new Date(compra.dueDate).toLocaleDateString('es-ES') : 'Próximamente';
-              const isInReview = compra.status === 'in_review';
-              return (
-                <div key={compra.id || idx} className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex justify-between items-center shadow-sm">
-                  <div>
-                    <h4 className="font-bold text-sm text-slate-100">
-                      Cuota {compra.installmentNumber || (idx + 1)} {compra.transactionId ? `(Venta #${String(compra.transactionId).slice(-6)})` : ''}
-                    </h4>
-                    <p className="text-[10px] text-slate-400 mt-1">Vence: {dueStr}</p>
-                    {isInReview && (
-                      <span className="inline-block mt-1 text-[9px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20">
-                        En Revisión
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-right">
-                    <p className="font-black text-white text-lg">${amount.toFixed(2)}</p>
-                    <button
-                      onClick={() => {
-                        setActiveSubView('main');
-                        if (onNavigateTab) onNavigateTab('pagos');
-                      }}
-                      className="text-[9px] font-bold text-emerald-400 uppercase tracking-widest mt-1 hover:text-emerald-300 transition-colors"
+          {/* Selector de Pestañas: Por pagar / Pagadas / Canceladas */}
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-hide">
+            <button
+              onClick={() => setFilterTab('por_pagar')}
+              className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${
+                filterTab === 'por_pagar'
+                  ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
+                  : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
+              }`}
+            >
+              Por pagar {purchaseOverview.porPagar.length > 0 ? `(${purchaseOverview.porPagar.length})` : ''}
+            </button>
+            <button
+              onClick={() => setFilterTab('pagadas')}
+              className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${
+                filterTab === 'pagadas'
+                  ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
+                  : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
+              }`}
+            >
+              Pagadas {purchaseOverview.pagadas.length > 0 ? `(${purchaseOverview.pagadas.length})` : ''}
+            </button>
+            <button
+              onClick={() => setFilterTab('canceladas')}
+              className={`whitespace-nowrap rounded-full px-4 py-2 text-xs font-bold transition-all ${
+                filterTab === 'canceladas'
+                  ? 'bg-emerald-500 text-slate-950 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
+                  : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-300'
+              }`}
+            >
+              Canceladas {purchaseOverview.canceladas.length > 0 ? `(${purchaseOverview.canceladas.length})` : ''}
+            </button>
+          </div>
+
+          {/* Listado de Compras */}
+          <div className="space-y-3">
+            {currentList.length === 0 ? (
+              <div className="py-12 flex flex-col items-center justify-center text-center animate-in fade-in">
+                {filterTab === 'por_pagar' && (
+                  <>
+                    <Wind className="w-12 h-12 text-slate-700 mb-4" />
+                    <p className="text-sm font-bold text-slate-400">No tienes compras pendientes.</p>
+                  </>
+                )}
+                {filterTab === 'pagadas' && (
+                  <>
+                    <ShoppingBag className="w-12 h-12 text-slate-700 mb-4" />
+                    <p className="text-sm font-bold text-slate-400">Aún no tienes compras pagadas.</p>
+                  </>
+                )}
+                {filterTab === 'canceladas' && (
+                  <>
+                    <XCircle className="w-12 h-12 text-slate-700 mb-4" />
+                    <p className="text-sm font-bold text-slate-400">No tienes compras canceladas.</p>
+                  </>
+                )}
+              </div>
+            ) : (
+              currentList.map((purchase: ClientPurchaseRecord) => {
+                const isExpanded = !!expandedPurchases[purchase.purchaseId];
+
+                // Badge de estado
+                let statusBadge = (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20">
+                    Pagada
+                  </span>
+                );
+
+                if (purchase.status === 'cancelled') {
+                  statusBadge = (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 font-bold border border-rose-500/20">
+                      Cancelada
+                    </span>
+                  );
+                } else if (purchase.status === 'in_review') {
+                  statusBadge = (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20">
+                      Pago en revisión
+                    </span>
+                  );
+                } else if (purchase.status === 'overdue') {
+                  statusBadge = (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 font-bold border border-rose-500/20">
+                      Vencida
+                    </span>
+                  );
+                } else if (purchase.remainingAmount > 0) {
+                  statusBadge = (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20">
+                      Pendiente
+                    </span>
+                  );
+                }
+
+                return (
+                  <div
+                    key={purchase.purchaseId}
+                    className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm transition-all"
+                  >
+                    {/* Encabezado Compacto / Acordeón */}
+                    <div
+                      onClick={() => togglePurchaseExpand(purchase.purchaseId)}
+                      className="p-4 flex items-center justify-between cursor-pointer hover:bg-slate-800/40 transition-colors select-none"
                     >
-                      Pagar &gt;
-                    </button>
-                  </div>
-                </div>
-              );
-            });
-          })()}
-
-          {filterTab === 'pagadas' && (() => {
-            const paidTxs = allTransactions.filter((t: any) =>
-              t.clientId === clientData?.id &&
-              (t.status === 'approved' || t.status === 'Completado' || !t.isVoided) &&
-              (t.category === 'ventas' || t.category === 'credito' || t.category === 'ingresos_cobranza' || t.category === 'payment')
-            );
-            const paidInsts = activeInstallments.filter((i: any) => i.status === 'paid');
-
-            if (paidTxs.length === 0 && paidInsts.length === 0) {
-              return (
-                <div className="py-12 flex flex-col items-center justify-center text-center animate-in fade-in">
-                  <ShoppingBag className="w-12 h-12 text-slate-700 mb-4" />
-                  <p className="text-sm font-bold text-slate-400">No hay compras finalizadas registradas.</p>
-                </div>
-              );
-            }
-
-            return (
-              <>
-                {paidTxs.map((compra: any) => {
-                  const dateStr = compra.date || (compra.timestamp ? new Date(compra.timestamp).toLocaleDateString('es-ES') : 'Reciente');
-                  const amount = Number(compra.amount || compra.totalUSD || compra.total || 0);
-                  const isCredit = compra.category === 'credito' || compra.paymentMethod?.toLowerCase().includes('crédito');
-                  return (
-                    <div key={compra.id} className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex justify-between items-center animate-in fade-in shadow-sm">
-                      <div>
-                        <h4 className="font-bold text-sm text-slate-100">{compra.entity || 'Compra en Tienda Kalu'}</h4>
-                        <div className="flex items-center gap-2 mt-1">
-                          <span className="text-[9px] px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                            {isCredit ? 'Crédito Kalú' : (compra.paymentMethod || 'Contado')}
-                          </span>
-                          <span className="text-[10px] text-slate-500">{dateStr}</span>
+                      <div className="space-y-1 pr-2">
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-bold text-sm text-slate-100">{purchase.invoiceNumber}</h4>
+                          {statusBadge}
                         </div>
+                        <div className="flex items-center gap-2 text-[11px] text-slate-400">
+                          <span>{purchase.purchaseDate}</span>
+                          <span>•</span>
+                          <span>{purchase.paymentMethod}</span>
+                        </div>
+                        {purchase.nextDueDate && purchase.remainingAmount > 0 && (
+                          <p className="text-[10px] text-slate-400">
+                            Próx. vencimiento: <span className="text-slate-300 font-medium">{formatDisplayDate(purchase.nextDueDate)}</span>
+                          </p>
+                        )}
                       </div>
+
                       <div className="text-right flex items-center gap-3">
                         <div>
-                          <p className="font-black text-white text-lg">${amount.toFixed(2)}</p>
-                          <p className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">Finalizada</p>
+                          <p className="font-black text-white text-base sm:text-lg">
+                            ${purchase.saleTotal.toFixed(2)}
+                          </p>
+                          {purchase.remainingAmount > 0 && purchase.status !== 'cancelled' && (
+                            <p className="text-[11px] font-bold text-amber-400">
+                              Por pagar: ${purchase.remainingAmount.toFixed(2)}
+                            </p>
+                          )}
+                          {purchase.status === 'paid' && (
+                            <p className="text-[10px] font-bold text-emerald-500 uppercase tracking-wider">
+                              Liquidada
+                            </p>
+                          )}
                         </div>
-                        <ChevronRight className="w-4 h-4 text-slate-600" />
+                        <div className="text-slate-500">
+                          {isExpanded ? (
+                            <ChevronDown className="w-5 h-5 text-emerald-400" />
+                          ) : (
+                            <ChevronRight className="w-5 h-5" />
+                          )}
+                        </div>
                       </div>
                     </div>
-                  );
-                })}
-                {paidInsts.map((inst: any) => (
-                  <div key={inst.id} className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex justify-between items-center animate-in fade-in shadow-sm">
-                    <div>
-                      <h4 className="font-bold text-sm text-slate-100">Cuota Pagada {inst.transactionId ? `(#${String(inst.transactionId).slice(-6)})` : ''}</h4>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-[9px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-bold">Cuota Liquidada</span>
-                        <span className="text-[10px] text-slate-500">{inst.paidAt ? new Date(inst.paidAt).toLocaleDateString('es-ES') : 'Pagada'}</span>
+
+                    {/* Acordeón Abierto */}
+                    {isExpanded && (
+                      <div className="border-t border-slate-800/80 bg-slate-950/60 p-4 space-y-4 text-xs animate-in fade-in duration-200">
+                        {/* Resumen Financiero de la Compra */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-900/60 border border-slate-800/80 p-3 rounded-xl">
+                          <div>
+                            <span className="text-[10px] text-slate-500 block uppercase font-bold">Total Venta</span>
+                            <span className="text-sm font-bold text-slate-200">${purchase.saleTotal.toFixed(2)}</span>
+                          </div>
+                          {purchase.financedAmount > 0 && (
+                            <div>
+                              <span className="text-[10px] text-slate-500 block uppercase font-bold">Financiado</span>
+                              <span className="text-sm font-bold text-slate-200">${purchase.financedAmount.toFixed(2)}</span>
+                            </div>
+                          )}
+                          <div>
+                            <span className="text-[10px] text-slate-500 block uppercase font-bold">Abonado</span>
+                            <span className="text-sm font-bold text-emerald-400">${purchase.paidAmount.toFixed(2)}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 block uppercase font-bold">Restante</span>
+                            <span className={`text-sm font-bold ${purchase.remainingAmount > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
+                              ${purchase.remainingAmount.toFixed(2)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Productos / Items */}
+                        {purchase.items.length > 0 && (
+                          <div className="space-y-2">
+                            <h5 className="font-bold text-slate-300 flex items-center gap-1.5 text-xs">
+                              <Package className="w-3.5 h-3.5 text-emerald-500" />
+                              Productos ({purchase.items.length})
+                            </h5>
+                            <div className="bg-slate-900/40 border border-slate-800/60 rounded-xl divide-y divide-slate-800/50">
+                              {purchase.items.map((item, iIdx) => (
+                                <div key={iIdx} className="p-2.5 flex justify-between items-center text-xs">
+                                  <div className="pr-2">
+                                    <span className="font-semibold text-slate-200 block">{item.name}</span>
+                                    <span className="text-[10px] text-slate-400">
+                                      Cant: {item.quantity} {item.unitPrice != null ? `× $${item.unitPrice.toFixed(2)}` : ''}
+                                    </span>
+                                  </div>
+                                  <span className="font-bold text-slate-300 whitespace-nowrap">
+                                    ${item.subtotal.toFixed(2)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Cuotas si es venta financiada */}
+                        {purchase.installments.length > 0 && (
+                          <div className="space-y-2">
+                            <h5 className="font-bold text-slate-300 flex items-center gap-1.5 text-xs">
+                              <CreditCard className="w-3.5 h-3.5 text-emerald-500" />
+                              Plan de Cuotas ({purchase.installments.length})
+                            </h5>
+
+                            {/* Compra Mixta: separar visualmente si tiene cotidiano y otros */}
+                            {purchase.foodInstallments.length > 0 && purchase.otherInstallments.length > 0 ? (
+                              <div className="space-y-3">
+                                <div className="space-y-1.5">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                                    Víveres y Alimentos
+                                  </span>
+                                  <div className="space-y-1.5">
+                                    {purchase.foodInstallments.map((inst, fIdx) => renderInstallmentRow(inst, fIdx, purchase.foodInstallments.length))}
+                                  </div>
+                                </div>
+                                <div className="space-y-1.5">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                                    Repuestos / Otros
+                                  </span>
+                                  <div className="space-y-1.5">
+                                    {purchase.otherInstallments.map((inst, oIdx) => renderInstallmentRow(inst, oIdx, purchase.otherInstallments.length))}
+                                  </div>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="space-y-1.5">
+                                {purchase.installments.map((inst, idx) => renderInstallmentRow(inst, idx, purchase.installments.length))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Historial de Pagos de esta compra */}
+                        {purchase.payments.length > 0 && (
+                          <div className="space-y-2">
+                            <h5 className="font-bold text-slate-300 flex items-center gap-1.5 text-xs">
+                              <Receipt className="w-3.5 h-3.5 text-emerald-500" />
+                              Historial de Pagos ({purchase.payments.length})
+                            </h5>
+                            <div className="bg-slate-900/40 border border-slate-800/60 rounded-xl divide-y divide-slate-800/50">
+                              {purchase.payments.map((p, pIdx) => {
+                                const pAmount = Number(p.amount || p.amountUSD || 0);
+                                const pDate = formatDisplayDate(p.date || p.timestamp || p.createdAt);
+                                const pMethod = p.paymentMethod || p.method || 'Pago Móvil';
+                                const pRef = p.reference ? `Ref: ${p.reference}` : '';
+
+                                let pStatusLabel = (
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20">
+                                    Aprobado
+                                  </span>
+                                );
+                                if (p.status === 'pending' || p.status === 'pending_approval' || p.status === 'in_review') {
+                                  pStatusLabel = (
+                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20">
+                                      En revisión
+                                    </span>
+                                  );
+                                } else if (p.status === 'rejected' || p.status === 'rechazado') {
+                                  pStatusLabel = (
+                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 font-bold border border-rose-500/20">
+                                      Rechazado
+                                    </span>
+                                  );
+                                }
+
+                                return (
+                                  <div key={p.id || pIdx} className="p-2.5 flex justify-between items-center text-xs">
+                                    <div>
+                                      <div className="flex items-center gap-2">
+                                        <span className="font-semibold text-slate-200">${pAmount.toFixed(2)}</span>
+                                        {pStatusLabel}
+                                      </div>
+                                      <p className="text-[10px] text-slate-400 mt-0.5">
+                                        {pDate} • {pMethod} {pRef ? `• ${pRef}` : ''}
+                                      </p>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Botón de Acción si está pendiente */}
+                        {purchase.remainingAmount > 0 && purchase.status !== 'cancelled' && (
+                          <div className="pt-2">
+                            <button
+                              onClick={() => {
+                                setActiveSubView('main');
+                                if (onNavigateTab) onNavigateTab('pagos');
+                              }}
+                              className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold uppercase rounded-xl text-xs tracking-wider transition-all shadow-md flex items-center justify-center gap-2"
+                            >
+                              Reportar pago en Pagos &gt;
+                            </button>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                    <div className="text-right flex items-center gap-3">
-                      <div>
-                        <p className="font-black text-white text-lg">${Number(inst.amountUSD || inst.amount || 0).toFixed(2)}</p>
-                        <p className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">Pagada</p>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-slate-600" />
-                    </div>
+                    )}
                   </div>
-                ))}
-              </>
-            );
-          })()}
-
-          {filterTab === 'canceladas' && (() => {
-            const cancelledTxs = allTransactions.filter((t: any) =>
-              t.clientId === clientData?.id &&
-              (t.isVoided || t.status === 'rejected' || t.status === 'voided' || t.status === 'cancelado')
-            );
-
-            if (cancelledTxs.length === 0) {
-              return (
-                <div className="py-12 flex flex-col items-center justify-center text-center animate-in fade-in">
-                  <p className="text-sm font-bold text-slate-500">No tienes compras canceladas.</p>
-                </div>
-              );
-            }
-
-            return cancelledTxs.map((compra: any) => {
-              const dateStr = compra.date || (compra.timestamp ? new Date(compra.timestamp).toLocaleDateString('es-ES') : 'Reciente');
-              const amount = Number(compra.amount || compra.totalUSD || 0);
-              return (
-                <div key={compra.id} className="bg-slate-900/40 border border-slate-800/50 rounded-2xl p-4 flex justify-between items-center animate-in fade-in opacity-80">
-                  <div>
-                    <h4 className="font-bold text-sm text-slate-300">{compra.entity || 'Orden Anulada'}</h4>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="text-[9px] px-2 py-0.5 rounded bg-slate-800/50 text-slate-400">{compra.paymentMethod || 'Crédito'}</span>
-                      <span className="text-[10px] text-slate-600">{dateStr}</span>
-                    </div>
-                  </div>
-                  <div className="text-right flex items-center gap-3">
-                    <div>
-                      <p className="font-black text-slate-400 text-lg line-through decoration-slate-600 decoration-2 opacity-80">${amount.toFixed(2)}</p>
-                      <p className="text-[9px] font-bold text-rose-400/80 uppercase tracking-widest">Cancelada</p>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-slate-700" />
-                  </div>
-                </div>
-              );
-            });
-          })()}
+                );
+              })
+            )}
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  };
+
+  const renderInstallmentRow = (inst: any, idx: number, total: number) => {
+    const instNum = inst.installmentNumber || (idx + 1);
+    const totalInsts = inst.totalInstallments || total;
+    const instAmount = Number(inst.amountUSD || inst.amount || 0);
+    const instPaid = Number(inst.paidAmount || 0);
+    const instRemaining = Math.max(0, Math.round((instAmount - instPaid) * 100) / 100);
+    const dueStr = inst.dueDate ? formatDisplayDate(inst.dueDate) : 'Próximamente';
+
+    let instBadge = (
+      <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20">
+        Pagada
+      </span>
+    );
+
+    if (inst.status === 'in_review') {
+      instBadge = (
+        <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20">
+          En revisión
+        </span>
+      );
+    } else if (instRemaining > 0 && inst.status === 'overdue') {
+      instBadge = (
+        <span className="text-[9px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 font-bold border border-rose-500/20">
+          Vencida
+        </span>
+      );
+    } else if (instRemaining > 0) {
+      instBadge = (
+        <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20">
+          Pendiente
+        </span>
+      );
+    }
+
+    return (
+      <div
+        key={inst.id || idx}
+        className="bg-slate-900/60 border border-slate-800/80 p-2.5 rounded-xl flex justify-between items-center text-xs"
+      >
+        <div className="space-y-0.5">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-slate-200">
+              Cuota {instNum} de {totalInsts}
+            </span>
+            {instBadge}
+          </div>
+          <p className="text-[10px] text-slate-400">
+            Vence: {dueStr} {instPaid > 0 ? `• Abonado: $${instPaid.toFixed(2)}` : ''}
+          </p>
+        </div>
+        <div className="text-right">
+          <span className="font-bold text-white block">${instAmount.toFixed(2)}</span>
+          {instRemaining > 0 && instRemaining !== instAmount && (
+            <span className="text-[10px] text-amber-400 block">Resta: ${instRemaining.toFixed(2)}</span>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   const renderMisRecompensas = () => (
     <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col overflow-y-auto animate-in slide-in-from-right duration-300">

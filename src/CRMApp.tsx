@@ -1963,6 +1963,7 @@ export default function App() {
           isSidebarOpen={isSidebarOpen}
           onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
           exchangeRate={settings.exchangeRate || 0}
+          onNavigate={setCurrentView}
         />
 
         {/* Scrollable Main View Stage */}

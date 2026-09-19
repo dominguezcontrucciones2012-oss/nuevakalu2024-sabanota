@@ -1,4 +1,4 @@
-import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc, approvePwaPaymentApi, rejectPwaPaymentApi } from '../../services/localApi';
 import React, { useState, useEffect } from 'react';
 import KaluLoader from '../KaluLoader';
 import { Receipt, CheckCircle, XCircle, Clock, Bot, ShieldCheck, Image as ImageIcon, Eye, X, AlertTriangle, ZoomIn } from 'lucide-react';
@@ -38,26 +38,12 @@ export default function CollectionsView({
 }) {
   const [payments, setPayments] = useState<PWAPayment[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [selectedReceipt, setSelectedReceipt] = useState<{
-    imageUrl: string;
-    entityName: string;
-    amount: number;
-    reference: string;
-    date: string;
-  } | null>(null);
+  const [activeTab, setActiveTab] = useState<'pending' | 'history'>('pending');
+  const [selectedReceipt, setSelectedReceipt] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = onCollectionSnapshot('pwa_payments', (data) => {
-      const p = data.map(doc => ({ ...doc } as PWAPayment));
-      p.sort((a, b) => {
-        const getMs = (tx: any) => {
-          if (tx.timestamp && typeof tx.timestamp.toMillis === 'function') return tx.timestamp.toMillis();
-          if (tx.timestamp && typeof tx.timestamp === 'number') return tx.timestamp;
-          return new Date(tx.date).getTime() || 0;
-        };
-        return getMs(b) - getMs(a);
-      });
-      setPayments(p);
+      setPayments(data || []);
       setIsLoading(false);
     });
     return () => unsub();
@@ -65,20 +51,15 @@ export default function CollectionsView({
 
   const handleApprovePayment = async (payment: PWAPayment) => {
     if (payment.status !== 'pending') {
-      onAddNotification?.('El comprobante ya fue procesado anteriormente.', 'warning');
+      onAddNotification?.('El comprobante ya fue procesado.', 'warning');
       return;
     }
 
     try {
       if (payment.type === 'credito_cashea') {
-        await updateLocalDoc('pwa_payments', payment.id, {
-          status: 'approved',
-          approvedAt: new Date().toISOString()
-        });
-
+        const targetId = payment.clientId || payment.entityId;
         const clientsRes = await fetchCollection('clients');
         const clients = Array.isArray(clientsRes) ? clientsRes : (clientsRes.json ? await clientsRes.json() : []);
-        const targetId = payment.clientId || payment.entityId;
         const c = clients.find((x: any) => String(x.id) === String(targetId));
         if (c) {
           await updateLocalDoc('clients', targetId, {
@@ -119,79 +100,21 @@ export default function CollectionsView({
           });
         }
         
-        onAddNotification?.('Crédito QR Aprobado Exitosamente', 'success');
-
-      } else {
-        const isSupplier = payment.type === 'productor';
-        const targetId = payment.clientId || payment.entityId;
-
-        if (isSupplier) {
-          const suppliersRes = await fetchCollection('suppliers');
-          const suppliers = Array.isArray(suppliersRes) ? suppliersRes : (suppliersRes.json ? await suppliersRes.json() : []);
-          const s = suppliers.find((x: any) => String(x.id) === String(targetId));
-          if (s) {
-            await updateLocalDoc('suppliers', targetId, {
-              storeDebt: Math.max(0, (s.storeDebt || 0) - payment.amount)
-            });
-          }
-        } else {
-          // Normal Payment (Abono de Cliente)
-          const clientsRes = await fetchCollection('clients');
-          const clients = Array.isArray(clientsRes) ? clientsRes : (clientsRes.json ? await clientsRes.json() : []);
-          const c = clients.find((x: any) => String(x.id) === String(targetId));
-
-          if (c) {
-            const currentDebt = Number(c.outstandingDebt || 0);
-            if (payment.amount > currentDebt + 0.05 && currentDebt > 0) {
-              onAddNotification?.(`Aviso: El abono ($${payment.amount.toFixed(2)}) supera la deuda actual ($${currentDebt.toFixed(2)}). Se ajusta al saldo pendiente.`, 'info');
-            }
-
-            const newDebt = Math.max(0, Math.round((currentDebt - payment.amount) * 100) / 100);
-            const currentPoints = Number(c.loyaltyPoints || 0);
-            const pointsToAdd = Math.round(payment.amount);
-
-            await updateLocalDoc('clients', targetId, {
-              outstandingDebt: newDebt,
-              loyaltyPoints: currentPoints + pointsToAdd
-            });
-          }
-
-          // Mark installments as paid if provided
-          const instIds = payment.installmentIds || (payment.installmentId ? [payment.installmentId] : []);
-          if (instIds.length > 0) {
-            await Promise.all(instIds.map(id =>
-              updateLocalDoc('installments', id, { status: 'paid', paidAt: new Date().toISOString() })
-            ));
-          }
-        }
-
-        const newTx = {
-          id: `TX-${Date.now()}`,
-          clientId: !isSupplier ? targetId : undefined,
-          supplierId: isSupplier ? targetId : undefined,
-          entity: payment.entityName,
-          category: 'ingresos_cobranza',
-          date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-          timestamp: new Date().toISOString(),
-          invoiceNumber: `PWA-${payment.reference}`,
-          amount: payment.amount,
-          isIncome: true,
-          status: 'Completado',
-          paymentMethod: payment.method || payment.paymentMethod || 'Pago Móvil',
-          notes: `Cobranza PWA aprobada. Ref: ${payment.reference}`
-        };
-        await addLocalDoc('transactions', newTx);
-
         await updateLocalDoc('pwa_payments', payment.id, {
           status: 'approved',
           approvedAt: new Date().toISOString()
         });
 
+        onAddNotification?.('Crédito QR Aprobado Exitosamente', 'success');
+
+      } else {
+        // Operación atómica de backend: aprobación idempotente
+        await approvePwaPaymentApi(payment.id);
         onAddNotification?.('Pago aprobado y conciliado exitosamente', 'success');
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      onAddNotification?.('Error al aprobar el pago', 'warning');
+      onAddNotification?.(e.message || 'Error al aprobar el pago', 'warning');
     }
   };
 
@@ -202,23 +125,11 @@ export default function CollectionsView({
     }
 
     try {
-      await updateLocalDoc('pwa_payments', payment.id, {
-        status: 'rejected',
-        rejectedAt: new Date().toISOString()
-      });
-
-      // If it's a normal payment, reset the installments back to 'pending' from 'in_review'
-      const instIds = payment.installmentIds || (payment.installmentId ? [payment.installmentId] : []);
-      if (instIds.length > 0) {
-        await Promise.all(instIds.map(id =>
-           updateLocalDoc('installments', id, { status: 'pending' })
-        ));
-      }
-      
+      await rejectPwaPaymentApi(payment.id);
       onAddNotification?.('Solicitud rechazada. La deuda permanece intacta.', 'info');
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      onAddNotification?.('Error al rechazar', 'warning');
+      onAddNotification?.(e.message || 'Error al rechazar', 'warning');
     }
   };
 
@@ -339,6 +250,16 @@ export default function CollectionsView({
                           {p.type === 'credito_cashea' ? 'CRÉDITO QR' : p.type === 'cliente' ? 'PAGO CUOTA' : 'PROVEEDOR'}
                         </span>
                         <span className="font-bold text-lg text-white">{p.entityName}</span>
+                        {p.transactionId && (
+                          <span className="text-[10px] font-mono text-zinc-400 bg-zinc-900 border border-zinc-700 px-2 py-0.5 rounded">
+                            Compra: {p.transactionId}
+                          </span>
+                        )}
+                        {p.installmentId && (
+                          <span className="text-[10px] font-mono text-emerald-400/90 bg-emerald-950/40 border border-emerald-800/50 px-2 py-0.5 rounded">
+                            Cuota: {p.installmentId}
+                          </span>
+                        )}
                         {p.status === 'pending' && <span className="text-[10px] font-mono font-bold bg-amber-500/20 text-amber-400 border border-amber-500/40 px-2 py-0.5 rounded animate-pulse">PENDIENTE VALIDACIÓN</span>}
                         {p.status === 'approved' && <span className="text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-2 py-0.5 rounded">APROBADO</span>}
                         {p.status === 'rejected' && <span className="text-[10px] font-mono font-bold bg-rose-500/20 text-rose-400 border border-rose-500/40 px-2 py-0.5 rounded">RECHAZADO</span>}
@@ -347,7 +268,7 @@ export default function CollectionsView({
                       <div className="grid grid-cols-4 gap-4 text-sm text-neutral-400 font-mono">
                         <div>
                           <span className="block text-[10px] uppercase text-neutral-500 font-bold">Monto Financiado / Pago</span>
-                          <span className="text-emerald-400 font-bold text-base">${p.amount.toFixed(2)} {p.currency}</span>
+                          <span className="text-emerald-400 font-bold text-base">${p.amount.toFixed(2)} {p.currency || 'USD'}</span>
                           {p.amountBs && <span className="block text-[10px] text-neutral-400">({Number(p.amountBs).toLocaleString('es-VE')} Bs)</span>}
                         </div>
                         <div>
@@ -356,11 +277,11 @@ export default function CollectionsView({
                         </div>
                         <div>
                           <span className="block text-[10px] uppercase text-neutral-500 font-bold">Método de Pago</span>
-                          <span className="text-neutral-200">{p.method}</span>
+                          <span className="text-neutral-200">{p.method || p.paymentMethod || 'Pago Móvil'}</span>
                         </div>
                         <div>
                           <span className="block text-[10px] uppercase text-neutral-500 font-bold">Fecha / Hora</span>
-                          <span className="text-neutral-300 text-xs">{p.date ? new Date(p.date).toLocaleString('es-ES') : 'Reciente'}</span>
+                          <span className="text-neutral-300 text-xs">{p.date ? (p.date.includes('T') ? new Date(p.date).toLocaleString('es-ES') : p.date) : 'Reciente'}</span>
                         </div>
                       </div>
 
@@ -368,6 +289,24 @@ export default function CollectionsView({
                         <p className="text-xs text-neutral-400 mt-2 font-mono italic bg-neutral-900/40 px-2 py-1 rounded border border-neutral-800">
                           {p.notes}
                         </p>
+                      )}
+
+                      {receiptSrc && (
+                        <div className="mt-2.5">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedReceipt({
+                              imageUrl: receiptSrc,
+                              entityName: p.entityName,
+                              amount: p.amount,
+                              reference: p.reference,
+                              date: p.date
+                            })}
+                            className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-3 py-1 rounded-lg transition-colors cursor-pointer"
+                          >
+                            <Receipt className="w-3.5 h-3.5" /> Ver Comprobante
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>

@@ -225,7 +225,25 @@ export default function StockPurchasesView({
         }
       } catch (error: any) {
         console.error(error);
-        onAddNotification(error.message || 'Error procesando OCR.', 'warning');
+        const errMsg = String(error?.message || '');
+        const errCode = error?.code || '';
+        const errStatus = error?.status;
+
+        if (errStatus === 401 || errStatus === 403 || errMsg.includes('401') || errMsg.includes('No autenticado') || errMsg.includes('Sesión')) {
+          onAddNotification('Sesión CRM requerida o expirada. Por favor inicie sesión nuevamente.', 'warning');
+        } else {
+          let userNotification = error.message || 'Error procesando OCR con IA.';
+          if (errCode === 'AI_TEMPORARILY_UNAVAILABLE') {
+            userNotification = 'IA temporalmente ocupada. Intente nuevamente en unos momentos.';
+          } else if (errCode === 'AI_TIMEOUT' || errCode === 'TOTAL_BUDGET_EXCEEDED') {
+            userNotification = 'La IA tardó demasiado en responder. Puede intentar nuevamente.';
+          } else if (errCode === 'AI_CONFIGURATION_ERROR') {
+            userNotification = 'Servicio de IA no disponible en este momento.';
+          } else if (errCode === 'AI_INVALID_REQUEST') {
+            userNotification = 'No se pudo leer correctamente la imagen seleccionada.';
+          }
+          onAddNotification(userNotification, 'warning');
+        }
       } finally {
         setIsScanning(false);
         if (fileInputRef.current) fileInputRef.current.value = '';

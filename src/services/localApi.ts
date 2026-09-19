@@ -4,9 +4,9 @@ import { io, Socket } from 'socket.io-client';
 // but since the server runs on 3001 locally, we stick to localhost:3001.
 // In a true local network setup with phones, we should use window.location.hostname
 const isProd = import.meta.env.PROD;
-const hostname = window.location.hostname;
-const API_URL = isProd ? `/api` : `http://${hostname}:3001/api`;
-const SOCKET_URL = isProd ? `/` : `http://${hostname}:3001`;
+const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+export const API_URL = isProd ? `/api` : `http://${hostname}:3001/api`;
+export const SOCKET_URL = isProd ? `/` : `http://${hostname}:3001`;
 
 // Global Socket Instance
 let socket: Socket | null = null;
@@ -698,4 +698,42 @@ export const fetchBootstrapDataApi = async () => {
     })
   );
   return Object.fromEntries(results);
+};
+
+// 19. Aprobación Atómica e Idempotente de Pago PWA (Fase 2D)
+export const approvePwaPaymentApi = async (paymentId: string) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/pwa-payments/${encodeURIComponent(paymentId)}/approve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include'
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || `Error ${res.status} aprobando pago PWA`);
+  }
+  return data;
+};
+
+// 20. Rechazo Atómico de Pago PWA (Fase 2D)
+export const rejectPwaPaymentApi = async (paymentId: string) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/pwa-payments/${encodeURIComponent(paymentId)}/reject`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include'
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || `Error ${res.status} rechazando pago PWA`);
+  }
+  return data;
 };

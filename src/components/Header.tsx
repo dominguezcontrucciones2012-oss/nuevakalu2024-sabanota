@@ -7,16 +7,19 @@ import React, { useEffect, useState } from 'react';
 import { ViewType } from '../types';
 import { Bell, RefreshCw, Cpu, Activity, Menu, Smartphone, HardDrive, Radio, Loader2 } from 'lucide-react';
 import { onCollectionSnapshot } from '../services/localApi';
+import { getPendingMundoKaluPaymentCount } from '../utils/pendingPayments';
+
 interface HeaderProps {
   currentView: ViewType;
   notificationCount: number;
   isSidebarOpen?: boolean;
   onToggleSidebar?: () => void;
   exchangeRate?: number;
+  onNavigate?: (view: ViewType) => void;
 }
 
-export default function Header({ currentView, notificationCount, isSidebarOpen = true, onToggleSidebar, exchangeRate = 0 }: HeaderProps) {
-  const [gatewayStatus, setGatewayStatus] = useState<{ isOnline: boolean, battery: number, lastSeenMs: number }>({ isOnline: false, battery: 0, lastSeenMs: 0 });
+export default function Header({ currentView, notificationCount, isSidebarOpen = true, onToggleSidebar, exchangeRate = 0, onNavigate }: HeaderProps) {
+  const [pendingMundoKaluCount, setPendingMundoKaluCount] = useState<number>(0);
   const [isOnlineMode, setIsOnlineMode] = useState(true);
   const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);
 
@@ -37,25 +40,10 @@ export default function Header({ currentView, notificationCount, isSidebarOpen =
   };
 
   useEffect(() => {
-    const unsub = onCollectionSnapshot('stores', (data) => {
-      const docSnap = data.find((d: any) => d.id === 'kaluqueso');
-      if (docSnap) {
-        const gatewayStatusData = docSnap.gateway_status;
-        if (gatewayStatusData) {
-          const pingField = gatewayStatusData.last_ping || gatewayStatusData.lastSeen;
-          if (pingField) {
-            const lastSeenMs = pingField.toMillis ? pingField.toMillis() : pingField;
-            const isOnline = (Date.now() - lastSeenMs) < 120000 && gatewayStatusData.online !== false;
-            setGatewayStatus({ isOnline, battery: gatewayStatusData.battery || 0, lastSeenMs });
-          } else {
-            setGatewayStatus({ isOnline: false, battery: 0, lastSeenMs: 0 });
-          }
-        } else {
-          setGatewayStatus({ isOnline: false, battery: 0, lastSeenMs: 0 });
-        }
-      } else {
-        setGatewayStatus({ isOnline: false, battery: 0, lastSeenMs: 0 });
-      }
+    // Suscripción reactiva en tiempo real a pagos PWA (Fase 3C)
+    const unsub = onCollectionSnapshot('pwa_payments', (data) => {
+      const count = getPendingMundoKaluPaymentCount(data);
+      setPendingMundoKaluCount(count);
     });
 
     return () => {
@@ -81,6 +69,8 @@ export default function Header({ currentView, notificationCount, isSidebarOpen =
         return { index: '07', title: 'BUZÓN DE QUEJAS', sub: 'Gestión interna de calidad de quesos y atención' };
       case 'settings':
         return { index: '08', title: 'ADMINISTRACIÓN GENERAL', sub: 'Gestión de usuarios, respaldos y herramientas de mantenimiento' };
+      case 'collections':
+        return { index: '09', title: 'CENTRO DE COBRANZAS', sub: 'Revisión y conciliación de comprobantes PWA' };
       default:
         return { index: '01', title: 'PORTAL KALU', sub: 'Control integral de la quesería' };
     }
@@ -115,7 +105,7 @@ export default function Header({ currentView, notificationCount, isSidebarOpen =
         </div>
       </div>
 
-      {/* Right Area: Exchange Rate, Network Controls & Gateway Status */}
+      {/* Right Area: Exchange Rate, Network Controls & Pagos Mundo Kalu Alertador */}
       <div className="flex items-center gap-2 md:gap-4 flex-wrap justify-end">
         {/* Exchange Rate Box (Always visible) */}
         <div className={`flex items-center gap-2 px-2 md:px-3 py-1.5 md:py-2 rounded border w-fit animate-in fade-in duration-500 ${
@@ -154,10 +144,34 @@ export default function Header({ currentView, notificationCount, isSidebarOpen =
           </button>
         </div>
 
-        <div className="flex items-center gap-1 md:gap-2 bg-black/40 p-1.5 md:p-2 rounded border border-white/10 w-fit h-[28px] md:h-[34px]">
-          <div className={`w-2 h-2 md:w-3 md:h-3 rounded-full ${gatewayStatus.isOnline ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.8)] animate-pulse' : 'bg-red-500 opacity-50'}`} />
-          <span className="text-[9px] md:text-xs font-bold text-white/80 uppercase tracking-wider leading-none"><span className="hidden md:inline">Gateway: </span>{gatewayStatus.isOnline ? 'ON' : 'OFF'}</span>
-        </div>
+        {/* Alertador en Tiempo Real: PAGOS MUNDO KALU (Reemplazo de Gateway - Fase 3C) */}
+        <button
+          type="button"
+          onClick={() => onNavigate && onNavigate('collections')}
+          aria-live="polite"
+          title={pendingMundoKaluCount > 0 ? `${pendingMundoKaluCount} pago(s) pendiente(s) por conciliar en Mundo Kalu` : 'Centro de Cobranzas Mundo Kalu (Sin pagos pendientes)'}
+          className={`flex items-center gap-1.5 md:gap-2 px-2.5 md:px-3 rounded border transition-all duration-300 h-[28px] md:h-[34px] cursor-pointer select-none ${
+            pendingMundoKaluCount > 0
+              ? 'bg-amber-500/20 border-amber-500/60 shadow-[0_0_12px_rgba(245,158,11,0.4)] hover:bg-amber-500/30'
+              : 'bg-black/40 border-white/10 hover:bg-black/60 opacity-85'
+          }`}
+        >
+          <div
+            className={`w-2 h-2 md:w-2.5 md:h-2.5 rounded-full ${
+              pendingMundoKaluCount > 0
+                ? 'bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.9)] motion-safe:animate-pulse'
+                : 'bg-emerald-500 opacity-60'
+            }`}
+          />
+          <span className="text-[9px] md:text-xs font-bold text-white uppercase tracking-wider leading-none flex items-center gap-1">
+            <span className="hidden sm:inline">PAGOS </span>MUNDO KALU
+            {pendingMundoKaluCount > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 text-[9px] md:text-[10px] font-mono font-black bg-amber-500 text-black rounded-full leading-none shadow-sm">
+                [{pendingMundoKaluCount}]
+              </span>
+            )}
+          </span>
+        </button>
       </div>
     </header>
   );

@@ -22,10 +22,12 @@ services:
     environment:
       - DATA_DIR=/var/www/app/data
       - UPLOAD_DIR=/var/www/app/uploads
+      - KALU_MEDIA_DIR=/var/www/app/protected_media
       - PORT=3001
       - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID:-1344089325449515}
       - WHATSAPP_API_KEY=${WHATSAPP_API_KEY}
       - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN:-kalu_sabanota_secure_token_2026}
+      - WHATSAPP_APP_SECRET=${WHATSAPP_APP_SECRET}
       - WHATSAPP_MAINTENANCE_MODE=${WHATSAPP_MAINTENANCE_MODE:-false}
       - WHATSAPP_MAINTENANCE_COOLDOWN_MS=${WHATSAPP_MAINTENANCE_COOLDOWN_MS:-900000}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
@@ -33,3 +35,4 @@ services:
     volumes:
       - /root/kalu-crm/data:/var/www/app/data
       - /root/kalu-crm/uploads:/var/www/app/uploads
+      - /root/kalu-crm/protected_media:/var/www/app/protected_media

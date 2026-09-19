@@ -40,6 +40,9 @@ export interface BackupData {
   collections: {
     [collectionName: string]: any[];
   };
+  captures?: {
+    [filename: string]: string;
+  };
 }
 
 export async function fetchOperationalData(): Promise<BackupData> {
@@ -113,22 +116,63 @@ export async function restoreSnapshot(): Promise<void> {
   throw new Error('Por favor utilice el botón "Importar Datos desde JSON Local" para seleccionar el archivo de respaldo.');
 }
 
-export async function exportToJson(): Promise<void> {
-  const data = await fetchOperationalData();
+export async function downloadBackupBundle(): Promise<void> {
+  const res = await fetch(`${BACKUP_API_URL}/full-backup?format=bundle`, {
+    credentials: 'include'
+  });
+  if (!res.ok) {
+    throw new Error('Error al descargar el paquete de respaldo del servidor.');
+  }
+
+  const blob = await res.blob();
   const dateStr = new Date().toISOString().replace(/:/g, '-').split('.')[0];
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
 
   const a = document.createElement('a');
   a.href = url;
-  a.download = `kalu_copia_seguridad_${dateStr}.json`;
+  a.download = `kalu_respaldo_completo_${dateStr}.tar.gz`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
 
+export async function exportToJson(): Promise<void> {
+  // Por defecto, descargamos el bundle escalable TAR.GZ con comprobantes
+  await downloadBackupBundle();
+}
+
 export async function importFromJson(file: File): Promise<any> {
+  if (file.name.endsWith('.tar.gz') || file.name.endsWith('.tgz') || file.type.includes('gzip')) {
+    // Es un bundle TAR.GZ
+    const arrayBuffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    let binary = '';
+    const chunkSize = 8192;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)));
+    }
+    const base64 = btoa(binary);
+
+    const csrf = await getCsrfToken();
+    const res = await fetch(`${BACKUP_API_URL}/restore-backup`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-csrf-token': csrf
+      },
+      credentials: 'include',
+      body: JSON.stringify({ bundleBase64: base64 })
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Error desconocido' }));
+      throw new Error(err.error || err.details?.join?.('\n') || 'Error al restaurar paquete');
+    }
+    return await res.json();
+  }
+
+  // Fallback para archivo .json legacy
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = async (e) => {

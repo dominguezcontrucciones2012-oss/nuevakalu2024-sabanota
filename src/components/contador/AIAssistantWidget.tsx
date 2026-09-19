@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Bot, Send, Loader2, Sparkles, X } from 'lucide-react';
 import { askGemini } from '../../services/gemini';
+import { getAIStatusApi } from '../../services/aiApi';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -9,11 +10,26 @@ interface Message {
 
 export default function AIAssistantWidget() {
   const [isOpen, setIsOpen] = useState(false);
+  const [aiStatus, setAiStatus] = useState<'checking' | 'active' | 'unavailable'>('checking');
   const [messages, setMessages] = useState<Message[]>([
     { role: 'assistant', content: '¡Hola Daisy! Soy tu asistente financiero. Puedo ayudarte a calcular márgenes, validar costos o sugerir precios de venta. ¿En qué te ayudo hoy?' }
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    getAIStatusApi()
+      .then(res => {
+        if (!mounted) return;
+        setAiStatus(res.available ? 'active' : 'unavailable');
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setAiStatus('unavailable');
+      });
+    return () => { mounted = false; };
+  }, []);
 
   const handleSend = async () => {
     if (!input.trim()) return;
@@ -58,8 +74,22 @@ export default function AIAssistantWidget() {
           <div>
             <h4 className="text-xs font-bold text-zinc-100">Asistente Kalu</h4>
             <div className="flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span className="text-[9px] text-zinc-400 font-mono uppercase">En línea (Gemini 3.7)</span>
+              {aiStatus === 'active' ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span className="text-[9px] text-zinc-400 font-mono uppercase">En línea (Asistente IA)</span>
+                </>
+              ) : aiStatus === 'checking' ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                  <span className="text-[9px] text-zinc-400 font-mono uppercase">Verificando...</span>
+                </>
+              ) : (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-zinc-600"></span>
+                  <span className="text-[9px] text-zinc-500 font-mono uppercase">IA no disponible</span>
+                </>
+              )}
             </div>
           </div>
         </div>

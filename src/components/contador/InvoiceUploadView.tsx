@@ -2,7 +2,7 @@ import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, del
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { extractInvoiceData, extractDictationData, pingGeminiAPI, normalizeTextForMatching } from '../../services/ocrService';
 import { INITIAL_CHEESE_PRODUCTS } from '../../data';
-import { Save, ArrowLeft, Search, Package, Trash2, Camera, Image as ImageIcon, Mic, Loader2, Snowflake, Flame, CheckSquare, Square, FileText, Receipt, AlertCircle, Sparkles, CheckCircle2, Wifi, WifiOff, X, RefreshCw, FolderOpen } from 'lucide-react';
+import { Save, ArrowLeft, Search, Package, Trash2, Camera, Image as ImageIcon, Mic, Loader2, Snowflake, Flame, CheckSquare, Square, FileText, Receipt, AlertCircle, Sparkles, CheckCircle2, Wifi, WifiOff, Lock, X, RefreshCw, FolderOpen } from 'lucide-react';
 import { CheeseProduct, CheeseTrip, CentralVaultBalance, Transaction, SupplierProfile } from '../../types';
 
 interface InvoiceUploadViewProps {
@@ -62,8 +62,9 @@ export default function InvoiceUploadView({
   
   // Estado de carga y procesamiento
   const [isScanning, setIsScanning] = useState(false);
+  const [scanSource, setScanSource] = useState<'gallery' | 'camera' | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [apiHealthStatus, setApiHealthStatus] = useState<'idle' | 'checking' | 'online' | 'offline'>('idle');
+  const [apiHealthStatus, setApiHealthStatus] = useState<'idle' | 'checking' | 'online' | 'degraded' | 'offline' | 'unauthenticated'>('idle');
   const [apiHealthMessage, setApiHealthMessage] = useState<string>('');
 
   // Voice Dictation & Drafts
@@ -124,6 +125,9 @@ export default function InvoiceUploadView({
       if (!isMounted) return;
       if (res.ok) {
         setApiHealthStatus('online');
+        setApiHealthMessage(res.message);
+      } else if (res.status === 'unauthenticated') {
+        setApiHealthStatus('unauthenticated');
         setApiHealthMessage(res.message);
       } else {
         setApiHealthStatus('offline');
@@ -390,10 +394,44 @@ export default function InvoiceUploadView({
       }
     } catch (error: any) {
       console.error("Error OCR:", error);
-      setApiHealthStatus('offline');
-      alert(error.message || "Fallo al escanear la imagen con IA.");
+      const errMsg = String(error?.message || '');
+      const errCode = error?.code || '';
+      const errStatus = error?.status;
+
+      if (errStatus === 401 || errStatus === 403 || errMsg.includes('401') || errMsg.includes('No autenticado') || errMsg.includes('Sesión')) {
+        setApiHealthStatus('unauthenticated');
+        setApiHealthMessage('Sesión CRM requerida para procesar facturas con IA.');
+        alert("Sesión CRM requerida o expirada. Por favor inicie sesión nuevamente.");
+      } else {
+        let userMessage = errMsg || 'No fue posible procesar la factura con la IA.';
+        if (errCode === 'AI_TEMPORARILY_UNAVAILABLE') {
+          userMessage = 'IA temporalmente ocupada. Intente nuevamente en unos momentos.';
+          setApiHealthStatus('degraded');
+          setApiHealthMessage(userMessage);
+        } else if (errCode === 'AI_TIMEOUT' || errCode === 'TOTAL_BUDGET_EXCEEDED') {
+          userMessage = 'La IA tardó demasiado en responder. Puede intentar nuevamente.';
+          setApiHealthStatus('degraded');
+          setApiHealthMessage(userMessage);
+        } else if (errCode === 'AI_CONFIGURATION_ERROR') {
+          userMessage = 'Servicio de IA no disponible en este momento.';
+          setApiHealthStatus('offline');
+          setApiHealthMessage(userMessage);
+        } else if (errCode === 'AI_INVALID_REQUEST') {
+          userMessage = 'No se pudo leer correctamente la imagen seleccionada.';
+          // No cambiar estado de la IA si la imagen fue el problema
+          setApiHealthStatus('online');
+        } else {
+          // Para errores desconocidos o de procesamiento, consultar /api/ai/status sin apagar a ciegas
+          pingGeminiAPI().then(res => {
+            if (res.ok) setApiHealthStatus('online');
+            else setApiHealthStatus('offline');
+          }).catch(() => setApiHealthStatus('offline'));
+        }
+        alert(userMessage);
+      }
     } finally {
       setIsScanning(false);
+      setScanSource(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
       if (galleryInputRef.current) galleryInputRef.current.value = '';
     }
@@ -1037,13 +1075,16 @@ export default function InvoiceUploadView({
           {/* Botón 1: Galería / Archivos */}
           <button 
             type="button"
-            onClick={() => galleryInputRef.current?.click()}
+            onClick={() => {
+              setScanSource('gallery');
+              galleryInputRef.current?.click();
+            }}
             disabled={isScanning || isSaving}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 border border-zinc-700 hover:border-emerald-500 text-zinc-300 hover:text-emerald-400 rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-md disabled:opacity-50"
             title="Seleccionar foto de factura desde la galería o archivos"
           >
             <span className="flex items-center justify-center w-4 h-4">
-              {isScanning ? <Loader2 className="w-4 h-4 animate-spin text-emerald-400" /> : <ImageIcon className="w-4 h-4 text-emerald-400" />}
+              {isScanning && scanSource === 'gallery' ? <Loader2 className="w-4 h-4 animate-spin text-emerald-400" /> : <ImageIcon className="w-4 h-4 text-emerald-400" />}
             </span>
             <span className="hidden sm:inline">Galería</span>
           </button>
@@ -1051,13 +1092,16 @@ export default function InvoiceUploadView({
           {/* Botón 2: Tomar Foto con Cámara */}
           <button 
             type="button"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => {
+              setScanSource('camera');
+              fileInputRef.current?.click();
+            }}
             disabled={isScanning || isSaving}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-md disabled:opacity-50"
             title="Tomar foto directa a la factura"
           >
             <span className="flex items-center justify-center w-4 h-4">
-              {isScanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
+              {isScanning && scanSource === 'camera' ? <Loader2 className="w-4 h-4 animate-spin text-zinc-950" /> : <Camera className="w-4 h-4" />}
             </span>
             <span>Cámara</span>
           </button>
@@ -1076,12 +1120,12 @@ export default function InvoiceUploadView({
             <div className="flex items-center justify-between bg-zinc-950/80 border border-zinc-800/80 px-3 py-1.5 rounded-lg text-[11px] font-mono">
               <div className="flex items-center gap-2">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span className="text-zinc-400">Motor OCR: <strong className="text-zinc-200">Gemini 2.5 / 3.7 Flash</strong></span>
+                <span className="text-zinc-400">Motor OCR: <strong className="text-zinc-200">Inteligencia Artificial</strong></span>
               </div>
               <div className="flex items-center gap-1.5">
                 {apiHealthStatus === 'checking' && (
                   <span className="flex items-center gap-1 text-amber-400">
-                    <Loader2 className="w-3 h-3 animate-spin" /> Verificando API...
+                    <Loader2 className="w-3 h-3 animate-spin" /> Verificando IA...
                   </span>
                 )}
                 {apiHealthStatus === 'online' && (
@@ -1089,9 +1133,19 @@ export default function InvoiceUploadView({
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> IA Conectada
                   </span>
                 )}
+                {apiHealthStatus === 'degraded' && (
+                  <span className="flex items-center gap-1 text-amber-400 font-bold" title={apiHealthMessage}>
+                    <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" /> IA temporalmente ocupada
+                  </span>
+                )}
+                {apiHealthStatus === 'unauthenticated' && (
+                  <span className="flex items-center gap-1 text-amber-400 font-bold" title={apiHealthMessage}>
+                    <Lock className="w-3 h-3 text-amber-400" /> Sesión Requerida
+                  </span>
+                )}
                 {apiHealthStatus === 'offline' && (
                   <span className="flex items-center gap-1 text-rose-400 font-bold" title={apiHealthMessage}>
-                    <WifiOff className="w-3 h-3 text-rose-400" /> Clave API Desconectada
+                    <WifiOff className="w-3 h-3 text-rose-400" /> IA no disponible
                   </span>
                 )}
               </div>

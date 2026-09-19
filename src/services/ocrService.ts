@@ -94,15 +94,18 @@ export async function structureVoiceNoteWithAI(text: string, bcvRate: number = 4
 /**
  * Comprobación de estado de disponibilidad de IA (Server-side)
  */
-export async function pingGeminiAPI(): Promise<{ ok: boolean; message: string }> {
+export async function pingGeminiAPI(): Promise<{ ok: boolean; status: 'online' | 'offline' | 'unauthenticated'; message: string }> {
   try {
     const status = await getAIStatusApi();
     if (status.available) {
-      return { ok: true, message: 'Conexión con Gemini IA activa en el servidor.' };
+      return { ok: true, status: 'online', message: 'Conexión con Gemini IA activa en el servidor.' };
     }
-    return { ok: false, message: 'Servicio de IA no disponible o desconfigurado en el servidor.' };
+    return { ok: false, status: 'offline', message: 'Servicio de IA no disponible o desconfigurado en el servidor.' };
   } catch (err: any) {
-    return { ok: false, message: `Error de conexión con el backend: ${err.message || 'Desconocido'}` };
+    if (err.message && (err.message.includes('401') || err.message.includes('No autenticado'))) {
+      return { ok: false, status: 'unauthenticated', message: 'Sesión CRM requerida para usar IA.' };
+    }
+    return { ok: false, status: 'offline', message: `Error de conexión con el backend: ${err.message || 'Desconocido'}` };
   }
 }
 

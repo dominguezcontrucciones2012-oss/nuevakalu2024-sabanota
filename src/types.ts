@@ -60,12 +60,18 @@ export interface DebtInstallment {
   clientId: string;
   transactionId: string;
   amount: number;
+  amountUSD?: number;
+  paidAmount?: number;
+  installmentNumber?: number;
+  totalInstallments?: number;
   dueDate: string;
   status: 'pending' | 'paid' | 'overdue' | 'in_review';
+  type?: 'cotidiano' | 'repuestos' | string;
   paidAt?: string;
   pointsEarned?: number;
   pointsAwarded?: boolean;
   timestamp?: any;
+  createdAt?: string;
 }
 
 export interface UserIdentity {

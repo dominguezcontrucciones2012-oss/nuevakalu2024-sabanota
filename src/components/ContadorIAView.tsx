@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Lock, Mic, Calculator, BrainCircuit, Image as ImageIcon, Receipt, Calendar, ArrowRight, Truck, Scale, ShieldCheck, UserCheck } from 'lucide-react';
 import InvoiceUploadView from './contador/InvoiceUploadView';
 import AIAssistantWidget from './contador/AIAssistantWidget';
@@ -9,6 +9,7 @@ import BudgetControlView from './contador/BudgetControlView';
 import AdminAccountLedgerView from './contador/AdminAccountLedgerView';
 import CheeseTripsView from './CheeseTripsView';
 import { CentralVaultBalance, Transaction, CheeseTrip, CheeseProduct, ClientProfile, SupplierProfile } from '../types';
+import { getAIStatusApi } from '../services/aiApi';
 
 interface ContadorIAViewProps {
   isAdmin: boolean;
@@ -35,6 +36,21 @@ export default function ContadorIAView({
 }: ContadorIAViewProps) {
   const [activeModule, setActiveModule] = useState<string | null>(null);
   const [modulePayload, setModulePayload] = useState<any>(null);
+  const [aiAvailable, setAiAvailable] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    getAIStatusApi()
+      .then(res => {
+        if (!mounted) return;
+        setAiAvailable(Boolean(res.available));
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setAiAvailable(false);
+      });
+    return () => { mounted = false; };
+  }, []);
 
   const handleNavigateToModule = (moduleId: string | null, payload?: any) => {
     setActiveModule(moduleId);
@@ -237,8 +253,22 @@ export default function ContadorIAView({
         </div>
 
         <div className="hidden sm:flex px-2.5 py-1 bg-brand-accent/10 border border-brand-accent/20 rounded items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-brand-accent animate-pulse"></span>
-          <span className="text-[10px] font-mono text-brand-accent uppercase tracking-widest">IA Activa</span>
+          {aiAvailable === true ? (
+            <>
+              <span className="w-2 h-2 rounded-full bg-brand-accent animate-pulse"></span>
+              <span className="text-[10px] font-mono text-brand-accent uppercase tracking-widest">IA Conectada</span>
+            </>
+          ) : aiAvailable === null ? (
+            <>
+              <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+              <span className="text-[10px] font-mono text-amber-400 uppercase tracking-widest">Verificando IA</span>
+            </>
+          ) : (
+            <>
+              <span className="w-2 h-2 rounded-full bg-zinc-600"></span>
+              <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest">IA No Disponible</span>
+            </>
+          )}
         </div>
       </div>
 

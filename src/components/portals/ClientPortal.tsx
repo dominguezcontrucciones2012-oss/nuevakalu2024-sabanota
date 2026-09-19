@@ -231,7 +231,11 @@ export default function ClientPortal({
   const [clientMovements, setClientMovements] = useState<any[]>([]);
   const [clientAllTxs, setClientAllTxs] = useState<any[]>([]);
 
-  // Carga de configuración pública (tasa BCV)
+  // Carga de configuración pública (tasa BCV) y catálogo público del portal
+  const [portalProducts, setPortalProducts] = useState<any[]>([]);
+  const [portalProductsLoading, setPortalProductsLoading] = useState(true);
+  const [portalProductsError, setPortalProductsError] = useState<string | null>(null);
+
   React.useEffect(() => {
     let mounted = true;
     fetchPortalPublicConfigApi().then((cfg) => {
@@ -239,8 +243,132 @@ export default function ClientPortal({
         setPwaBcvRate(cfg.exchangeRate);
       }
     });
+
+    setPortalProductsLoading(true);
+    fetchPortalPublicCatalogApi()
+      .then((cat) => {
+        if (mounted) {
+          setPortalProducts(Array.isArray(cat) ? cat : []);
+          setPortalProductsError(null);
+          setPortalProductsLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (mounted) {
+          console.error('[Portal Public Catalog Load Error]:', err);
+          setPortalProducts([]);
+          setPortalProductsError('Error al cargar el catálogo de productos');
+          setPortalProductsLoading(false);
+        }
+      });
+
     return () => { mounted = false; };
   }, []);
+
+  // Función autoritativa para recargar todos los datos financieros y pagos del cliente sin F5
+  const refreshClientPaymentData = React.useCallback(async () => {
+    if (!loggedClient) return;
+    try {
+      const [finances, userTxs, clientPwa, profile] = await Promise.all([
+        fetchPortalClientFinancesApi(),
+        fetchPortalClientTransactionsApi(),
+        fetchPortalClientPaymentsApi(),
+        fetchPortalClientProfileApi()
+      ]);
+
+      if (finances && finances.installments) {
+        setActiveInstallments(finances.installments);
+      }
+      if (profile) {
+        setLoggedClient(profile);
+      }
+      if (userTxs) {
+        setClientAllTxs(userTxs);
+      }
+
+      const payments = (userTxs || []).filter((d: any) => d.category === 'ingresos_cobranza' || d.category === 'pagos');
+      const pwaAsTxs = (clientPwa || []).map((p: any) => ({
+        id: p.id,
+        clientId: p.entityId || p.clientId,
+        entity: p.entityName,
+        category: 'ingresos_cobranza',
+        date: p.date || p.timestamp || p.createdAt,
+        timestamp: p.timestamp || p.createdAt,
+        createdAt: p.createdAt,
+        amount: p.amount,
+        status: p.status === 'pending' ? 'pending_approval' : p.status,
+        reference: p.reference,
+        receiptImageUrl: p.receiptImageUrl || p.receiptImage,
+        transactionId: p.transactionId || null,
+        installmentId: p.installmentId || null,
+        isPwaReported: true
+      }));
+
+      const combinedPayments = [...pwaAsTxs, ...payments];
+      combinedPayments.sort((a: any, b: any) => new Date(b.date || b.timestamp || b.createdAt || 0).getTime() - new Date(a.date || a.timestamp || a.createdAt || 0).getTime());
+      setPaymentHistory(combinedPayments);
+
+      const getCanonicalTimestamp = (tx: any): number => {
+        if (typeof tx.createdAt === 'number' && !isNaN(tx.createdAt) && tx.createdAt > 0) return tx.createdAt;
+        if (typeof tx.timestamp === 'number' && !isNaN(tx.timestamp) && tx.timestamp > 0) return tx.timestamp;
+        if (typeof tx.timestamp === 'string' && tx.timestamp) {
+          const t = new Date(tx.timestamp).getTime();
+          if (!isNaN(t) && t > 0) return t;
+        }
+        if (typeof tx.createdAt === 'string' && tx.createdAt) {
+          const t = new Date(tx.createdAt).getTime();
+          if (!isNaN(t) && t > 0) return t;
+        }
+        if (typeof tx.date === 'string' && tx.date) {
+          const t = new Date(tx.date).getTime();
+          if (!isNaN(t) && t > 0) return t;
+          const match = tx.date.match(/(\d{1,2})\s+([a-zA-ZáéíóúÁÉÍÓÚ]+)\s+(\d{4})/);
+          if (match) {
+            const day = parseInt(match[1], 10);
+            const monthStr = match[2].toLowerCase();
+            const year = parseInt(match[3], 10);
+            const monthMap: Record<string, number> = {
+              ene: 0, feb: 1, mar: 2, abr: 3, may: 4, jun: 5,
+              jul: 6, ago: 7, sep: 8, sept: 8, oct: 9, nov: 10, dic: 11
+            };
+            const monthKey = Object.keys(monthMap).find(k => monthStr.startsWith(k));
+            if (monthKey !== undefined) {
+              return new Date(year, monthMap[monthKey], day).getTime();
+            }
+          }
+        }
+        if (typeof tx.id === 'string') {
+          const numId = tx.id.replace(/\D/g, '');
+          if (numId.length >= 10) {
+            const parsedId = parseInt(numId.slice(0, 13), 10);
+            if (!isNaN(parsedId) && parsedId > 1600000000000) return parsedId;
+          }
+        }
+        return 0;
+      };
+
+      const movements = (userTxs || []).map((tx: any) => {
+        const isPayment = tx.category === 'ingresos_cobranza' || tx.category === 'pagos' || tx.isAbono;
+        return {
+          id: tx.id,
+          title: isPayment ? 'Abono a Cuenta' : 'Compra en Tienda',
+          date: tx.date || (tx.timestamp ? new Date(tx.timestamp).toLocaleDateString('es-ES') : 'Reciente'),
+          amount: Number(tx.amount || tx.totalUSD || tx.total || 0),
+          isPayment: isPayment,
+          rawTx: tx
+        };
+      });
+      movements.sort((a: any, b: any) => {
+        const tA = getCanonicalTimestamp(a.rawTx || a);
+        const tB = getCanonicalTimestamp(b.rawTx || b);
+        if (tB !== tA) return tB - tA;
+        return String(b.id || '').localeCompare(String(a.id || ''));
+      });
+      setClientMovements(movements.slice(0, 10));
+    } catch (err) {
+      console.error('[refreshClientPaymentData Error]:', err);
+    }
+  }, [loggedClient]);
 
   // Carga de datos scoped del cliente autenticado (finanzas, cuotas, transacciones y pagos)
   React.useEffect(() => {
@@ -252,59 +380,8 @@ export default function ClientPortal({
        return;
     }
 
-    let mounted = true;
-
-    // 1. Finanzas y Cuotas Scoped
-    fetchPortalClientFinancesApi().then((finances) => {
-      if (!mounted || !finances) return;
-      const inst = (finances.installments || []).filter((d: any) => d.status === 'pending' || d.status === 'in_review');
-      setActiveInstallments(inst);
-    });
-
-    // 2. Historial de Transacciones y Pagos Scoped
-    Promise.all([
-      fetchPortalClientTransactionsApi(),
-      fetchPortalClientPaymentsApi()
-    ]).then(([userTxs, clientPwa]) => {
-      if (!mounted) return;
-      setClientAllTxs(userTxs || []);
-
-      const payments = (userTxs || []).filter((d: any) => d.category === 'ingresos_cobranza' || d.category === 'pagos');
-      payments.sort((a: any, b: any) => new Date(b.date || b.timestamp || 0).getTime() - new Date(a.date || a.timestamp || 0).getTime());
-
-      const pendingPwaAsTxs = (clientPwa || []).map((p: any) => ({
-        id: p.id,
-        clientId: p.entityId || p.clientId,
-        entity: p.entityName,
-        category: 'ingresos_cobranza',
-        date: p.date || p.timestamp,
-        amount: p.amount,
-        status: p.status === 'pending' ? 'pending_approval' : p.status,
-        reference: p.reference,
-        receiptImageUrl: p.receiptImageUrl || p.receiptImage,
-        isPwaReported: true
-      }));
-
-      const combinedPayments = [...pendingPwaAsTxs.filter((p: any) => p.status === 'pending_approval'), ...payments];
-      combinedPayments.sort((a: any, b: any) => new Date(b.date || b.timestamp || 0).getTime() - new Date(a.date || a.timestamp || 0).getTime());
-      setPaymentHistory(combinedPayments);
-
-      const movements = (userTxs || []).map((tx: any) => {
-        const isPayment = tx.category === 'ingresos_cobranza' || tx.category === 'pagos' || tx.isAbono;
-        return {
-          id: tx.id,
-          title: isPayment ? 'Abono a Cuenta' : 'Compra en Tienda',
-          date: tx.date || (tx.timestamp ? new Date(tx.timestamp).toLocaleDateString('es-ES') : 'Reciente'),
-          amount: Number(tx.amount || tx.totalUSD || tx.total || 0),
-          isPayment: isPayment
-        };
-      });
-      movements.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      setClientMovements(movements.slice(0, 10));
-    });
-
-    return () => { mounted = false; };
-  }, [loggedClient]);
+    refreshClientPaymentData();
+  }, [loggedClient?.id, refreshClientPaymentData]);
 
   React.useEffect(() => {
     const syncRate = () => {
@@ -365,7 +442,14 @@ export default function ClientPortal({
       });
 
       if (res.portalUser) {
-        const client = clients.find(c => String(c.id) === String(res.portalUser.id)) || ({
+        let clientProfile: ClientProfile | null = null;
+        try {
+          clientProfile = await fetchPortalClientProfileApi();
+        } catch (profileErr) {
+          console.warn('[Portal Login] Error fetching authoritative profile:', profileErr);
+        }
+
+        const client = clientProfile || clients.find(c => String(c.id) === String(res.portalUser.id)) || ({
           id: res.portalUser.id,
           name: res.portalUser.name,
           phone: phoneClean,
@@ -762,8 +846,12 @@ export default function ClientPortal({
                           <p className="text-[10px] text-zinc-400 font-mono uppercase tracking-widest mb-1.5">Tu Deuda / Fiar en Tienda</p>
                           <h2 className="text-4xl font-black text-white">
                             ${(() => {
-                              const totalPending = activeInstallments.reduce((sum, item) => sum + (Number(item.amountUSD) || Number(item.amount) || 0), 0);
-                              return totalPending.toFixed(2);
+                              const safeClientDebt = Number(loggedClient?.outstandingDebt || (loggedClient as any)?.currentDebtUsd || 0);
+                              const cuotasDebt = activeInstallments
+                                .filter((item: any) => item.status !== 'paid')
+                                .reduce((sum, item) => sum + (Number(item.amountUSD) || Number(item.amount) || 0), 0);
+                              const totalDebt = Math.max(safeClientDebt, cuotasDebt);
+                              return totalDebt.toFixed(2);
                             })()}
                           </h2>
                         </div>
@@ -813,11 +901,15 @@ export default function ClientPortal({
                         <div className="grid grid-cols-2 gap-3">
                           {(() => {
                             const vip = getClientLevelInfo(loggedClient.loyaltyPoints);
-                            const totalPending = activeInstallments.reduce((sum, item) => sum + (Number(item.amountUSD) || Number(item.amount) || 0), 0);
+                            const safeClientDebt = Number(loggedClient?.outstandingDebt || (loggedClient as any)?.currentDebtUsd || 0);
+                            const cuotasDebt = activeInstallments
+                              .filter((item: any) => item.status !== 'paid')
+                              .reduce((sum, item) => sum + (Number(item.amountUSD) || Number(item.amount) || 0), 0);
+                            const totalDebt = Math.max(safeClientDebt, cuotasDebt);
                             
                             // Línea Principal dinámica por clase (restando deuda activa si aplica)
                             const mainLimit = Number((loggedClient as any)?.creditLimit) || vip.mainCreditLimit;
-                            const availableMain = Math.max(0, mainLimit - totalPending);
+                            const availableMain = Math.max(0, mainLimit - totalDebt);
 
                             // Línea Cotidiana / Comida dinámica por clase
                             const dailyLimit = Number((loggedClient as any)?.foodCreditLimit) || vip.dailyCreditLimit;
@@ -1020,7 +1112,12 @@ export default function ClientPortal({
                   })()}
 
                   {clientActiveTab === 'tienda' && (
-                    <StoreTab products={products} onNavigateTab={setClientActiveTab} />
+                    <StoreTab
+                      products={portalProducts}
+                      isLoading={portalProductsLoading}
+                      errorMessage={portalProductsError}
+                      onNavigateTab={setClientActiveTab}
+                    />
                   )}
 
                   {clientActiveTab === 'qr' && (
@@ -1038,8 +1135,10 @@ export default function ClientPortal({
                       clientData={loggedClient}
                       activeInstallments={activeInstallments}
                       paymentHistory={paymentHistory}
+                      allTransactions={clientAllTxs}
                       onNavigateTab={setClientActiveTab}
                       onAddNotification={onAddNotification}
+                      onPaymentReported={refreshClientPaymentData}
                     />
                   )}
 
@@ -1050,6 +1149,7 @@ export default function ClientPortal({
                       kaluPoints={Number((loggedClient as any)?.loyaltyPoints || 0)}
                       activeInstallments={activeInstallments}
                       allTransactions={clientAllTxs}
+                      paymentHistory={paymentHistory}
                       onLogout={async () => {
                         try {
                           await portalLogoutApi();

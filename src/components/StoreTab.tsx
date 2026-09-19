@@ -4,6 +4,8 @@ import { CheeseProduct } from '../types';
 
 interface StoreTabProps {
   products: CheeseProduct[];
+  isLoading?: boolean;
+  errorMessage?: string | null;
   onNavigateTab?: (tab: 'inicio' | 'tienda' | 'qr' | 'pagos' | 'perfil') => void;
 }
 
@@ -15,27 +17,52 @@ const STORE_BANNERS = [
   { id: 'b3', title: 'Gran Sorteo Activo en Mundo Kalu', image: 'bg-slate-800', desc: 'Participa por premios increíbles en cada compra superior a $10.' },
 ];
 
+/** Normalización centralizada para visualización y filtrado en el Portal */
+export function normalizeCategory(rawCat: string | undefined): string {
+  const c = String(rawCat || '').trim().toUpperCase();
+  if (c.includes('VÍVERE') || c.includes('VIVERE') || c.includes('ALIMENTO') || c.includes('CHARCUTER') || c.includes('QUESO')) {
+    return 'Víveres';
+  }
+  if (c.includes('REPUESTO') || c.includes('MOTO')) {
+    return 'Repuestos de Moto';
+  }
+  if (c.includes('FERRETER')) {
+    return 'Ferretería';
+  }
+  if (c.includes('PRODUCTOR') || c.includes('AGRÍCOLA') || c.includes('AGRICOLA')) {
+    return 'Productores / Agrícola';
+  }
+  if (c.includes('GENÉRICO') || c.includes('GENERICO')) {
+    return 'Genéricos';
+  }
+  return rawCat && rawCat.trim() ? rawCat.trim() : 'General';
+}
+
 const CATEGORY_COLORS: Record<string, string> = {
-  'VÍVERES': 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
-  'REPUESTOS DE MOTO': 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30',
-  'FERRETERÍA': 'bg-amber-500/15 text-amber-400 border-amber-500/30',
   'Víveres': 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
   'Repuestos de Moto': 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30',
   'Ferretería': 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  'Productores / Agrícola': 'bg-teal-500/15 text-teal-400 border-teal-500/30',
+  'Genéricos': 'bg-purple-500/15 text-purple-400 border-purple-500/30',
 };
 
 function catStyle(cat: string) {
-  return CATEGORY_COLORS[cat] ?? 'bg-slate-700/40 text-slate-300 border-slate-600/40';
+  const norm = normalizeCategory(cat);
+  return CATEGORY_COLORS[norm] ?? 'bg-slate-700/40 text-slate-300 border-slate-600/40';
 }
 
+/** Regla comercial: Víveres/Alimentos = 1 cuota; TODO lo demás = 3 cuotas */
 function getProductInstallmentsInfo(item: CheeseProduct) {
-  const cat = (item.category || '').toUpperCase();
+  const normCat = normalizeCategory(item.category);
   const name = (item.name || '').toUpperCase();
-  
-  if (cat.includes('REPUESTO') || cat.includes('FERRETER') || name.includes('MOTO') || name.includes('BOMBA') || name.includes('HERRAMIENTA')) {
-    return { count: 3, label: '3 cuotas quincenales' };
+
+  // Solo si es estrictamente Víveres/Alimentos devuelve 1 cuota
+  if (normCat === 'Víveres' || name.includes('HARINA') || name.includes('QUESO') || name.includes('MANTEQUILLA') || name.includes('ARROZ') || name.includes('PASTA') || name.includes('AZUCAR') || name.includes('ACEITE COMESTIBLE') || name.includes('CAFE') || name.includes('LECHE')) {
+    return { count: 1, label: '1 cuota (15 días)' };
   }
-  return { count: 1, label: '1 cuota (15 días)' };
+
+  // TODO lo demás (Repuestos, Ferretería, Genéricos, Productores, etc.) = 3 cuotas
+  return { count: 3, label: '3 cuotas quincenales' };
 }
 
 /** Tarjeta reutilizable — nunca se desmonta, no causa removeChild */
@@ -45,6 +72,7 @@ const PCard: React.FC<{ item: CheeseProduct }> = ({ item }) => {
   const ok = stock > 0;
   const instInfo = getProductInstallmentsInfo(item);
   const cuotaAmount = price / instInfo.count;
+  const displayCategory = normalizeCategory(item.category);
 
   return (
     <div className={`bg-slate-900 border rounded-2xl overflow-hidden flex flex-col relative shadow-sm cursor-pointer ${ok ? 'border-slate-800 hover:border-emerald-500/30' : 'border-slate-800/50 opacity-60'}`}>
@@ -61,14 +89,14 @@ const PCard: React.FC<{ item: CheeseProduct }> = ({ item }) => {
         )}
         <div className="absolute inset-0 bg-gradient-to-t from-slate-900/80 to-transparent pointer-events-none" />
         <span className={`absolute bottom-1.5 left-1.5 z-10 text-[8px] font-bold px-1.5 py-0.5 rounded border shadow-sm backdrop-blur-sm ${catStyle(item.category)}`}>
-          {item.category}
+          {displayCategory}
         </span>
       </div>
       <div className="p-2.5 flex-1 flex flex-col justify-between gap-1">
         <h4 className="font-bold text-xs text-slate-200 line-clamp-2 leading-tight">{item.name}</h4>
         <div>
           <p className="font-black text-sm text-white">${price.toFixed(2)}</p>
-          <p className="text-[9px] text-slate-500">Stock: {stock.toFixed(1)} {item.unit ?? 'kg'}</p>
+          <p className="text-[9px] text-slate-500">Stock: {stock.toFixed(1)} {item.unit ?? 'Und'}</p>
           <div className="mt-1.5 flex items-center gap-1">
             <span className={`inline-block px-1.5 py-0.5 text-[8px] font-bold uppercase rounded border ${
               instInfo.count === 1 
@@ -84,7 +112,7 @@ const PCard: React.FC<{ item: CheeseProduct }> = ({ item }) => {
   );
 };
 
-export default function StoreTab({ products = [] }: StoreTabProps) {
+export default function StoreTab({ products = [], isLoading = false, errorMessage = null }: StoreTabProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -141,28 +169,30 @@ export default function StoreTab({ products = [] }: StoreTabProps) {
 
   const categories = OFFICIAL_CATEGORIES;
 
-  // Filtrado completo normalizado a las 3 categorías oficiales
+  // Filtrado completo normalizado a las categorías oficiales usando normalizeCategory
   const filtered = useMemo(() => {
     const lq = searchQ.toLowerCase().trim();
     return products.filter(p => {
-      const pCat = (p.category || '').toUpperCase();
+      const pNormCat = normalizeCategory(p.category);
       const pName = (p.name || '').toLowerCase();
+      const pOrig = (p.origin || '').toLowerCase();
       
-      const ms = !lq ||
+      const matchesSearch = !lq ||
         pName.includes(lq) ||
-        pCat.toLowerCase().includes(lq) ||
-        (p.origin || '').toLowerCase().includes(lq);
+        pNormCat.toLowerCase().includes(lq) ||
+        (p.category || '').toLowerCase().includes(lq) ||
+        pOrig.includes(lq);
       
       let matchesCat = true;
       if (selCat === 'Víveres') {
-        matchesCat = pCat.includes('VÍVERE') || pCat.includes('VIVERE');
+        matchesCat = (pNormCat === 'Víveres');
       } else if (selCat === 'Repuestos de Moto') {
-        matchesCat = pCat.includes('REPUESTO') || pCat.includes('MOTO');
+        matchesCat = (pNormCat === 'Repuestos de Moto');
       } else if (selCat === 'Ferretería') {
-        matchesCat = pCat.includes('FERRETER');
+        matchesCat = (pNormCat === 'Ferretería');
       }
 
-      return ms && matchesCat;
+      return matchesSearch && matchesCat;
     });
   }, [products, searchQ, selCat]);
 
@@ -237,6 +267,20 @@ export default function StoreTab({ products = [] }: StoreTabProps) {
           </div>
         </div>
       </div>
+
+      {/* Indicador de Estado: Carga o Error controlado */}
+      {isLoading && (
+        <div className="p-8 text-center flex flex-col items-center justify-center gap-2 animate-pulse">
+          <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-xs text-slate-400 font-mono">Cargando catálogo oficial...</p>
+        </div>
+      )}
+
+      {errorMessage && !isLoading && (
+        <div className="mx-5 my-3 p-4 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-center">
+          <p className="text-xs text-rose-400 font-bold">{errorMessage}</p>
+        </div>
+      )}
 
       {/* Cuerpo unico — mismo nodo padre siempre montado, sin ternario que desmonte */}
       <div className="p-5 space-y-8">
