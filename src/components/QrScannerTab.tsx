@@ -247,22 +247,36 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
                 {/* Plan Breakdown */}
                 <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 space-y-3 font-mono text-xs">
                   <div className="flex justify-between items-center text-zinc-400">
-                    <span>Inicial a Pagar en Caja (75%):</span>
+                    <span>Inicial a Pagar en Caja ({fetchedTx.downPayment !== undefined && fetchedTx.amount ? Math.round((Number(fetchedTx.downPayment) / Number(fetchedTx.amount)) * 100) : 75}%):</span>
                     <span className="text-emerald-400 font-bold text-sm">
                       ${Number(fetchedTx.downPayment || fetchedTx.kaluCreditData?.inicial || 0).toFixed(2)}
                     </span>
                   </div>
                   <div className="flex justify-between items-center text-zinc-400">
-                    <span>Saldo Financiado Kalú (25%):</span>
+                    <span>Saldo Financiado Kalú ({fetchedTx.financedAmount !== undefined && fetchedTx.amount ? Math.round((Number(fetchedTx.financedAmount) / Number(fetchedTx.amount)) * 100) : 25}%):</span>
                     <span className="text-white font-bold text-sm">
                       ${Number(fetchedTx.financedAmount || fetchedTx.kaluCreditData?.aFinanciar || 0).toFixed(2)}
                     </span>
                   </div>
-                  <div className="flex justify-between items-center border-t border-zinc-800/80 pt-2.5 text-zinc-400">
-                    <span>Plan de Cuotas:</span>
-                    <span className="text-amber-400 font-bold">
-                      {fetchedTx.installmentsCount || 2} cuota{(fetchedTx.installmentsCount || 2) > 1 ? 's' : ''} de ${Number(fetchedTx.kaluCreditData?.cuotas || (fetchedTx.financedAmount / (fetchedTx.installmentsCount || 2)) || 0).toFixed(2)}
-                    </span>
+                  <div className="flex justify-between items-start border-t border-zinc-800/80 pt-2.5 text-zinc-400">
+                    <span>{fetchedTx.kaluCreditData?.modalidad === 'fiado_total' ? 'Modalidad:' : 'Plan de Cuotas:'}</span>
+                    <div className="text-right">
+                      {fetchedTx.kaluCreditData?.modalidad === 'fiado_total' ? (
+                        <span className="text-amber-400 font-bold uppercase">Deuda Abierta ($0 inicial, saldo total)</span>
+                      ) : Array.isArray(fetchedTx.kaluCreditData?.cuotas) && fetchedTx.kaluCreditData.cuotas.length > 0 ? (
+                        <div className="space-y-1">
+                          {fetchedTx.kaluCreditData.cuotas.map((amt: number, idx: number) => (
+                            <div key={idx} className="text-amber-400 font-bold">
+                              Cuota #{idx + 1} (+{(idx + 1) * 15}d): ${Number(amt).toFixed(2)}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-amber-400 font-bold">
+                          {fetchedTx.installmentsCount || 2} cuota{(fetchedTx.installmentsCount || 2) > 1 ? 's' : ''} de ${Number((fetchedTx.financedAmount / (fetchedTx.installmentsCount || 2)) || 0).toFixed(2)}
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {fetchedTx.authNonce && (
@@ -274,7 +288,7 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
                 </div>
 
                 <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-300 text-[11px] leading-relaxed">
-                  <strong>Nota:</strong> Al firmar digitalmente, autorizas financiar el 25% restante. El cajero procederá a cobrar la inicial del 75% en caja para entregarte tus productos.
+                  <strong>Nota:</strong> Al firmar digitalmente, autorizas financiar ${Number(fetchedTx.financedAmount || fetchedTx.kaluCreditData?.aFinanciar || 0).toFixed(2)} USD. {Number(fetchedTx.downPayment || 0) > 0 ? `El cajero procederá a cobrar la inicial de $${Number(fetchedTx.downPayment).toFixed(2)} USD en caja para entregarte tus productos.` : 'Venta autorizada sin inicial requerida.'}
                 </div>
                 
                 <button 

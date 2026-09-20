@@ -1,4 +1,4 @@
-import { getVIPLevelInfo } from '../config/vipMatrix';
+import { getVIPLevelInfo } from '../config/vipMatrix.ts';
 
 export type KaluCreditOption = '1_inicial' | '2_iniciales' | '3_cuotas' | '6_cuotas' | 'fiado_total';
 
@@ -36,17 +36,18 @@ export function calculateKaluCreditBreakdown(
   else if (option === '3_cuotas') count = 3;
   else if (option === '6_cuotas') count = 6;
 
-  const baseCuota = Math.floor((financedAmount / count) * 100) / 100;
+  const financedCents = Math.round(financedAmount * 100);
+  const baseCents = Math.floor(financedCents / count);
   const installments: { installmentNumber: number; amount: number; daysOffset: number }[] = [];
-  let sumPrevious = 0;
+  let sumPreviousCents = 0;
 
   for (let i = 1; i <= count; i++) {
     const isLast = i === count;
-    const amount = isLast ? parseSafeDec(financedAmount - sumPrevious) : baseCuota;
-    sumPrevious = parseSafeDec(sumPrevious + amount);
+    const currentCents = isLast ? (financedCents - sumPreviousCents) : baseCents;
+    sumPreviousCents += currentCents;
     installments.push({
       installmentNumber: i,
-      amount,
+      amount: currentCents / 100,
       daysOffset: i * 15
     });
   }

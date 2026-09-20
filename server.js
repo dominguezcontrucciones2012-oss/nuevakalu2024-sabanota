@@ -2514,7 +2514,12 @@ app.get('/api/portal/client/transactions', requirePortalAuth, requirePortalType(
         addedPayments: t.addedPayments || [],
         changeAmount: t.changeAmount,
         changeCurrency: t.changeCurrency,
-        bcvRateAtSettlement: t.bcvRateAtSettlement
+        bcvRateAtSettlement: t.bcvRateAtSettlement,
+        downPayment: t.downPayment !== undefined ? Number(t.downPayment) : (t.kaluCreditData?.inicial !== undefined ? Number(t.kaluCreditData.inicial) : undefined),
+        financedAmount: t.financedAmount !== undefined ? Number(t.financedAmount) : (t.kaluCreditData?.aFinanciar !== undefined ? Number(t.kaluCreditData.aFinanciar) : undefined),
+        installmentsCount: t.installmentsCount !== undefined ? Number(t.installmentsCount) : undefined,
+        kaluCreditData: t.kaluCreditData || undefined,
+        authNonce: t.status === 'pending_approval' ? (t.authNonce || undefined) : undefined
       }));
     res.json(myTxs);
   } catch (err) {
@@ -3071,15 +3076,18 @@ app.post('/api/portal/client/transactions/:id/approve', requirePortalAuth, requi
         return;
       }
 
-      // 4. Verificación de Nonce: Si el cliente proporciona authNonce, debe coincidir exactamente con el server-generated en DB
-      if (authNonce && typeof authNonce === 'string') {
-        const providedNonce = authNonce.trim();
-        const expectedNonce = String(tx.authNonce || '').trim();
-        if (providedNonce !== expectedNonce) {
-          errorCode = 400;
-          errorMessage = 'Nonce de autorización inválido o no coincide con la transacción pendiente';
-          return;
-        }
+      // 4. Verificación de Nonce Obligatorio: El cliente debe proporcionar authNonce y coincidir exactamente con el server-generated en DB
+      if (!authNonce || typeof authNonce !== 'string' || !authNonce.trim()) {
+        errorCode = 400;
+        errorMessage = 'Nonce de autorización requerido';
+        return;
+      }
+      const providedNonce = authNonce.trim();
+      const expectedNonce = String(tx.authNonce || '').trim();
+      if (!expectedNonce || providedNonce !== expectedNonce) {
+        errorCode = 400;
+        errorMessage = 'Nonce de autorización inválido o no coincide con la transacción pendiente';
+        return;
       }
 
       // 5. Firma Criptográfica de Autoridad Server-Side (HMAC-SHA256 generada exclusivamente por el backend)
