@@ -282,11 +282,13 @@ export function buildClientDebtGroups({
     return timeB - timeA;
   });
 
+  const totalEffectiveDebt = Math.max(safeClientDebt, totalCuotasRemaining);
+
   return {
     groups: processedGroups,
     activeGroups,
     paidGroups,
-    totalEffectiveDebt: safeClientDebt,
+    totalEffectiveDebt,
     totalCuotasRemaining,
     openDebtAmount,
     hasOpenDebt,

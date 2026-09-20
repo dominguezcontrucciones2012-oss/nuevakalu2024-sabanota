@@ -41,6 +41,8 @@ export default function CollectionsView({
   const [activeTab, setActiveTab] = useState<'pending' | 'history'>('pending');
   const [selectedReceipt, setSelectedReceipt] = useState<string | null>(null);
 
+  const [processingPaymentId, setProcessingPaymentId] = useState<string | null>(null);
+
   useEffect(() => {
     const unsub = onCollectionSnapshot('pwa_payments', (data) => {
       setPayments(data || []);
@@ -50,11 +52,12 @@ export default function CollectionsView({
   }, []);
 
   const handleApprovePayment = async (payment: PWAPayment) => {
-    if (payment.status !== 'pending') {
-      onAddNotification?.('El comprobante ya fue procesado.', 'warning');
+    if (processingPaymentId || !['pending', 'in_review'].includes(payment.status)) {
+      onAddNotification?.('El comprobante ya fue procesado o está en curso.', 'warning');
       return;
     }
 
+    setProcessingPaymentId(payment.id);
     try {
       if (payment.type === 'credito_cashea') {
         const targetId = payment.clientId || payment.entityId;
@@ -115,25 +118,30 @@ export default function CollectionsView({
     } catch (e: any) {
       console.error(e);
       onAddNotification?.(e.message || 'Error al aprobar el pago', 'warning');
+    } finally {
+      setProcessingPaymentId(null);
     }
   };
 
   const handleRejectPayment = async (payment: PWAPayment) => {
-    if (payment.status !== 'pending') {
-      onAddNotification?.('El comprobante ya fue procesado.', 'warning');
+    if (processingPaymentId || !['pending', 'in_review'].includes(payment.status)) {
+      onAddNotification?.('El comprobante ya fue procesado o está en curso.', 'warning');
       return;
     }
 
+    setProcessingPaymentId(payment.id);
     try {
       await rejectPwaPaymentApi(payment.id);
       onAddNotification?.('Solicitud rechazada. La deuda permanece intacta.', 'info');
     } catch (e: any) {
       console.error(e);
       onAddNotification?.(e.message || 'Error al rechazar', 'warning');
+    } finally {
+      setProcessingPaymentId(null);
     }
   };
 
-  const pending = payments.filter(p => p.status === 'pending');
+  const pending = payments.filter(p => (p.status === 'pending' || p.status === 'in_review'));
   const approved = payments.filter(p => p.status === 'approved');
   const hasPending = pending.length > 0;
 
@@ -312,21 +320,23 @@ export default function CollectionsView({
                   </div>
 
                   {/* ACCIONES DEL CAJERO */}
-                  {p.status === 'pending' && (
+                  {(p.status === 'pending' || p.status === 'in_review') && (
                     <div className="flex items-center gap-3 border-l border-neutral-700/80 pl-6 ml-6">
                       <button 
                         onClick={() => handleRejectPayment(p)} 
-                        className="p-3 bg-neutral-700/60 hover:bg-rose-500/20 hover:text-rose-400 text-neutral-400 rounded-xl transition-all border border-neutral-600/50 hover:border-rose-500/50" 
+                        disabled={Boolean(processingPaymentId)}
+                        className="p-3 bg-neutral-700/60 hover:bg-rose-500/20 hover:text-rose-400 text-neutral-400 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl transition-all border border-neutral-600/50 hover:border-rose-500/50 cursor-pointer" 
                         title="Rechazar Comprobante"
                       >
                         <XCircle className="w-6 h-6" />
                       </button>
                       <button 
                         onClick={() => handleApprovePayment(p)} 
-                        className="px-5 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl transition-all flex items-center gap-2 font-bold shadow-lg shadow-emerald-900/30 hover:scale-105 active:scale-95"
+                        disabled={Boolean(processingPaymentId)}
+                        className="px-5 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl transition-all flex items-center gap-2 font-bold shadow-lg shadow-emerald-900/30 hover:scale-105 active:scale-95 cursor-pointer"
                       >
                         <CheckCircle className="w-5 h-5" />
-                        Validar y Asentar
+                        {processingPaymentId === p.id ? 'Asentando...' : 'Validar y Asentar'}
                       </button>
                     </div>
                   )}

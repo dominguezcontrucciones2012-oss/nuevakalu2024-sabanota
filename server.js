@@ -2608,6 +2608,21 @@ app.post('/api/portal/client/payments', requirePortalAuth, requirePortalType('cl
       return res.status(400).json({ error: 'Debes adjuntar el comprobante de pago' });
     }
 
+    const existingPwaPayments = readCollection('pwa_payments');
+    const cleanRef = String(reference || '').trim();
+    if (cleanRef) {
+      const duplicateRecent = existingPwaPayments.find(p => 
+        (String(p.clientId) === String(req.portalUser.id) || String(p.entityId) === String(req.portalUser.id)) &&
+        String(p.reference || '').trim() === cleanRef &&
+        Math.abs(Number(p.amount) - Number(amount)) < 0.01 &&
+        (installmentId ? String(p.installmentId) === String(installmentId) : !p.installmentId) &&
+        ['pending', 'in_review', 'approved'].includes(p.status)
+      );
+      if (duplicateRecent) {
+        return res.json({ success: true, payment: duplicateRecent, idempotentReplay: true });
+      }
+    }
+
     // Validar y decodificar capture
     let captureInfo;
     try {

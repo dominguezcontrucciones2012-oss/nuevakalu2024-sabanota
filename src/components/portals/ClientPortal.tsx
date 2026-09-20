@@ -368,7 +368,7 @@ export default function ClientPortal({
     } catch (err) {
       console.error('[refreshClientPaymentData Error]:', err);
     }
-  }, [loggedClient]);
+  }, [loggedClient?.id]);
 
   // Carga de datos scoped del cliente autenticado (finanzas, cuotas, transacciones y pagos)
   React.useEffect(() => {

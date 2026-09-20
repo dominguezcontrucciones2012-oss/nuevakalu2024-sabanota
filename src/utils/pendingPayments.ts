@@ -38,5 +38,5 @@ export function isClientMundoKaluPayment(payment: any): boolean {
 
 export function getPendingMundoKaluPaymentCount(payments: any[] | null | undefined): number {
   if (!Array.isArray(payments)) return 0;
-  return payments.filter(p => p && p.status === 'pending' && isClientMundoKaluPayment(p)).length;
+  return payments.filter(p => p && (p.status === 'pending' || p.status === 'in_review') && isClientMundoKaluPayment(p)).length;
 }

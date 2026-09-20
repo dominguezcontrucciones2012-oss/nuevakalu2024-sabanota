@@ -144,29 +144,34 @@ export default function Header({ currentView, notificationCount, isSidebarOpen =
           </button>
         </div>
 
-        {/* Alertador en Tiempo Real: PAGOS MUNDO KALU (Reemplazo de Gateway - Fase 3C) */}
+        {/* Alertador en Tiempo Real: PAGOS MUNDO KALU (Alerta Roja Parpadeante con Pendientes) */}
         <button
           type="button"
           onClick={() => onNavigate && onNavigate('collections')}
           aria-live="polite"
-          title={pendingMundoKaluCount > 0 ? `${pendingMundoKaluCount} pago(s) pendiente(s) por conciliar en Mundo Kalu` : 'Centro de Cobranzas Mundo Kalu (Sin pagos pendientes)'}
+          title={pendingMundoKaluCount > 0 ? `¡ALERTA! ${pendingMundoKaluCount} pago(s) pendiente(s) por conciliar en Mundo Kalu` : 'Centro de Cobranzas Mundo Kalu (Sin pagos pendientes)'}
           className={`flex items-center gap-1.5 md:gap-2 px-2.5 md:px-3 rounded border transition-all duration-300 h-[28px] md:h-[34px] cursor-pointer select-none ${
             pendingMundoKaluCount > 0
-              ? 'bg-amber-500/20 border-amber-500/60 shadow-[0_0_12px_rgba(245,158,11,0.4)] hover:bg-amber-500/30'
-              : 'bg-black/40 border-white/10 hover:bg-black/60 opacity-85'
+              ? 'bg-rose-500/20 border-rose-500 text-rose-300 shadow-[0_0_15px_rgba(244,63,94,0.5)] animate-pulse hover:bg-rose-500/30'
+              : 'bg-black/40 border-white/10 hover:bg-black/60 opacity-85 text-white'
           }`}
         >
-          <div
-            className={`w-2 h-2 md:w-2.5 md:h-2.5 rounded-full ${
-              pendingMundoKaluCount > 0
-                ? 'bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.9)] motion-safe:animate-pulse'
-                : 'bg-emerald-500 opacity-60'
-            }`}
-          />
-          <span className="text-[9px] md:text-xs font-bold text-white uppercase tracking-wider leading-none flex items-center gap-1">
+          <div className="relative flex items-center justify-center">
+            {pendingMundoKaluCount > 0 && (
+              <span className="animate-ping absolute inline-flex h-3 w-3 rounded-full bg-rose-400 opacity-75"></span>
+            )}
+            <div
+              className={`w-2 h-2 md:w-2.5 md:h-2.5 rounded-full ${
+                pendingMundoKaluCount > 0
+                  ? 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.9)]'
+                  : 'bg-emerald-500 opacity-60'
+              }`}
+            />
+          </div>
+          <span className="text-[9px] md:text-xs font-bold uppercase tracking-wider leading-none flex items-center gap-1">
             <span className="hidden sm:inline">PAGOS </span>MUNDO KALU
             {pendingMundoKaluCount > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 text-[9px] md:text-[10px] font-mono font-black bg-amber-500 text-black rounded-full leading-none shadow-sm">
+              <span className="ml-1 px-1.5 py-0.5 text-[9px] md:text-[10px] font-mono font-black bg-rose-600 text-white rounded-full leading-none shadow-sm animate-bounce">
                 [{pendingMundoKaluCount}]
               </span>
             )}
