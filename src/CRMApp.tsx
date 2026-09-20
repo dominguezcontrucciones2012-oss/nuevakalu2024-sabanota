@@ -545,6 +545,11 @@ export default function App() {
         const amt = Number(p.amount) || 0;
         const orig = Number(p.originalAmount) || 0;
 
+        // Exclusión estricta de crédito / financiamiento (no constituyen dinero físico recibido en caja ni bóveda)
+        if (m.includes('kalu') || m.includes('crédito') || m.includes('credito') || m.includes('fiado') || m.includes('libreta')) {
+          return;
+        }
+
         if (m.includes('efectivo') && (m.includes('$') || m.includes('usd') || (!m.includes('bs') && !m.includes('ves')))) {
           deltaUsd += amt;
         } else if (m.includes('efectivo') && (m.includes('bs') || m.includes('ves'))) {
@@ -559,7 +564,9 @@ export default function App() {
       });
     } else {
       const pm = (paymentMethodType || 'Efectivo').toLowerCase().trim();
-      if (pm.includes('efectivo') && (pm.includes('$') || pm.includes('usd') || (!pm.includes('bs') && !pm.includes('ves')))) {
+      if (pm.includes('kalu') || pm.includes('crédito') || pm.includes('credito') || pm.includes('fiado') || pm.includes('libreta')) {
+        // Ventas a crédito / financiamiento puro no generan delta físico en bóveda
+      } else if (pm.includes('efectivo') && (pm.includes('$') || pm.includes('usd') || (!pm.includes('bs') && !pm.includes('ves')))) {
         deltaUsd += amountPaid;
       } else if (pm.includes('efectivo') && (pm.includes('bs') || pm.includes('ves'))) {
         deltaBs += amountPaid * rate;
@@ -567,7 +574,7 @@ export default function App() {
         deltaBankBs += amountPaid * rate;
       } else if (pm.includes('zelle') || pm.includes('banco usd') || pm.includes('binance')) {
         deltaBankUsd += amountPaid;
-      } else if (!pm.includes('crédito') && !pm.includes('fiado') && !pm.includes('libreta')) {
+      } else {
         deltaUsd += amountPaid;
       }
     }

@@ -1115,8 +1115,20 @@ export default function CheesePOSView({
   const incomeBiopago = getTransactionsTotalByMethod('BioPago', 'credito', true) * (exchangeRate || 1);
   const totalBiopago = salesBiopago + incomeBiopago;
 
-  // 6. Ventas a Crédito (Fiado) - Calculado desde las ventas del día actual
-  const totalCreditSales = currentShiftSales.reduce((sum, s) => sum + (Number(s.debtAmount) || 0), 0);
+  // 6. Ventas a Crédito (Fiado + Crédito Kalu) - Calculado desde las ventas del turno
+  const totalCreditSales = currentShiftSales.reduce((sum, s) => {
+    let creditInSale = Number(s.debtAmount) || 0;
+    if (s.addedPayments && Array.isArray(s.addedPayments)) {
+      const kaluFinanced = s.addedPayments
+        .filter((p: any) => p && (p.method || '').toLowerCase().includes('kalu'))
+        .reduce((kSum: number, p: any) => kSum + (Number(p.amount) || 0), 0);
+      // Si el monto financiado por Mundo Kalu no estaba ya en debtAmount, sumarlo una sola vez
+      if (kaluFinanced > 0 && creditInSale === 0) {
+        creditInSale += kaluFinanced;
+      }
+    }
+    return sum + creditInSale;
+  }, 0);
 
   // 7. Gastos en Efectivo USD y Bs
   const expensesCashUsd = getTransactionsTotalByMethod('Efectivo $', 'gastos', false) + getTransactionsTotalByMethod('Efectivo', 'gastos', false);
@@ -2423,7 +2435,7 @@ export default function CheesePOSView({
                 VENTAS HOY: {dailySalesCount}
               </span>
               <span className="text-[10px] font-mono bg-amber-500/10 text-amber-500 border border-amber-500/30 px-3 py-1 rounded font-bold">
-                INGRESOS HOY: ${dailyRevenue.toFixed(2)}
+                FACTURADO HOY: ${dailyRevenue.toFixed(2)}
               </span>
             </div>
           </div>
@@ -2458,9 +2470,31 @@ export default function CheesePOSView({
                         {s.items ? s.items.map((it: any) => `${it.name} (${it.quantityKg || it.quantity || 1} ${it.unit ? getUnitLabel(it).toLowerCase() : 'kg'})`).join(', ') : (s.notes || 'Varios Artículos')}
                       </td>
                       <td className="py-3.5 px-4">
-                        <span className="px-2 py-0.5 rounded text-[10px] font-mono border border-editorial-border bg-editorial-bg">
-                          {s.paymentMethod || 'Efectivo'}
-                        </span>
+                        {(() => {
+                          const hasKalu = (s.addedPayments && s.addedPayments.some((p: any) => (p.method || '').toLowerCase().includes('kalu'))) || (s.paymentMethod || '').toLowerCase().includes('kalu');
+                          if (hasKalu) {
+                            const kaluPay = (s.addedPayments || []).find((p: any) => (p.method || '').toLowerCase().includes('kalu'));
+                            const physicalPays = (s.addedPayments || []).filter((p: any) => !(p.method || '').toLowerCase().includes('kalu'));
+                            const physicalTotal = physicalPays.reduce((acc: number, p: any) => acc + (Number(p.amount) || 0), 0);
+                            return (
+                              <div className="flex flex-col gap-0.5">
+                                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold border border-amber-500/40 bg-amber-500/10 text-amber-400 inline-block w-fit">
+                                  Crédito Kalu
+                                </span>
+                                {s.addedPayments && s.addedPayments.length > 1 && (
+                                  <span className="text-[9px] font-mono text-editorial-text-muted">
+                                    Inicial ${physicalTotal.toFixed(2)} • Financiado ${(kaluPay?.amount || 0).toFixed(2)}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          }
+                          return (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-mono border border-editorial-border bg-editorial-bg">
+                              {s.paymentMethod || 'Efectivo'}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono font-bold text-amber-500">${(s.total || s.amount || 0).toFixed(2)}</td>
                       <td className="py-3.5 px-4 text-center">
