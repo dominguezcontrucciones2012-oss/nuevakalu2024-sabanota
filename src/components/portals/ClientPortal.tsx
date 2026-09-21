@@ -54,6 +54,8 @@ import { QrScannerTab } from '../QrScannerTab';
 import KaluLoader from '../KaluLoader';
 import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
 import { getVIPLevelInfo, VIP_LEVELS_MATRIX, VIPLevelConfig } from '../../config/vipMatrix';
+import { getVipTheme } from '../../config/vipTheme';
+
 interface MobilePortalsViewProps {
   products: CheeseProduct[];
   clients: ClientProfile[];
@@ -116,7 +118,7 @@ export default function ClientPortal({
   React.useEffect(() => {
     const timer = setInterval(() => {
       const now = Date.now();
-      
+
       if (clientLockoutUntil > now && clientLockoutUntil !== Infinity) {
         setClientCountdown(Math.ceil((clientLockoutUntil - now) / 1000));
       } else if (clientLockoutUntil <= now && clientLockoutUntil !== 0) {
@@ -127,7 +129,7 @@ export default function ClientPortal({
       } else {
         setClientCountdown(0);
       }
-      
+
       if (supplierLockoutUntil > now && supplierLockoutUntil !== Infinity) {
         setSupplierCountdown(Math.ceil((supplierLockoutUntil - now) / 1000));
       } else if (supplierLockoutUntil <= now && supplierLockoutUntil !== 0) {
@@ -146,7 +148,7 @@ export default function ClientPortal({
     const attempts = type === 'client' ? clientLoginAttempts + 1 : supplierLoginAttempts + 1;
     let lockout = type === 'client' ? clientLockoutUntil : supplierLockoutUntil;
     let errorMsg = '';
-    
+
     if (attempts === 1) {
       errorMsg = 'PIN o Usuario incorrecto. Quedan 2 intentos.';
     } else if (attempts === 2) {
@@ -225,7 +227,7 @@ export default function ClientPortal({
   });
 
   const [pwaBcvRate, setPwaBcvRate] = useState<number>(0);
-  
+
   const [activeInstallments, setActiveInstallments] = useState<any[]>([]);
   const [paymentHistory, setPaymentHistory] = useState<any[]>([]);
   const [clientMovements, setClientMovements] = useState<any[]>([]);
@@ -677,7 +679,7 @@ export default function ClientPortal({
     const pCat = (p.category || '').toUpperCase();
     const pName = (p.name || '').toLowerCase();
     const matchesSearch = pName.includes(clientSearch.toLowerCase());
-    
+
     let matchesCat = true;
     if (clientCategory === 'Víveres') {
       matchesCat = pCat.includes('VÍVERE') || pCat.includes('VIVERE');
@@ -686,7 +688,7 @@ export default function ClientPortal({
     } else if (clientCategory === 'Ferretería') {
       matchesCat = pCat.includes('FERRETER');
     }
-    
+
     return matchesSearch && matchesCat;
   });
 
@@ -712,8 +714,8 @@ export default function ClientPortal({
             Portal de Productores: Libreta de Queso &amp; Cliente Normal
           </h2>
           <p className="text-xs text-editorial-text-muted/80 max-w-3xl mt-2 leading-relaxed">
-            Cada usuario inicia sesión en su propio teléfono de forma aislada y segura. <strong>No pueden ver la información de otros clientes o productores.</strong> 
-            Desde aquí consultan en tiempo real cuánto deben, revisan el catálogo completo (más de 1,000 productos simulados como repuestos de moto, comidas y quesos) 
+            Cada usuario inicia sesión en su propio teléfono de forma aislada y segura. <strong>No pueden ver la información de otros clientes o productores.</strong>
+            Desde aquí consultan en tiempo real cuánto deben, revisan el catálogo completo (más de 1,000 productos simulados como repuestos de moto, comidas y quesos)
             y realizan sus pedidos directo al CRM.
           </p>
         </div>
@@ -721,7 +723,7 @@ export default function ClientPortal({
 
       {/* Grid of Devices */}
       <div className={`flex-1 flex flex-col ${!isolatedType ? 'grid grid-cols-1 lg:grid-cols-3 gap-8 items-start' : 'w-full'}`}>
-        
+
         {/* PHONE 1: PORTAL CLIENTE NORMAL */}
         {(!isolatedType || isolatedType === 'cliente') && (
         <div className={!isolatedType ? "flex flex-col items-center bg-editorial-card/30 border border-editorial-border rounded-xl p-6 shadow-sm" : "w-full min-h-screen bg-black text-white flex flex-col"}>
@@ -746,7 +748,7 @@ export default function ClientPortal({
 
             {/* Screen Content */}
             <div className={`flex-1 overflow-y-auto bg-zinc-900 text-zinc-100 flex flex-col text-xs ${!isolatedType ? 'p-4 pt-7' : 'px-4 py-6'}`}>
-              
+
               {isInitializing ? (
                 <KaluLoader message="Mundo Kalu" subMessage="CARGANDO SESIÓN..." />
               ) : !loggedClient ? (
@@ -789,7 +791,7 @@ export default function ClientPortal({
                         className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/60 font-mono tracking-[0.5em] text-center disabled:opacity-50 disabled:cursor-not-allowed"
                       />
                     </div>
-                    
+
                     <div className="pt-2">
                       <button
                         type="submit"
@@ -809,575 +811,643 @@ export default function ClientPortal({
                 </div>
               ) : (
                 /* CLIENT PORTAL: LOGGED IN STORE & ACCOUNT */
-                <div 
-                  {...clientSwipeHandlers}
-                  className="flex-1 flex flex-col min-h-0 relative pb-16 touch-pan-y"
-                >
-                  {clientActiveTab === 'inicio' && (
-                    <div className="p-4 space-y-6 flex-1 overflow-y-auto animate-fade-in pb-24">
-                      {/* Top Bar / Customer Level Pill */}
-                      <div className="flex justify-start mb-2">
-                        {(() => {
-                          const vip = getClientLevelInfo(loggedClient.loyaltyPoints);
-                          return (
-                            <button 
+                (() => {
+                  const realVip = getClientLevelInfo(loggedClient?.loyaltyPoints);
+
+                  // Local DEV Preview Tier (Strictly Visual Presentation Only)
+                  const previewTierParam = import.meta.env.DEV
+                    ? new URLSearchParams(window.location.search).get('previewTier')?.toUpperCase()
+                    : undefined;
+
+                  const SIMULATED_POINTS_DEV: Record<string, number> = {
+                    K1: 80,
+                    K2: 150,
+                    K3: 300,
+                    K4: 500,
+                    K5: 800,
+                    K6: 1300,
+                  };
+
+                  const previewVip = previewTierParam && SIMULATED_POINTS_DEV[previewTierParam] !== undefined
+                    ? getClientLevelInfo(SIMULATED_POINTS_DEV[previewTierParam])
+                    : undefined;
+
+                  const displayVip = previewVip ?? realVip;
+                  const theme = getVipTheme(displayVip?.code);
+
+                  return (
+                    <div
+                      {...clientSwipeHandlers}
+                      className="flex-1 flex flex-col min-h-0 relative pb-16 touch-pan-y"
+                    >
+                      {clientActiveTab === 'inicio' && (
+                        <div className="p-4 space-y-6 flex-1 overflow-y-auto animate-fade-in pb-24">
+                          {/* Top Bar / Customer Level Pill */}
+                          <div className="flex justify-start mb-2">
+                            <button
                               onClick={() => setClientActiveTab('nivel')}
-                              className="flex items-center gap-2.5 bg-neutral-900 border border-neutral-800 rounded-full pl-1.5 pr-4 py-1.5 transition-colors hover:bg-neutral-800 cursor-pointer shadow-md"
+                              className={`flex items-center gap-2.5 bg-neutral-900/90 border ${theme.borderSubtle} rounded-full pl-1.5 pr-4 py-1.5 transition-colors hover:bg-neutral-800 cursor-pointer shadow-md`}
                             >
-                              <div className="w-8 h-8 rounded-full bg-emerald-500 flex items-center justify-center">
-                                <span className="text-neutral-900 font-black text-sm leading-none">{vip.code}</span>
+                              <div className={`w-8 h-8 rounded-full ${theme.badgeBg} flex items-center justify-center`}>
+                                <span className={`${theme.badgeText} font-black text-sm leading-none`}>{displayVip.code}</span>
                               </div>
                               <div className="text-left">
-                                <span className="text-white text-xs font-bold uppercase tracking-wider block">
-                                  {vip.name}
+                                <span className="text-white text-xs font-black uppercase tracking-wider block">
+                                  {displayVip.name}
                                 </span>
-                                <span className="text-[9px] text-emerald-400 font-bold block">
-                                  Inicial {Math.round(vip.initialPct * 100)}%
+                                <span className={`text-[9px] ${theme.textAccent} font-bold block`}>
+                                  Inicial {Math.round(displayVip.initialPct * 100)}%
                                 </span>
                               </div>
                             </button>
-                          );
-                        })()}
-                      </div>
+                          </div>
 
-                      {/* Primer Bloque: Estado e Historial */}
-                      <div className="bg-neutral-900 border border-neutral-800 p-5 rounded-3xl shadow-lg">
-                        <div className="text-center">
-                          <p className="text-[10px] text-zinc-400 font-mono uppercase tracking-widest mb-1.5">Tu Deuda / Fiar en Tienda</p>
-                          <h2 className="text-4xl font-black text-white">
-                            ${(() => {
-                              const safeClientDebt = Number(loggedClient?.outstandingDebt || (loggedClient as any)?.currentDebtUsd || 0);
-                              const cuotasDebt = activeInstallments
-                                .filter((item: any) => item.status !== 'paid')
-                                .reduce((sum, item) => sum + (Number(item.amountUSD) || Number(item.amount) || 0), 0);
-                              const totalDebt = Math.max(safeClientDebt, cuotasDebt);
-                              return totalDebt.toFixed(2);
-                            })()}
-                          </h2>
+                          {/* Primer Bloque: Estado e Historial */}
+                          <div className={`bg-neutral-900/90 ${theme.borderThick} p-5 rounded-3xl shadow-lg`}>
+                            <div className="text-center">
+                              <p className="text-[10px] text-zinc-400 font-mono uppercase tracking-widest mb-1.5">Tu Deuda / Fiar en Tienda</p>
+                              <h2 className="text-4xl font-black text-white">
+                                ${(() => {
+                                  const safeClientDebt = Number(loggedClient?.outstandingDebt || (loggedClient as any)?.currentDebtUsd || 0);
+                                  const cuotasDebt = activeInstallments
+                                    .filter((item: any) => item.status !== 'paid')
+                                    .reduce((sum, item) => sum + (Number(item.amountUSD) || Number(item.amount) || 0), 0);
+                                  const totalDebt = Math.max(safeClientDebt, cuotasDebt);
+                                  return totalDebt.toFixed(2);
+                                })()}
+                              </h2>
+                            </div>
+                            <div className="border-t border-neutral-800 my-5"></div>
+                            <div>
+                              <p className="text-[10px] font-bold text-zinc-300 uppercase mb-3">Últimos Movimientos</p>
+                              <div className="space-y-3">
+                                {clientMovements.length === 0 ? (
+                                  <p className="text-center text-[10px] text-zinc-400 py-3 font-mono">Sin movimientos registrados</p>
+                                ) : (
+                                  clientMovements.map((mov: any) => (
+                                    <div key={mov.id} className="flex justify-between items-center">
+                                      <div className="flex items-center gap-3">
+                                        <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center">
+                                          {mov.isPayment ? (
+                                            <CreditCard className="w-4 h-4 text-emerald-500" />
+                                          ) : (
+                                            <ShoppingBag className={`w-4 h-4 ${theme.textAccent}`} />
+                                          )}
+                                        </div>
+                                        <div>
+                                          <p className="text-xs font-bold text-zinc-200">{mov.title}</p>
+                                          <p className="text-[9px] text-zinc-500">{mov.date}</p>
+                                        </div>
+                                      </div>
+                                      <span className={`text-xs font-black ${mov.isPayment ? 'text-emerald-400' : 'text-white'}`}>
+                                        {mov.isPayment ? '-' : ''}${mov.amount.toFixed(2)}
+                                      </span>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Segundo Bloque: Tus líneas */}
+                          <div>
+                            <div className="flex items-center justify-between mb-3 px-1">
+                              <h3 className="text-sm font-bold text-white">Tus líneas</h3>
+                              <button
+                                onClick={() => setShowCreditLineModal(true)}
+                                className={`text-[10px] font-bold ${theme.textAccent} ${theme.textAccentHover} uppercase tracking-wider flex items-center gap-0.5`}
+                              >
+                                Detalles <ChevronRight className="w-3 h-3" />
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              {(() => {
+                                const safeClientDebt = Number(loggedClient?.outstandingDebt || (loggedClient as any)?.currentDebtUsd || 0);
+                                const cuotasDebt = activeInstallments
+                                  .filter((item: any) => item.status !== 'paid')
+                                  .reduce((sum, item) => sum + (Number(item.amountUSD) || Number(item.amount) || 0), 0);
+                                const totalDebt = Math.max(safeClientDebt, cuotasDebt);
+
+                                // Línea Principal visual para presentación
+                                const mainLimit = (loggedClient as any)?.creditLimit ? Number((loggedClient as any).creditLimit) : displayVip.mainCreditLimit;
+                                const availableMain = Math.max(0, mainLimit - totalDebt);
+
+                                // Línea Cotidiana / Comida visual para presentación
+                                const dailyLimit = (loggedClient as any)?.foodCreditLimit ? Number((loggedClient as any).foodCreditLimit) : displayVip.dailyCreditLimit;
+
+                                return (
+                                  <>
+                                    <div
+                                      onClick={() => setShowCreditLineModal(true)}
+                                      className={`bg-neutral-900/90 border ${theme.border} p-4 rounded-2xl relative overflow-hidden shadow-md cursor-pointer ${theme.borderHover} transition-colors`}
+                                    >
+                                      <div className="flex justify-between items-center mb-1">
+                                        <p className="text-[10px] font-bold text-zinc-400 uppercase">Línea Principal</p>
+                                        <span className="text-[8px] font-mono text-zinc-500">Tope ${mainLimit.toFixed(0)}</span>
+                                      </div>
+                                      <p className="text-lg font-black text-white">
+                                        ${availableMain.toFixed(2)}
+                                      </p>
+                                      <div className="flex items-center gap-1 mt-2">
+                                        <span className={`text-[10px] ${theme.textAccent} font-bold`}>Hasta {displayVip.mainMaxInstallments} cuotas</span>
+                                      </div>
+                                    </div>
+
+                                    <div
+                                      onClick={() => setShowCreditLineModal(true)}
+                                      className={`bg-neutral-900/90 border ${theme.border} p-4 rounded-2xl relative overflow-hidden shadow-md cursor-pointer ${theme.borderHover} transition-colors`}
+                                    >
+                                      <div className="flex justify-between items-center mb-1">
+                                        <p className="text-[10px] font-bold text-zinc-400 uppercase">Línea Cotidiana</p>
+                                        <span className="text-[8px] font-mono text-zinc-500">Tope ${dailyLimit.toFixed(0)}</span>
+                                      </div>
+                                      <p className="text-lg font-black text-white">
+                                        ${dailyLimit.toFixed(2)}
+                                      </p>
+                                      <div className="flex items-center gap-1 mt-2">
+                                        <span className={`text-[10px] ${theme.textAccent} font-bold`}>{displayVip.dailyInstallments} cuota a {displayVip.dailyTermDays}d</span>
+                                      </div>
+                                    </div>
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          </div>
+
+                          {/* Tercer Bloque: Accesos Rápidos */}
+                          <div className="grid grid-cols-2 gap-3">
+                            <button className={`bg-neutral-900/90 border ${theme.borderSubtle} p-4 rounded-2xl flex flex-col items-center justify-center gap-2 ${theme.borderHover} transition-colors shadow-sm`}>
+                              <Smartphone className={`w-6 h-6 ${theme.textAccent}`} />
+                              <span className="text-[10px] font-bold text-zinc-200 uppercase tracking-wide">Pagar celular</span>
+                            </button>
+                            <button className={`bg-neutral-900/90 border ${theme.borderSubtle} p-4 rounded-2xl flex flex-col items-center justify-center gap-2 ${theme.borderHover} transition-colors shadow-sm`}>
+                              <FileText className={`w-6 h-6 ${theme.textAccent}`} />
+                              <span className="text-[10px] font-bold text-zinc-200 uppercase tracking-wide">Pagar servicios</span>
+                            </button>
+                            <button className={`bg-neutral-900/90 border ${theme.borderSubtle} p-4 rounded-2xl flex flex-col items-center justify-center gap-2 ${theme.borderHover} transition-colors shadow-sm`}>
+                              <div className="flex text-2xl leading-none">🎫</div>
+                              <span className="text-[10px] font-bold text-zinc-200 uppercase tracking-wide">Canjear cupones</span>
+                            </button>
+                            <button className={`bg-neutral-900/90 border ${theme.borderSubtle} p-4 rounded-2xl flex flex-col items-center justify-center gap-2 ${theme.borderHover} transition-colors shadow-sm`}>
+                              <div className="flex text-2xl leading-none">🎁</div>
+                              <span className="text-[10px] font-bold text-zinc-200 uppercase tracking-wide">Invitar y ganar</span>
+                            </button>
+                          </div>
                         </div>
-                        <div className="border-t border-neutral-800 my-5"></div>
-                        <div>
-                          <p className="text-[10px] font-bold text-zinc-300 uppercase mb-3">Últimos Movimientos</p>
-                          <div className="space-y-3">
-                            {clientMovements.length === 0 ? (
-                              <p className="text-center text-[10px] text-zinc-500 py-3 font-mono">Sin movimientos registrados</p>
-                            ) : (
-                              clientMovements.map((mov: any) => (
-                                <div key={mov.id} className="flex justify-between items-center">
-                                  <div className="flex items-center gap-3">
-                                    <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center">
-                                      {mov.isPayment ? (
-                                        <CreditCard className="w-4 h-4 text-emerald-500" />
-                                      ) : (
-                                        <ShoppingBag className="w-4 h-4 text-emerald-500" />
+                      )}
+
+                      {clientActiveTab === 'nivel' && (() => {
+                        const levelInfo = displayVip;
+                        const levelTheme = theme;
+                        return (
+                          <div className="flex-1 flex flex-col bg-neutral-950 animate-fade-in text-white pb-24 overflow-y-auto">
+                            {/* Cabecera Superior */}
+                            <div className="flex items-center justify-between p-4 border-b border-neutral-900">
+                              <button onClick={() => setClientActiveTab('inicio')} className="w-8 h-8 flex items-center justify-center rounded-full bg-neutral-900 text-zinc-300 hover:text-white transition-colors shadow-sm">
+                                <ArrowLeft className="w-5 h-5" />
+                              </button>
+                              <h1 className="text-sm font-bold text-zinc-100 uppercase tracking-widest">Club Kalu Más</h1>
+                              <button onClick={() => setShowBenefitsModal(true)} className="w-8 h-8 flex items-center justify-center rounded-full bg-neutral-900 text-zinc-300 hover:text-white transition-colors shadow-sm">
+                                <HelpCircle className="w-5 h-5" />
+                              </button>
+                            </div>
+
+                            <div className="p-4 space-y-5">
+                              {/* Tarjeta Principal de Nivel */}
+                              <div className={`bg-neutral-900/90 border ${levelTheme.border} rounded-2xl p-5 relative overflow-hidden shadow-lg`}>
+                                <div className={`absolute top-0 right-0 -mr-6 -mt-6 w-32 h-32 ${levelTheme.glowBg} rounded-full blur-2xl`}></div>
+
+                                <div className="flex justify-between items-start mb-6 relative z-10">
+                                  <div>
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <h2 className="text-3xl font-black text-white tracking-tight">Nivel {levelInfo.code}</h2>
+                                      <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${levelTheme.badgeBg} ${levelTheme.badgeText}`}>
+                                        Nivel {levelInfo.level}
+                                      </span>
+                                    </div>
+                                    <p className={`text-sm font-bold ${levelTheme.textAccent} mb-2`}>{levelInfo.name}</p>
+                                    <button
+                                      onClick={() => setShowBenefitsModal(true)}
+                                      className={`text-[10px] uppercase font-bold tracking-wider text-zinc-400 ${levelTheme.textAccentHover} flex items-center gap-1 transition-colors`}
+                                    >
+                                      Conocer beneficios <ChevronRight className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                  <div className={`w-12 h-12 rounded-full ${levelTheme.badgeBg} flex items-center justify-center ${levelTheme.glow}`}>
+                                    <span className={`${levelTheme.badgeText} font-black text-2xl leading-none`}>K</span>
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-2 pt-5 border-t border-neutral-800/80 relative z-10">
+                                  <div>
+                                    <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Línea Principal</p>
+                                    <p className="text-[8px] text-zinc-500 mb-1">Máx. {levelInfo.mainMaxInstallments} cuotas</p>
+                                    <p className="text-sm font-black text-white">${Number(levelInfo.mainCreditLimit).toFixed(2)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Línea Cotidiana</p>
+                                    <p className="text-[8px] text-zinc-500 mb-1">{levelInfo.dailyInstallments} cuota a {levelInfo.dailyTermDays}d</p>
+                                    <p className="text-sm font-black text-white">${Number(levelInfo.dailyCreditLimit).toFixed(2)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Inicial</p>
+                                    <p className="text-[8px] text-zinc-500 mb-1">Desde</p>
+                                    <p className={`text-sm font-black ${levelTheme.textAccent}`}>{Math.round(levelInfo.initialPct * 100)}%</p>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Bloque de Puntos Kalu y Acciones Rápidas */}
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between bg-neutral-900/50 border border-neutral-800/50 rounded-xl p-3">
+                                  <p className="text-sm font-bold text-zinc-200">
+                                    <span className={`${levelTheme.textAccent} mr-1.5`}>⭐</span>
+                                    {Number(loggedClient?.loyaltyPoints || 0)} puntos acumulados
+                                  </p>
+                                  <button
+                                    onClick={() => setClientActiveTab('tienda')}
+                                    className={`${levelTheme.btnPrimary} font-bold text-xs px-4 py-1.5 rounded-full transition-colors`}
+                                  >
+                                    Usar puntos
+                                  </button>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3">
+                                  <button
+                                    onClick={() => setShowCreditLineModal(true)}
+                                    className={`bg-neutral-900 border border-neutral-800 rounded-xl p-3 flex flex-col gap-1 items-start ${levelTheme.borderHover} transition-colors group text-left`}
+                                  >
+                                    <span className="text-lg">💸</span>
+                                    <span className={`text-xs font-bold text-zinc-300 group-${levelTheme.textAccentHover} flex items-center gap-1`}>Línea de Crédito <ChevronRight className="w-3 h-3" /></span>
+                                  </button>
+                                  <button
+                                    onClick={() => setShowProgressModal(true)}
+                                    className={`bg-neutral-900 border border-neutral-800 rounded-xl p-3 flex flex-col gap-1 items-start ${levelTheme.borderHover} transition-colors group text-left`}
+                                  >
+                                    <span className="text-lg">⏳</span>
+                                    <span className={`text-xs font-bold text-zinc-300 group-${levelTheme.textAccentHover} flex items-center gap-1`}>Ver progreso <ChevronRight className="w-3 h-3" /></span>
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Sección Inferior: Tu progreso */}
+                              <div className="pt-2">
+                                <div className="flex items-center justify-between mb-4">
+                                  <h3 className="text-sm font-bold text-white">Tu progreso de Nivel</h3>
+                                  <button
+                                    onClick={() => setShowProgressModal(true)}
+                                    className={`text-xs font-bold ${levelTheme.textAccent} ${levelTheme.textAccentHover} px-3 py-1 ${levelTheme.accentBg} rounded-full transition-colors`}
+                                  >
+                                    Conocer más
+                                  </button>
+                                </div>
+
+                                <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-5 space-y-5 shadow-md">
+                                  <div>
+                                    <div className="flex justify-between items-end mb-2">
+                                      <span className="text-[10px] font-bold text-zinc-400 uppercase">Compras Acumuladas ({Number(loggedClient?.loyaltyPoints || 0)} pts / ${Number(loggedClient?.loyaltyPoints || 0)})</span>
+                                      <span className={`text-xs font-bold ${levelTheme.textAccent}`}>
+                                        {levelInfo.level < 6 ? `Meta: $${levelInfo.nextGoal}.00` : 'Nivel Máximo VIP'}
+                                      </span>
+                                    </div>
+                                    <div className="w-full bg-neutral-950 rounded-full h-2.5 overflow-hidden shadow-inner p-0.5">
+                                      <div className={`bg-gradient-to-r ${levelTheme.progressGradient} h-1.5 rounded-full transition-all duration-500`} style={{ width: `${levelInfo.progress}%` }}></div>
+                                    </div>
+                                    <div className="flex justify-between items-center text-[10px] mt-2">
+                                      <span className="text-zinc-400">
+                                        Próximo ascenso: <span className="text-zinc-200 font-bold">{levelInfo.nextPrize}</span>
+                                      </span>
+                                      {levelInfo.level < 6 && (
+                                        <span className={`${levelTheme.textAccent} font-bold`}>
+                                          Faltan ${Math.max(0, levelInfo.nextGoal - Number(loggedClient?.loyaltyPoints || 0))}
+                                        </span>
                                       )}
                                     </div>
-                                    <div>
-                                      <p className="text-xs font-bold text-zinc-200">{mov.title}</p>
-                                      <p className="text-[9px] text-zinc-500">{mov.date}</p>
+                                  </div>
+
+                                  <div className="border-t border-neutral-800/80 pt-4">
+                                    <div className="flex justify-between items-center text-xs">
+                                      <span className="text-zinc-400">Total financiado y pagado:</span>
+                                      <span className="font-bold text-white">${activeInstallments.filter((i: any) => i.status === 'paid').reduce((s: number, i: any) => s + (Number(i.amountUSD) || Number(i.amount) || 0), 0).toFixed(2)}</span>
                                     </div>
                                   </div>
-                                  <span className={`text-xs font-black ${mov.isPayment ? 'text-emerald-400' : 'text-white'}`}>
-                                    {mov.isPayment ? '-' : ''}${mov.amount.toFixed(2)}
-                                  </span>
                                 </div>
-                              ))
-                            )}
+                              </div>
+                            </div>
                           </div>
+                        );
+                      })()}
+
+                      {clientActiveTab === 'tienda' && (
+                        <StoreTab
+                          products={portalProducts}
+                          isLoading={portalProductsLoading}
+                          errorMessage={portalProductsError}
+                          vipCode={displayVip.code}
+                          onNavigateTab={setClientActiveTab}
+                        />
+                      )}
+
+                      {clientActiveTab === 'qr' && (
+                        <QrScannerTab
+                          loggedClient={loggedClient}
+                          onNavigateTab={setClientActiveTab}
+                          getClientLevelInfo={getClientLevelInfo}
+                          onAddNotification={onAddNotification}
+                          vipCode={displayVip.code}
+                        />
+                      )}
+
+                      {clientActiveTab === 'pagos' && (
+                        <PaymentsTab
+                          bcvRate={pwaBcvRate || 36.50} // Fallback to 36.50 if not loaded
+                          clientData={loggedClient}
+                          activeInstallments={activeInstallments}
+                          paymentHistory={paymentHistory}
+                          allTransactions={clientAllTxs}
+                          onNavigateTab={setClientActiveTab}
+                          onAddNotification={onAddNotification}
+                          onPaymentReported={refreshClientPaymentData}
+                          vipCode={displayVip.code}
+                        />
+                      )}
+
+                      {clientActiveTab === 'perfil' && (
+                        <ProfileTab
+                          clientData={loggedClient}
+                          clubLevel={Number((loggedClient as any)?.level || 1)}
+                          kaluPoints={Number((loggedClient as any)?.loyaltyPoints || 0)}
+                          activeInstallments={activeInstallments}
+                          allTransactions={clientAllTxs}
+                          paymentHistory={paymentHistory}
+                          vipCode={displayVip.code}
+                          onLogout={async () => {
+                            try {
+                              await portalLogoutApi();
+                            } catch (e) {
+                              console.warn('Error closing portal session', e);
+                            }
+                            setLoggedClient(null);
+                            setClientActiveTab('inicio');
+                          }}
+                          onNavigateSubView={(view) => {
+                            console.log('Navigating to', view);
+                          }}
+                          onNavigateTab={(tab) => setClientActiveTab(tab)}
+                        />
+                      )}
+
+                      {clientActiveTab !== 'inicio' && clientActiveTab !== 'tienda' && clientActiveTab !== 'qr' && clientActiveTab !== 'pagos' && clientActiveTab !== 'nivel' && clientActiveTab !== 'perfil' && (
+                        <div className="flex-1 flex items-center justify-center">
+                          <p className="text-zinc-500 text-xs">Sección en construcción</p>
                         </div>
+                      )}
+
+                      {/* BOTTOM NAVIGATION BAR: Franja continua con identidad de nivel, inactivos blancos/neutros, activo destacado */}
+                      <div className={`absolute bottom-0 left-0 right-0 h-16 ${theme.navBar} flex justify-around items-center px-2 z-40 rounded-b-[30px] md:rounded-b-none`}>
+                        <button
+                          onClick={() => setClientActiveTab('inicio')}
+                          className={`flex flex-col items-center justify-center w-14 h-full transition-colors ${
+                            clientActiveTab === 'inicio' ? theme.navTextActive : theme.navTextInactive
+                          }`}
+                        >
+                          <Home className="w-5 h-5 mb-1" />
+                          <span className="text-[9px] uppercase tracking-wider">Inicio</span>
+                        </button>
+                        <button
+                          onClick={() => setClientActiveTab('tienda')}
+                          className={`flex flex-col items-center justify-center w-14 h-full transition-colors ${
+                            clientActiveTab === 'tienda' ? theme.navTextActive : theme.navTextInactive
+                          }`}
+                        >
+                          <Store className="w-5 h-5 mb-1" />
+                          <span className="text-[9px] uppercase tracking-wider">Tienda</span>
+                        </button>
+
+                        {/* Botón Central QR */}
+                        <button
+                          onClick={() => setClientActiveTab('qr')}
+                          className={`flex flex-col items-center justify-center w-14 h-full transition-colors ${
+                            clientActiveTab === 'qr' ? theme.navTextActive : theme.navTextInactive
+                          }`}
+                        >
+                          <Scan className="w-6 h-6 mb-1" />
+                          <span className="text-[9px] uppercase tracking-wider">QR</span>
+                        </button>
+
+                        <button
+                          onClick={() => setClientActiveTab('pagos')}
+                          className={`flex flex-col items-center justify-center w-14 h-full transition-colors ${
+                            clientActiveTab === 'pagos' ? theme.navTextActive : theme.navTextInactive
+                          }`}
+                        >
+                          <CreditCard className="w-5 h-5 mb-1" />
+                          <span className="text-[9px] uppercase tracking-wider">Pagos</span>
+                        </button>
+                        <button
+                          onClick={() => setClientActiveTab('perfil')}
+                          className={`flex flex-col items-center justify-center w-14 h-full transition-colors ${
+                            clientActiveTab === 'perfil' ? theme.navTextActive : theme.navTextInactive
+                          }`}
+                        >
+                          <User className="w-5 h-5 mb-1" />
+                          <span className="text-[9px] uppercase tracking-wider">Perfil</span>
+                        </button>
                       </div>
 
-                      {/* Segundo Bloque: Tus líneas */}
-                      <div>
-                        <div className="flex items-center justify-between mb-3 px-1">
-                          <h3 className="text-sm font-bold text-white">Tus líneas</h3>
-                          <button 
-                            onClick={() => setShowCreditLineModal(true)}
-                            className="text-[10px] font-bold text-emerald-400 hover:text-emerald-300 uppercase tracking-wider flex items-center gap-0.5"
-                          >
-                            Detalles <ChevronRight className="w-3 h-3" />
-                          </button>
-                        </div>
-                        <div className="grid grid-cols-2 gap-3">
-                          {(() => {
-                            const vip = getClientLevelInfo(loggedClient.loyaltyPoints);
-                            const safeClientDebt = Number(loggedClient?.outstandingDebt || (loggedClient as any)?.currentDebtUsd || 0);
-                            const cuotasDebt = activeInstallments
-                              .filter((item: any) => item.status !== 'paid')
-                              .reduce((sum, item) => sum + (Number(item.amountUSD) || Number(item.amount) || 0), 0);
-                            const totalDebt = Math.max(safeClientDebt, cuotasDebt);
-                            
-                            // Línea Principal dinámica por clase (restando deuda activa si aplica)
-                            const mainLimit = Number((loggedClient as any)?.creditLimit) || vip.mainCreditLimit;
-                            const availableMain = Math.max(0, mainLimit - totalDebt);
-
-                            // Línea Cotidiana / Comida dinámica por clase
-                            const dailyLimit = Number((loggedClient as any)?.foodCreditLimit) || vip.dailyCreditLimit;
-
-                            return (
-                              <>
-                                <div 
-                                  onClick={() => setShowCreditLineModal(true)}
-                                  className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl relative overflow-hidden shadow-md cursor-pointer hover:border-emerald-500/40 transition-colors"
-                                >
-                                  <div className="flex justify-between items-center mb-1">
-                                    <p className="text-[10px] font-bold text-zinc-400 uppercase">Línea Principal</p>
-                                    <span className="text-[8px] font-mono text-zinc-500">Tope ${mainLimit.toFixed(0)}</span>
+                      {/* MODAL: Beneficios VIP por Nivel */}
+                      {showBenefitsModal && (() => {
+                        const currentVip = displayVip;
+                        const modalTheme = theme;
+                        return (
+                          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center animate-fade-in p-0 md:p-4">
+                            <div className={`w-full max-w-lg bg-neutral-950 border-t md:border ${modalTheme.cardModalBorder} rounded-t-3xl md:rounded-3xl p-6 text-white max-h-[85vh] overflow-y-auto animate-slide-up space-y-4`}>
+                              <div className="flex justify-between items-center border-b border-neutral-800 pb-3">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xl">👑</span>
+                                  <div>
+                                    <h3 className="text-base font-black text-white">Beneficios Club Kalu Más</h3>
+                                    <p className="text-[10px] text-zinc-400">Escala niveles con tus compras y pagos puntuales</p>
                                   </div>
-                                  <p className="text-lg font-black text-white">
-                                    ${availableMain.toFixed(2)}
-                                  </p>
-                                  <div className="absolute bottom-0 left-0 w-full h-1.5 bg-emerald-500"></div>
                                 </div>
-                                <div 
-                                  onClick={() => setShowCreditLineModal(true)}
-                                  className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl relative overflow-hidden shadow-md cursor-pointer hover:border-amber-500/40 transition-colors"
-                                >
-                                  <div className="flex justify-between items-center mb-1">
-                                    <p className="text-[10px] font-bold text-zinc-400 uppercase">Línea Comida</p>
-                                    <span className="text-[8px] font-mono text-zinc-500">15 días</span>
-                                  </div>
-                                  <p className="text-lg font-black text-white">
-                                    ${dailyLimit.toFixed(2)}
-                                  </p>
-                                  <div className="absolute bottom-0 left-0 w-full h-1.5 bg-amber-500"></div>
-                                </div>
-                              </>
-                            );
-                          })()}
-                        </div>
-                      </div>
-
-                      {/* Tercer Bloque: Accesos Rápidos */}
-                      <div className="grid grid-cols-2 gap-3">
-                        <button className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 hover:border-emerald-500/50 transition-colors shadow-sm">
-                          <Smartphone className="w-6 h-6 text-emerald-400" />
-                          <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-wide">Pagar celular</span>
-                        </button>
-                        <button className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 hover:border-emerald-500/50 transition-colors shadow-sm">
-                          <FileText className="w-6 h-6 text-emerald-400" />
-                          <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-wide">Pagar servicios</span>
-                        </button>
-                        <button className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 hover:border-amber-500/50 transition-colors shadow-sm">
-                          <div className="flex text-2xl leading-none">🎫</div>
-                          <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-wide">Canjear cupones</span>
-                        </button>
-                        <button className="bg-zinc-900 border border-zinc-800 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 hover:border-amber-500/50 transition-colors shadow-sm">
-                          <div className="flex text-2xl leading-none">🎁</div>
-                          <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-wide">Invitar y ganar</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {clientActiveTab === 'nivel' && (() => {
-                    const levelInfo = getClientLevelInfo(loggedClient.loyaltyPoints);
-                    return (
-                      <div className="flex-1 flex flex-col bg-zinc-950 animate-fade-in text-white pb-24 overflow-y-auto">
-                        {/* Cabecera Superior */}
-                        <div className="flex items-center justify-between p-4 border-b border-zinc-900">
-                          <button onClick={() => setClientActiveTab('inicio')} className="w-8 h-8 flex items-center justify-center rounded-full bg-zinc-900 text-zinc-300 hover:text-white transition-colors shadow-sm">
-                            <ArrowLeft className="w-5 h-5" />
-                          </button>
-                          <h1 className="text-sm font-bold text-zinc-100 uppercase tracking-widest">Club Kalu Más</h1>
-                          <button onClick={() => setShowBenefitsModal(true)} className="w-8 h-8 flex items-center justify-center rounded-full bg-zinc-900 text-zinc-300 hover:text-white transition-colors shadow-sm">
-                            <HelpCircle className="w-5 h-5" />
-                          </button>
-                        </div>
-
-                        <div className="p-4 space-y-5">
-                          {/* Tarjeta Principal de Nivel */}
-                          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 relative overflow-hidden shadow-lg">
-                            <div className="absolute top-0 right-0 -mr-6 -mt-6 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl"></div>
-                            
-                            <div className="flex justify-between items-start mb-6 relative z-10">
-                              <div>
-                                <div className="flex items-center gap-2 mb-1">
-                                  <h2 className="text-3xl font-black text-white tracking-tight">Nivel {levelInfo.code}</h2>
-                                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                                    Nivel {levelInfo.level}
-                                  </span>
-                                </div>
-                                <p className="text-sm font-bold text-amber-400 mb-2">{levelInfo.name}</p>
-                                <button 
-                                  onClick={() => setShowBenefitsModal(true)}
-                                  className="text-[10px] uppercase font-bold tracking-wider text-zinc-400 hover:text-emerald-400 flex items-center gap-1 transition-colors"
-                                >
-                                  Conocer beneficios <ChevronRight className="w-3 h-3" />
+                                <button onClick={() => setShowBenefitsModal(false)} className="w-8 h-8 rounded-full bg-neutral-900 flex items-center justify-center text-zinc-400 hover:text-white">
+                                  ✕
                                 </button>
                               </div>
-                              <div className="w-12 h-12 rounded-full bg-emerald-500 flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.3)]">
-                                <span className="text-zinc-900 font-black text-2xl leading-none">K</span>
-                              </div>
-                            </div>
 
-                            <div className="grid grid-cols-3 gap-2 pt-5 border-t border-zinc-800/80 relative z-10">
-                              <div>
-                                <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Línea Principal</p>
-                                <p className="text-[8px] text-zinc-500 mb-1">Máx. {levelInfo.mainMaxInstallments} cuotas</p>
-                                <p className="text-sm font-black text-white">${Number(levelInfo.mainCreditLimit).toFixed(2)}</p>
-                              </div>
-                              <div>
-                                <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Línea Cotidiana</p>
-                                <p className="text-[8px] text-zinc-500 mb-1">{levelInfo.dailyInstallments} cuota a {levelInfo.dailyTermDays}d</p>
-                                <p className="text-sm font-black text-white">${Number(levelInfo.dailyCreditLimit).toFixed(2)}</p>
-                              </div>
-                              <div>
-                                <p className="text-[9px] font-bold text-zinc-400 uppercase mb-0.5">Inicial</p>
-                                <p className="text-[8px] text-zinc-500 mb-1">Desde</p>
-                                <p className="text-sm font-black text-emerald-400">{Math.round(levelInfo.initialPct * 100)}%</p>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Bloque de Puntos Kalu y Acciones Rápidas */}
-                          <div className="space-y-3">
-                            <div className="flex items-center justify-between bg-zinc-900/50 border border-zinc-800/50 rounded-xl p-3">
-                              <p className="text-sm font-bold text-zinc-200">
-                                <span className="text-amber-500 mr-1.5">⭐</span>
-                                {Number(loggedClient?.loyaltyPoints || 0)} puntos acumulados
-                              </p>
-                              <button 
-                                onClick={() => setClientActiveTab('tienda')}
-                                className="bg-zinc-800 hover:bg-zinc-700 text-xs font-bold px-4 py-1.5 rounded-full transition-colors text-white"
-                              >
-                                Usar puntos
-                              </button>
-                            </div>
-                            
-                            <div className="grid grid-cols-2 gap-3">
-                              <button 
-                                onClick={() => setShowCreditLineModal(true)}
-                                className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 flex flex-col gap-1 items-start hover:border-emerald-500/50 transition-colors group text-left"
-                              >
-                                <span className="text-lg">💸</span>
-                                <span className="text-xs font-bold text-zinc-300 group-hover:text-emerald-400 flex items-center gap-1">Línea de Crédito <ChevronRight className="w-3 h-3" /></span>
-                              </button>
-                              <button 
-                                onClick={() => setShowProgressModal(true)}
-                                className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 flex flex-col gap-1 items-start hover:border-emerald-500/50 transition-colors group text-left"
-                              >
-                                <span className="text-lg">⏳</span>
-                                <span className="text-xs font-bold text-zinc-300 group-hover:text-emerald-400 flex items-center gap-1">Ver progreso <ChevronRight className="w-3 h-3" /></span>
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* Sección Inferior: Tu progreso */}
-                          <div className="pt-2">
-                            <div className="flex items-center justify-between mb-4">
-                              <h3 className="text-sm font-bold text-white">Tu progreso de Nivel</h3>
-                              <button 
-                                onClick={() => setShowProgressModal(true)}
-                                className="text-xs font-bold text-amber-500 hover:text-amber-400 px-3 py-1 bg-amber-500/10 rounded-full transition-colors"
-                              >
-                                Conocer más
-                              </button>
-                            </div>
-
-                            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 space-y-5 shadow-md">
-                              <div>
-                                <div className="flex justify-between items-end mb-2">
-                                  <span className="text-[10px] font-bold text-zinc-400 uppercase">Compras Acumuladas ({Number(loggedClient?.loyaltyPoints || 0)} pts / ${Number(loggedClient?.loyaltyPoints || 0)})</span>
-                                  <span className="text-xs font-bold text-emerald-400">
-                                    {levelInfo.level < 6 ? `Meta: $${levelInfo.nextGoal}.00` : 'Nivel Máximo VIP'}
-                                  </span>
-                                </div>
-                                <div className="w-full bg-zinc-950 rounded-full h-2.5 overflow-hidden shadow-inner p-0.5">
-                                  <div className="bg-gradient-to-r from-emerald-500 to-amber-400 h-1.5 rounded-full transition-all duration-500" style={{ width: `${levelInfo.progress}%` }}></div>
-                                </div>
-                                <div className="flex justify-between items-center text-[10px] mt-2">
-                                  <span className="text-zinc-400">
-                                    Próximo ascenso: <span className="text-zinc-200 font-bold">{levelInfo.nextPrize}</span>
-                                  </span>
-                                  {levelInfo.level < 6 && (
-                                    <span className="text-amber-400 font-bold">
-                                      Faltan ${Math.max(0, levelInfo.nextGoal - Number(loggedClient?.loyaltyPoints || 0))}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                              
-                              <div className="border-t border-zinc-800/80 pt-4">
-                                <div className="flex justify-between items-center text-xs">
-                                  <span className="text-zinc-400">Total financiado y pagado:</span>
-                                  <span className="font-bold text-white">${activeInstallments.filter((i: any) => i.status === 'paid').reduce((s: number, i: any) => s + (Number(i.amountUSD) || Number(i.amount) || 0), 0).toFixed(2)}</span>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {clientActiveTab === 'tienda' && (
-                    <StoreTab
-                      products={portalProducts}
-                      isLoading={portalProductsLoading}
-                      errorMessage={portalProductsError}
-                      onNavigateTab={setClientActiveTab}
-                    />
-                  )}
-
-                  {clientActiveTab === 'qr' && (
-                    <QrScannerTab 
-                      loggedClient={loggedClient}
-                      onNavigateTab={setClientActiveTab}
-                      getClientLevelInfo={getClientLevelInfo}
-                      onAddNotification={onAddNotification}
-                    />
-                  )}
-
-                  {clientActiveTab === 'pagos' && (
-                    <PaymentsTab
-                      bcvRate={pwaBcvRate || 36.50} // Fallback to 36.50 if not loaded
-                      clientData={loggedClient}
-                      activeInstallments={activeInstallments}
-                      paymentHistory={paymentHistory}
-                      allTransactions={clientAllTxs}
-                      onNavigateTab={setClientActiveTab}
-                      onAddNotification={onAddNotification}
-                      onPaymentReported={refreshClientPaymentData}
-                    />
-                  )}
-
-                  {clientActiveTab === 'perfil' && (
-                    <ProfileTab
-                      clientData={loggedClient}
-                      clubLevel={Number((loggedClient as any)?.level || 1)}
-                      kaluPoints={Number((loggedClient as any)?.loyaltyPoints || 0)}
-                      activeInstallments={activeInstallments}
-                      allTransactions={clientAllTxs}
-                      paymentHistory={paymentHistory}
-                      onLogout={async () => {
-                        try {
-                          await portalLogoutApi();
-                        } catch (e) {
-                          console.warn('Error closing portal session', e);
-                        }
-                        setLoggedClient(null);
-                        setClientActiveTab('inicio');
-                      }}
-                      onNavigateSubView={(view) => {
-                        console.log('Navigating to', view);
-                      }}
-                      onNavigateTab={(tab) => setClientActiveTab(tab)}
-                    />
-                  )}
-
-                  {clientActiveTab !== 'inicio' && clientActiveTab !== 'tienda' && clientActiveTab !== 'qr' && clientActiveTab !== 'pagos' && clientActiveTab !== 'nivel' && clientActiveTab !== 'perfil' && (
-                    <div className="flex-1 flex items-center justify-center">
-                      <p className="text-zinc-500 text-xs">Sección en construcción</p>
-                    </div>
-                  )}
-
-                  {/* BOTTOM NAVIGATION BAR */}
-                  <div className="absolute bottom-0 left-0 right-0 h-16 bg-zinc-950 border-t border-zinc-800 flex justify-around items-center px-2 z-40 rounded-b-[30px] md:rounded-b-none">
-                    <button onClick={() => setClientActiveTab('inicio')} className={`flex flex-col items-center justify-center w-12 h-12 rounded-xl transition-all ${clientActiveTab === 'inicio' ? 'text-emerald-500' : 'text-zinc-500 hover:text-zinc-400'}`}>
-                      <Home className="w-5 h-5 mb-1" />
-                      <span className="text-[7px] uppercase font-bold tracking-wider">Inicio</span>
-                    </button>
-                    <button onClick={() => setClientActiveTab('tienda')} className={`flex flex-col items-center justify-center w-12 h-12 rounded-xl transition-all ${clientActiveTab === 'tienda' ? 'text-emerald-500' : 'text-zinc-500 hover:text-zinc-400'}`}>
-                      <Store className="w-5 h-5 mb-1" />
-                      <span className="text-[7px] uppercase font-bold tracking-wider">Tienda</span>
-                    </button>
-                    
-                    {/* Botón Central QR */}
-                    <button onClick={() => setClientActiveTab('qr')} className="relative -top-5 flex flex-col items-center justify-center w-14 h-14 rounded-full bg-emerald-500 text-zinc-950 shadow-[0_0_15px_rgba(16,185,129,0.3)] hover:scale-105 transition-transform border-4 border-zinc-950">
-                      <Scan className="w-6 h-6" />
-                    </button>
-                    
-                    <button onClick={() => setClientActiveTab('pagos')} className={`flex flex-col items-center justify-center w-12 h-12 rounded-xl transition-all ${clientActiveTab === 'pagos' ? 'text-emerald-500' : 'text-zinc-500 hover:text-zinc-400'}`}>
-                      <CreditCard className="w-5 h-5 mb-1" />
-                      <span className="text-[7px] uppercase font-bold tracking-wider">Pagos</span>
-                    </button>
-                    <button onClick={() => setClientActiveTab('perfil')} className={`flex flex-col items-center justify-center w-12 h-12 rounded-xl transition-all ${clientActiveTab === 'perfil' ? 'text-emerald-500' : 'text-zinc-500 hover:text-zinc-400'}`}>
-                      <User className="w-5 h-5 mb-1" />
-                      <span className="text-[7px] uppercase font-bold tracking-wider">Perfil</span>
-                    </button>
-                  </div>
-
-                  {/* MODAL: Beneficios VIP por Nivel */}
-                  {showBenefitsModal && (() => {
-                    const currentVip = getClientLevelInfo(loggedClient.loyaltyPoints);
-                    return (
-                      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center animate-fade-in p-0 md:p-4">
-                        <div className="w-full max-w-lg bg-zinc-950 border-t md:border border-zinc-800 rounded-t-3xl md:rounded-3xl p-6 text-white max-h-[85vh] overflow-y-auto animate-slide-up space-y-4">
-                          <div className="flex justify-between items-center border-b border-zinc-800 pb-3">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xl">👑</span>
-                              <div>
-                                <h3 className="text-base font-black text-white">Beneficios Club Kalu Más</h3>
-                                <p className="text-[10px] text-zinc-400">Escala niveles con tus compras y pagos puntuales</p>
-                              </div>
-                            </div>
-                            <button onClick={() => setShowBenefitsModal(false)} className="w-8 h-8 rounded-full bg-zinc-900 flex items-center justify-center text-zinc-400 hover:text-white">
-                              ✕
-                            </button>
-                          </div>
-
-                          <div className="space-y-3">
-                            {VIP_LEVELS_MATRIX.map((tier) => {
-                              const isCurrent = tier.level === currentVip.level;
-                              return (
-                                <div 
-                                  key={tier.level}
-                                  className={`p-4 rounded-2xl border transition-all ${isCurrent ? 'bg-gradient-to-r from-emerald-950/40 via-zinc-900 to-zinc-900 border-emerald-500/60 ring-1 ring-emerald-500/30' : 'bg-zinc-900/50 border-zinc-800/80 opacity-80'}`}
-                                >
-                                  <div className="flex justify-between items-start mb-2">
-                                    <div>
-                                      <div className="flex items-center gap-2">
-                                        <span className="text-xs font-black text-white">{tier.name} ({tier.code})</span>
-                                        {isCurrent && (
-                                          <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-500 text-zinc-950">
-                                            Tu Nivel
+                              <div className="space-y-3">
+                                {VIP_LEVELS_MATRIX.map((tier) => {
+                                  const isCurrent = tier.level === currentVip.level;
+                                  const tierTheme = getVipTheme(tier.code);
+                                  return (
+                                    <div
+                                      key={tier.level}
+                                      className={`p-4 rounded-2xl border transition-all ${
+                                        isCurrent
+                                          ? `bg-neutral-900 ${tierTheme.border} ring-1 ring-neutral-700`
+                                          : 'bg-neutral-900/50 border-neutral-800/80 opacity-80'
+                                      }`}
+                                    >
+                                      <div className="flex justify-between items-start mb-2">
+                                        <div>
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-xs font-black text-white">{tier.name} ({tier.code})</span>
+                                            {isCurrent && (
+                                              <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${tierTheme.badgeBg} ${tierTheme.badgeText}`}>
+                                                Tu Nivel
+                                              </span>
+                                            )}
+                                          </div>
+                                          <p className="text-[10px] text-zinc-400 mt-0.5">{tier.description}</p>
+                                        </div>
+                                        <div className="text-right">
+                                          <span className={`text-xs font-black ${tierTheme.textAccent} block`}>
+                                            {tier.level < 6 ? `$${tier.minPoints} - $${tier.maxPoints}` : '+$1,200'}
                                           </span>
-                                        )}
+                                          <span className="text-[8px] text-zinc-500 uppercase font-bold">en compras</span>
+                                        </div>
                                       </div>
-                                      <p className="text-[10px] text-zinc-400 mt-0.5">{tier.description}</p>
-                                    </div>
-                                    <div className="text-right">
-                                      <span className="text-xs font-black text-amber-400 block">
-                                        {tier.level < 6 ? `$${tier.minPoints} - $${tier.maxPoints}` : '+$1,200'}
-                                      </span>
-                                      <span className="text-[8px] text-zinc-500 uppercase font-bold">en compras</span>
-                                    </div>
-                                  </div>
 
-                                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-zinc-800/60 text-center">
-                                    <div className="bg-zinc-950/60 p-2 rounded-xl">
-                                      <span className="text-[8px] text-zinc-500 uppercase block font-bold">Inicial</span>
-                                      <span className="text-xs font-black text-emerald-400">{Math.round(tier.initialPct * 100)}%</span>
+                                      <div className="grid grid-cols-3 gap-2 pt-2 border-t border-neutral-800/60 text-center">
+                                        <div className="bg-neutral-950/60 p-2 rounded-xl">
+                                          <span className="text-[8px] text-zinc-500 uppercase block font-bold">Inicial</span>
+                                          <span className={`text-xs font-black ${tierTheme.textAccent}`}>{Math.round(tier.initialPct * 100)}%</span>
+                                        </div>
+                                        <div className="bg-neutral-950/60 p-2 rounded-xl">
+                                          <span className="text-[8px] text-zinc-500 uppercase block font-bold">Línea Ppal</span>
+                                          <span className="text-xs font-black text-white">${tier.mainCreditLimit} <span className="text-[8px] text-zinc-400">({tier.mainMaxInstallments}c)</span></span>
+                                        </div>
+                                        <div className="bg-neutral-950/60 p-2 rounded-xl">
+                                          <span className="text-[8px] text-zinc-500 uppercase block font-bold">Cotidiana</span>
+                                          <span className="text-xs font-black text-white">${tier.dailyCreditLimit} <span className="text-[8px] text-zinc-400">(15d)</span></span>
+                                        </div>
+                                      </div>
                                     </div>
-                                    <div className="bg-zinc-950/60 p-2 rounded-xl">
-                                      <span className="text-[8px] text-zinc-500 uppercase block font-bold">Línea Ppal</span>
-                                      <span className="text-xs font-black text-white">${tier.mainCreditLimit} <span className="text-[8px] text-zinc-400">({tier.mainMaxInstallments}c)</span></span>
-                                    </div>
-                                    <div className="bg-zinc-950/60 p-2 rounded-xl">
-                                      <span className="text-[8px] text-zinc-500 uppercase block font-bold">Cotidiana</span>
-                                      <span className="text-xs font-black text-white">${tier.dailyCreditLimit} <span className="text-[8px] text-zinc-400">(15d)</span></span>
-                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              <button
+                                onClick={() => setShowBenefitsModal(false)}
+                                className={`w-full py-3.5 ${modalTheme.btnPrimary} font-black uppercase text-xs tracking-wider rounded-xl transition-colors shadow-md`}
+                              >
+                                Entendido
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* MODAL: Detalle de Progreso */}
+                      {showProgressModal && (() => {
+                        const currentVip = displayVip;
+                        const modalTheme = theme;
+                        const pointsForProgress = (previewTierParam && SIMULATED_POINTS_DEV[previewTierParam] !== undefined)
+                          ? SIMULATED_POINTS_DEV[previewTierParam]
+                          : Number(loggedClient?.loyaltyPoints || 0);
+                        return (
+                          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center animate-fade-in p-0 md:p-4">
+                            <div className={`w-full max-w-md bg-neutral-950 border-t md:border ${modalTheme.cardModalBorder} rounded-t-3xl md:rounded-3xl p-6 text-white max-h-[85vh] overflow-y-auto animate-slide-up space-y-5`}>
+                              <div className="flex justify-between items-center border-b border-neutral-800 pb-3">
+                                <h3 className="text-base font-black text-white">Progreso hacia el siguiente nivel</h3>
+                                <button onClick={() => setShowProgressModal(false)} className="w-8 h-8 rounded-full bg-neutral-900 flex items-center justify-center text-zinc-400 hover:text-white">
+                                  ✕
+                                </button>
+                              </div>
+
+                              <div className="text-center py-2">
+                                <div className={`w-16 h-16 rounded-full ${modalTheme.accentBg} border ${modalTheme.borderSubtle} ${modalTheme.textAccent} flex items-center justify-center mx-auto mb-3`}>
+                                  <span className="text-2xl font-black">{currentVip.code}</span>
+                                </div>
+                                <h4 className="text-lg font-black text-white">{currentVip.name}</h4>
+                                <p className="text-xs text-zinc-400 mt-1">Has acumulado ${pointsForProgress} en compras ({pointsForProgress} pts)</p>
+                              </div>
+
+                              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 space-y-3">
+                                <div className="flex justify-between text-xs font-bold">
+                                  <span className="text-zinc-400">Progreso de Compras</span>
+                                  <span className={modalTheme.textAccent}>{Math.round(currentVip.progress)}%</span>
+                                </div>
+                                <div className="w-full bg-neutral-950 rounded-full h-3 overflow-hidden p-0.5">
+                                  <div className={`h-2 rounded-full bg-gradient-to-r ${modalTheme.progressGradient}`} style={{ width: `${currentVip.progress}%` }}></div>
+                                </div>
+                                <p className="text-[11px] text-zinc-300">
+                                  {currentVip.level < 6
+                                    ? `Te faltan $${Math.max(0, currentVip.nextGoal - pointsForProgress)} en compras acumuladas (${Math.max(0, currentVip.nextGoal - pointsForProgress)} pts) para ascender a ${VIP_LEVELS_MATRIX[currentVip.level]?.name || 'siguiente nivel'}.`
+                                    : '¡Felicidades! Has superado la meta máxima de $1,200 acumulados y perteneces a Clase Black Diamond.'}
+                                </p>
+                              </div>
+
+                              <div className={`${modalTheme.accentBg} border ${modalTheme.borderSubtle} rounded-2xl p-4`}>
+                                <p className={`text-[10px] font-bold ${modalTheme.textAccent} uppercase tracking-wider mb-1`}>🎁 Próximo Beneficio</p>
+                                <p className="text-xs text-zinc-200">{currentVip.nextPrize}</p>
+                              </div>
+
+                              <button
+                                onClick={() => setShowProgressModal(false)}
+                                className="w-full py-3.5 bg-neutral-900 hover:bg-neutral-800 text-white font-black uppercase text-xs tracking-wider rounded-xl transition-colors border border-neutral-800"
+                              >
+                                Cerrar
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* MODAL: Línea de Crédito */}
+                      {showCreditLineModal && (() => {
+                        const currentVip = displayVip;
+                        const modalTheme = theme;
+                        return (
+                          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center animate-fade-in p-0 md:p-4">
+                            <div className={`w-full max-w-md bg-neutral-950 border-t md:border ${modalTheme.cardModalBorder} rounded-t-3xl md:rounded-3xl p-6 text-white max-h-[85vh] overflow-y-auto animate-slide-up space-y-5`}>
+                              <div className="flex justify-between items-center border-b border-neutral-800 pb-3">
+                                <h3 className="text-base font-black text-white">Línea de Crédito Kalu</h3>
+                                <button onClick={() => setShowCreditLineModal(false)} className="w-8 h-8 rounded-full bg-neutral-900 flex items-center justify-center text-zinc-400 hover:text-white">
+                                  ✕
+                                </button>
+                              </div>
+
+                              <div className="space-y-4">
+                                <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
+                                  <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest block mb-1">Línea Principal Asignada</span>
+                                  <div className="flex justify-between items-baseline">
+                                    <span className="text-2xl font-black text-white">${currentVip.mainCreditLimit.toFixed(2)}</span>
+                                    <span className={`text-xs ${modalTheme.textAccent} font-bold`}>Hasta {currentVip.mainMaxInstallments} Cuotas</span>
                                   </div>
                                 </div>
-                              );
-                            })}
-                          </div>
 
-                          <button 
-                            onClick={() => setShowBenefitsModal(false)}
-                            className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black uppercase text-xs tracking-wider rounded-xl transition-colors"
-                          >
-                            Entendido
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })()}
+                                <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4">
+                                  <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest block mb-1">Línea Cotidiana (Víveres y Quesos)</span>
+                                  <div className="flex justify-between items-baseline">
+                                    <span className="text-2xl font-black text-white">${currentVip.dailyCreditLimit.toFixed(2)}</span>
+                                    <span className={`text-xs ${modalTheme.textAccent} font-bold`}>1 Cuota a 15 días</span>
+                                  </div>
+                                </div>
 
-                  {/* MODAL: Detalle de Progreso */}
-                  {showProgressModal && (() => {
-                    const currentVip = getClientLevelInfo(loggedClient.loyaltyPoints);
-                    return (
-                      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center animate-fade-in p-0 md:p-4">
-                        <div className="w-full max-w-md bg-zinc-950 border-t md:border border-zinc-800 rounded-t-3xl md:rounded-3xl p-6 text-white max-h-[85vh] overflow-y-auto animate-slide-up space-y-5">
-                          <div className="flex justify-between items-center border-b border-zinc-800 pb-3">
-                            <h3 className="text-base font-black text-white">Progreso hacia el siguiente nivel</h3>
-                            <button onClick={() => setShowProgressModal(false)} className="w-8 h-8 rounded-full bg-zinc-900 flex items-center justify-center text-zinc-400 hover:text-white">
-                              ✕
-                            </button>
-                          </div>
-
-                          <div className="text-center py-2">
-                            <div className="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center mx-auto mb-3">
-                              <span className="text-2xl font-black text-emerald-400">{currentVip.code}</span>
-                            </div>
-                            <h4 className="text-lg font-black text-white">{currentVip.name}</h4>
-                            <p className="text-xs text-zinc-400 mt-1">Has acumulado ${Number(loggedClient?.loyaltyPoints || 0)} en compras ({Number(loggedClient?.loyaltyPoints || 0)} pts)</p>
-                          </div>
-
-                          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 space-y-3">
-                            <div className="flex justify-between text-xs font-bold">
-                              <span className="text-zinc-400">Progreso de Compras</span>
-                              <span className="text-emerald-400">{Math.round(currentVip.progress)}%</span>
-                            </div>
-                            <div className="w-full bg-zinc-950 rounded-full h-3 overflow-hidden p-0.5">
-                              <div className="bg-gradient-to-r from-emerald-500 to-amber-400 h-2 rounded-full" style={{ width: `${currentVip.progress}%` }}></div>
-                            </div>
-                            <p className="text-[11px] text-zinc-300">
-                              {currentVip.level < 6 
-                                ? `Te faltan $${Math.max(0, currentVip.nextGoal - Number(loggedClient?.loyaltyPoints || 0))} en compras acumuladas (${Math.max(0, currentVip.nextGoal - Number(loggedClient?.loyaltyPoints || 0))} pts) para ascender a ${VIP_LEVELS_MATRIX[currentVip.level]?.name || 'siguiente nivel'}.`
-                                : '¡Felicidades! Has superado la meta máxima de $1,200 acumulados y perteneces a Clase Black Diamond.'}
-                            </p>
-                          </div>
-
-                          <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4">
-                            <p className="text-[10px] font-bold text-amber-400 uppercase tracking-wider mb-1">🎁 Próximo Beneficio</p>
-                            <p className="text-xs text-zinc-200">{currentVip.nextPrize}</p>
-                          </div>
-
-                          <button 
-                            onClick={() => setShowProgressModal(false)}
-                            className="w-full py-3.5 bg-zinc-800 hover:bg-zinc-700 text-white font-black uppercase text-xs tracking-wider rounded-xl transition-colors"
-                          >
-                            Cerrar
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* MODAL: Línea de Crédito */}
-                  {showCreditLineModal && (() => {
-                    const currentVip = getClientLevelInfo(loggedClient.loyaltyPoints);
-                    return (
-                      <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center animate-fade-in p-0 md:p-4">
-                        <div className="w-full max-w-md bg-zinc-950 border-t md:border border-zinc-800 rounded-t-3xl md:rounded-3xl p-6 text-white max-h-[85vh] overflow-y-auto animate-slide-up space-y-5">
-                          <div className="flex justify-between items-center border-b border-zinc-800 pb-3">
-                            <h3 className="text-base font-black text-white">Línea de Crédito Kalu</h3>
-                            <button onClick={() => setShowCreditLineModal(false)} className="w-8 h-8 rounded-full bg-zinc-900 flex items-center justify-center text-zinc-400 hover:text-white">
-                              ✕
-                            </button>
-                          </div>
-
-                          <div className="space-y-4">
-                            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
-                              <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest block mb-1">Línea Principal Asignada</span>
-                              <div className="flex justify-between items-baseline">
-                                <span className="text-2xl font-black text-white">${currentVip.mainCreditLimit.toFixed(2)}</span>
-                                <span className="text-xs text-emerald-400 font-bold">Hasta {currentVip.mainMaxInstallments} Cuotas</span>
+                                <div className="bg-neutral-900/60 border border-neutral-800/80 rounded-2xl p-4">
+                                  <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest block mb-1">Inicial Requerida</span>
+                                  <p className={`text-lg font-black ${modalTheme.textAccent}`}>{Math.round(currentVip.initialPct * 100)}% de tu compra</p>
+                                  <p className="text-[10px] text-zinc-400 mt-1">El resto se financia automáticamente según tu nivel.</p>
+                                </div>
                               </div>
-                            </div>
 
-                            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
-                              <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest block mb-1">Línea Cotidiana (Víveres y Quesos)</span>
-                              <div className="flex justify-between items-baseline">
-                                <span className="text-2xl font-black text-white">${currentVip.dailyCreditLimit.toFixed(2)}</span>
-                                <span className="text-xs text-amber-400 font-bold">1 Cuota a 15 días</span>
-                              </div>
-                            </div>
-
-                            <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-2xl p-4">
-                              <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-widest block mb-1">Inicial Requerida</span>
-                              <p className="text-lg font-black text-emerald-400">{Math.round(currentVip.initialPct * 100)}% de tu compra</p>
-                              <p className="text-[10px] text-zinc-400 mt-1">El resto se financia automáticamente según tu nivel.</p>
+                              <button
+                                onClick={() => {
+                                  setShowCreditLineModal(false);
+                                  setClientActiveTab('tienda');
+                                }}
+                                className={`w-full py-3.5 ${modalTheme.btnPrimary} font-black uppercase text-xs tracking-wider rounded-xl transition-colors shadow-md`}
+                              >
+                                Ir a la Tienda
+                              </button>
                             </div>
                           </div>
-
-                          <button 
-                            onClick={() => {
-                              setShowCreditLineModal(false);
-                              setClientActiveTab('tienda');
-                            }}
-                            className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black uppercase text-xs tracking-wider rounded-xl transition-colors"
-                          >
-                            Ir a la Tienda
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </div>
+                        );
+                      })()}
+                    </div>
+                  );
+                })()
               )}
             </div>
           </div>
@@ -1408,7 +1478,7 @@ export default function ClientPortal({
 
             {/* Screen Content */}
             <div className={`flex-1 overflow-y-auto bg-slate-900 text-slate-100 flex flex-col text-xs ${!isolatedType ? 'p-4 pt-7' : 'px-4 py-6'}`}>
-              
+
               {!loggedSupplier ? (
                 /* PRODUCER PORTAL: LOCK / LOGIN SCREEN */
                 <div className="flex-1 flex flex-col justify-between py-6">
@@ -1449,7 +1519,7 @@ export default function ClientPortal({
                         className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/60 font-mono tracking-[0.5em] text-center disabled:opacity-50 disabled:cursor-not-allowed"
                       />
                     </div>
-                    
+
                     <div className="pt-2">
                       <button
                         type="submit"
@@ -1515,7 +1585,7 @@ export default function ClientPortal({
                   {/* PRODUCER LEDGER (LIBRETA DE QUESO REAL-TIME) */}
                   <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 mb-3.5 space-y-2">
                     <span className="text-[8px] uppercase font-mono tracking-wider text-slate-400 block font-bold">Resumen de Cuenta Corriente:</span>
-                    
+
                     <div className="grid grid-cols-2 gap-2">
                       <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-2 text-center">
                         <span className="text-[7px] text-slate-400 uppercase block">Nos Deben</span>
@@ -1719,8 +1789,8 @@ export default function ClientPortal({
                   </div>
                   <h4 className="text-lg font-bold text-zinc-100 mb-2">Escanear QR de Área</h4>
                   <p className="text-xs text-zinc-400 mb-8">Punto de Carga de Facturas y Control de Costos</p>
-                  
-                  <button 
+
+                  <button
                     onClick={() => setDaisyScanned(true)}
                     className="w-full py-3 bg-brand-accent hover:bg-amber-400 text-zinc-950 font-bold uppercase rounded-xl text-xs tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-brand-accent/20"
                   >

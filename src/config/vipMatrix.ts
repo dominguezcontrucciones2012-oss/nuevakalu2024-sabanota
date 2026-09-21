@@ -82,7 +82,7 @@ export const VIP_LEVELS_MATRIX: VIPLevelConfig[] = [
     dailyInstallments: 1,
     dailyTermDays: 15,
     badgeColor: 'from-purple-900/60 to-zinc-900 border-purple-600/50 text-purple-300',
-    nextPrize: 'Ascenso a Clase Black (Hasta 5 cuotas, Inicial 35% y Línea $450)',
+    nextPrize: 'Ascenso a Clase Black (Hasta 6 cuotas, Inicial 35% y Línea $450)',
     description: 'Inicial preferencial del 45% con cupo principal de $350.00 y cotidiana de $130.00.'
   },
   {
@@ -94,13 +94,13 @@ export const VIP_LEVELS_MATRIX: VIPLevelConfig[] = [
     maxPoints: 1200,
     initialPct: 0.35,
     mainCreditLimit: 450,
-    mainMaxInstallments: 5,
+    mainMaxInstallments: 6,
     dailyCreditLimit: 160,
     dailyInstallments: 1,
     dailyTermDays: 15,
     badgeColor: 'from-zinc-900 via-neutral-900 to-black border-amber-500/60 text-amber-400',
     nextPrize: 'Ascenso a Clase Black Diamond (Inicial 20%, 6 cuotas y Línea $500)',
-    description: 'Inicial reducida al 35%, hasta 5 cuotas quincenales y línea ampliada a $450.00.'
+    description: 'Inicial reducida al 35%, hasta 6 cuotas quincenales y línea ampliada a $450.00.'
   },
   {
     level: 6,
