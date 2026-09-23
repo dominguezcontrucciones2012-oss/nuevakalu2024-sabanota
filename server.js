@@ -2598,29 +2598,18 @@ function parseAndValidateCaptureBase64(rawBase64) {
 app.post('/api/portal/client/payments', requirePortalAuth, requirePortalType('client'), verifyCsrf, async (req, res) => {
   let createdFilePath = null;
   try {
-    const { amount, paymentMethod, reference, bank, receiptImageUrl, receiptImage, notes, installmentId, date } = req.body || {};
+    const { amount, paymentMethod, reference, bank, receiptImageUrl, receiptImage, notes, installmentId, transactionId, date } = req.body || {};
     if (!amount || Number(amount) <= 0) {
       return res.status(400).json({ error: 'Monto de pago requerido y debe ser mayor a cero' });
+    }
+
+    if (!reference || typeof reference !== 'string' || !reference.trim()) {
+      return res.status(400).json({ error: 'El número de referencia bancaria es obligatorio', code: 'INVALID_REFERENCE' });
     }
 
     const rawCapture = receiptImageUrl || receiptImage;
     if (!rawCapture) {
       return res.status(400).json({ error: 'Debes adjuntar el comprobante de pago' });
-    }
-
-    const existingPwaPayments = readCollection('pwa_payments');
-    const cleanRef = String(reference || '').trim();
-    if (cleanRef) {
-      const duplicateRecent = existingPwaPayments.find(p => 
-        (String(p.clientId) === String(req.portalUser.id) || String(p.entityId) === String(req.portalUser.id)) &&
-        String(p.reference || '').trim() === cleanRef &&
-        Math.abs(Number(p.amount) - Number(amount)) < 0.01 &&
-        (installmentId ? String(p.installmentId) === String(installmentId) : !p.installmentId) &&
-        ['pending', 'in_review', 'approved'].includes(p.status)
-      );
-      if (duplicateRecent) {
-        return res.json({ success: true, payment: duplicateRecent, idempotentReplay: true });
-      }
     }
 
     // Validar y decodificar capture
@@ -2670,6 +2659,7 @@ app.post('/api/portal/client/payments', requirePortalAuth, requirePortalType('cl
       receiptSha256: captureInfo.sha256,
       notes: String(notes || ''),
       installmentId: installmentId ? String(installmentId) : null,
+      transactionId: null,
       date: date || new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
       status: 'pending',
       createdAt: new Date().toISOString()
@@ -2677,6 +2667,20 @@ app.post('/api/portal/client/payments', requirePortalAuth, requirePortalType('cl
 
     if (installmentId) {
       await withTransaction(async (tx) => {
+        const cleanRef = String(reference || '').trim().toUpperCase();
+        const pwaPayments = tx.read('pwa_payments');
+        const activeDuplicate = pwaPayments.find(p =>
+          (String(p.clientId) === String(req.portalUser.id) || String(p.entityId) === String(req.portalUser.id)) &&
+          String(p.reference || '').trim().toUpperCase() === cleanRef &&
+          ['pending', 'in_review', 'approved'].includes(p.status)
+        );
+        if (activeDuplicate) {
+          const dupErr = new Error(`Ya existe un reporte de pago activo con el número de referencia ${cleanRef}`);
+          dupErr.statusCode = 409;
+          dupErr.code = 'PAYMENT_REFERENCE_ALREADY_EXISTS';
+          throw dupErr;
+        }
+
         const installments = tx.read('installments');
         const inst = installments.find(i => String(i.id) === String(installmentId) && (String(i.clientId) === String(req.portalUser.id) || String(i.client_id) === String(req.portalUser.id)));
         if (!inst) {
@@ -2712,22 +2716,133 @@ app.post('/api/portal/client/payments', requirePortalAuth, requirePortalType('cl
           throw exceedErr;
         }
 
+        if (inst.transactionId) {
+          const siblingInsts = installments.filter(s =>
+            String(s.transactionId) === String(inst.transactionId) &&
+            (String(s.clientId) === String(req.portalUser.id) || String(s.client_id) === String(req.portalUser.id))
+          );
+          siblingInsts.sort((a, b) => {
+            const numA = a.installmentNumber != null ? Number(a.installmentNumber) : 999;
+            const numB = b.installmentNumber != null ? Number(b.installmentNumber) : 999;
+            if (numA !== numB) return numA - numB;
+            const dA = a.dueDate ? new Date(a.dueDate).getTime() : 0;
+            const dB = b.dueDate ? new Date(b.dueDate).getTime() : 0;
+            return dA - dB;
+          });
+
+          for (const prevInst of siblingInsts) {
+            if (String(prevInst.id) === String(inst.id)) break;
+            const prevTotal = Number(prevInst.amountUSD ?? prevInst.amount ?? 0);
+            const prevPaid = Number(prevInst.paidAmount ?? 0);
+            const prevRemaining = Math.round((prevTotal - prevPaid) * 100) / 100;
+            if (prevRemaining > 0.001 || prevInst.status !== 'paid') {
+              const seqErr = new Error(`Debe cancelar o completar primero la Cuota ${prevInst.installmentNumber || 1} antes de abonar a esta cuota`);
+              seqErr.statusCode = 400;
+              seqErr.code = 'SEQUENTIAL_INSTALLMENT_ORDER_REQUIRED';
+              throw seqErr;
+            }
+          }
+        }
+
         newPayment.transactionId = inst.transactionId || null;
         newPayment.installmentPreviousStatus = inst.status;
 
         inst.status = 'in_review';
         tx.write('installments', installments, { action: 'update', collection: 'installments', doc: inst });
 
-        const pwaPayments = tx.read('pwa_payments');
         pwaPayments.push(newPayment);
         tx.write('pwa_payments', pwaPayments, { action: 'add', collection: 'pwa_payments', doc: newPayment });
       });
     } else {
-      newPayment.transactionId = null;
-      await withCollectionLock('pwa_payments', async () => {
-        const pwaPayments = readCollection('pwa_payments');
+      // Branch fiado_total: requiere transactionId explícito y validado
+      if (!transactionId) {
+        return res.status(400).json({ error: 'Debe especificar la cuota o la compra fiado_total a la que aplica el pago' });
+      }
+
+      await withTransaction(async (tx) => {
+        const cleanRef = String(reference || '').trim().toUpperCase();
+        const pwaPayments = tx.read('pwa_payments');
+        const activeDuplicate = pwaPayments.find(p =>
+          (String(p.clientId) === String(req.portalUser.id) || String(p.entityId) === String(req.portalUser.id)) &&
+          String(p.reference || '').trim().toUpperCase() === cleanRef &&
+          ['pending', 'in_review', 'approved'].includes(p.status)
+        );
+        if (activeDuplicate) {
+          const dupErr = new Error(`Ya existe un reporte de pago activo con el número de referencia ${cleanRef}`);
+          dupErr.statusCode = 409;
+          dupErr.code = 'PAYMENT_REFERENCE_ALREADY_EXISTS';
+          throw dupErr;
+        }
+
+        const transactions = tx.read('transactions');
+        const targetTx = transactions.find(t => String(t.id) === String(transactionId));
+        if (!targetTx) {
+          const notFoundErr = new Error('Compra no encontrada');
+          notFoundErr.statusCode = 404;
+          throw notFoundErr;
+        }
+
+        const ownerId = String(targetTx.clientId || targetTx.client_id || '');
+        if (ownerId !== String(req.portalUser.id)) {
+          const authErr = new Error('No tienes autorización para abonar a esta compra');
+          authErr.statusCode = 403;
+          throw authErr;
+        }
+
+        const isKaluFiado = (targetTx.category === 'credito' || targetTx.category === 'ventas') && (
+          targetTx.kaluCreditData?.modalidad === 'fiado_total' ||
+          (targetTx.paymentMethod === 'Mundo Kalu' && Number(targetTx.installmentsCount ?? 0) === 0) ||
+          (targetTx.creditType === 'kalu' && Number(targetTx.installmentsCount ?? 0) === 0)
+        );
+
+        if (!isKaluFiado) {
+          const invalidErr = new Error('La transacción no corresponde a una venta fiado_total de Mundo Kalu');
+          invalidErr.statusCode = 400;
+          throw invalidErr;
+        }
+
+        if (targetTx.isVoided || !['approved', 'Aprobado', 'completed', 'Completado'].includes(targetTx.status || '')) {
+          const statusErr = new Error('La compra no se encuentra en un estado apto para pago');
+          statusErr.statusCode = 400;
+          throw statusErr;
+        }
+
+        // Protección contra pagos concurrentes/pendientes sobre la misma compra fiado_total
+        const activeTxPayment = pwaPayments.find(p =>
+          (String(p.clientId) === String(req.portalUser.id) || String(p.entityId) === String(req.portalUser.id)) &&
+          String(p.transactionId) === String(transactionId) &&
+          !p.installmentId &&
+          ['pending', 'in_review'].includes(p.status)
+        );
+        if (activeTxPayment) {
+          const inReviewErr = new Error('Esta compra ya cuenta con un reporte de pago en revisión');
+          inReviewErr.statusCode = 409;
+          inReviewErr.code = 'TRANSACTION_PAYMENT_ALREADY_IN_REVIEW';
+          throw inReviewErr;
+        }
+
+        const financed = Number(targetTx.financedAmount || targetTx.kaluCreditData?.aFinanciar || targetTx.amount || 0);
+        const approvedPaid = pwaPayments
+          .filter(p => p.status === 'approved' && String(p.transactionId) === String(transactionId) && (String(p.clientId) === String(req.portalUser.id) || String(p.entityId) === String(req.portalUser.id)))
+          .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+        const remaining = Math.max(0, Math.round((financed - approvedPaid) * 100) / 100);
+
+        if (remaining <= 0) {
+          const paidErr = new Error('TRANSACTION_ALREADY_PAID');
+          paidErr.statusCode = 400;
+          throw paidErr;
+        }
+
+        if (Number(amount) > remaining + 0.0001) {
+          const exceedErr = new Error('AMOUNT_EXCEEDS_REMAINING_TRANSACTION');
+          exceedErr.statusCode = 400;
+          throw exceedErr;
+        }
+
+        newPayment.installmentId = null;
+        newPayment.transactionId = String(transactionId);
         pwaPayments.push(newPayment);
-        writeCollection('pwa_payments', pwaPayments, { action: 'add', collection: 'pwa_payments', doc: newPayment });
+        tx.write('pwa_payments', pwaPayments, { action: 'add', collection: 'pwa_payments', doc: newPayment });
       });
     }
 
@@ -2742,11 +2857,26 @@ app.post('/api/portal/client/payments', requirePortalAuth, requirePortalType('cl
       }
     }
 
-    if (err.statusCode === 404 || err.message === 'INSTALLMENT_NOT_FOUND_OR_UNAUTHORIZED') {
-      return res.status(404).json({ error: 'Cuota no encontrada o no pertenece al cliente' });
+    if (err.code === 'PAYMENT_REFERENCE_ALREADY_EXISTS' || (err.statusCode === 409 && err.code === 'PAYMENT_REFERENCE_ALREADY_EXISTS')) {
+      return res.status(409).json({ error: err.message, code: 'PAYMENT_REFERENCE_ALREADY_EXISTS' });
+    }
+    if (err.code === 'TRANSACTION_PAYMENT_ALREADY_IN_REVIEW' || (err.statusCode === 409 && err.code === 'TRANSACTION_PAYMENT_ALREADY_IN_REVIEW')) {
+      return res.status(409).json({ error: err.message, code: 'TRANSACTION_PAYMENT_ALREADY_IN_REVIEW' });
+    }
+    if (err.code === 'SEQUENTIAL_INSTALLMENT_ORDER_REQUIRED' || err.message?.startsWith('Debe cancelar')) {
+      return res.status(400).json({ error: err.message });
+    }
+    if (err.statusCode === 404 || err.message === 'INSTALLMENT_NOT_FOUND_OR_UNAUTHORIZED' || err.message === 'Compra no encontrada') {
+      return res.status(404).json({ error: err.message || 'Recurso no encontrado o no pertenece al cliente' });
+    }
+    if (err.statusCode === 403 || err.message?.includes('autorización')) {
+      return res.status(403).json({ error: err.message || 'No tienes autorización para realizar esta operación' });
     }
     if (err.statusCode === 400 && err.message === 'INSTALLMENT_ALREADY_PAID') {
       return res.status(400).json({ error: 'La cuota ya se encuentra pagada' });
+    }
+    if (err.statusCode === 400 && err.message === 'TRANSACTION_ALREADY_PAID') {
+      return res.status(400).json({ error: 'La compra ya se encuentra pagada en su totalidad' });
     }
     if (err.statusCode === 409 && err.message === 'INSTALLMENT_ALREADY_IN_REVIEW') {
       return res.status(409).json({ error: 'La cuota ya cuenta con un reporte de pago en revisión' });
@@ -2754,8 +2884,11 @@ app.post('/api/portal/client/payments', requirePortalAuth, requirePortalType('cl
     if (err.statusCode === 400 && err.message === 'INSTALLMENT_STATUS_INVALID_FOR_PAYMENT') {
       return res.status(400).json({ error: 'La cuota no se encuentra en un estado apto para pago' });
     }
-    if (err.statusCode === 400 && err.message === 'AMOUNT_EXCEEDS_REMAINING_INSTALLMENT') {
-      return res.status(400).json({ error: 'El monto ingresado excede el saldo restante de la cuota' });
+    if (err.statusCode === 400 && (err.message === 'AMOUNT_EXCEEDS_REMAINING_INSTALLMENT' || err.message === 'AMOUNT_EXCEEDS_REMAINING_TRANSACTION')) {
+      return res.status(400).json({ error: 'El monto ingresado excede el saldo restante' });
+    }
+    if (err.statusCode === 400) {
+      return res.status(400).json({ error: err.message });
     }
     console.error('[Portal Client Payment POST Error]:', err);
     res.status(500).json({ error: 'Error registrando reporte de pago' });
@@ -3057,8 +3190,8 @@ app.post('/api/portal/client/transactions/:id/approve', requirePortalAuth, requi
     let errorCode = null;
     let errorMessage = null;
 
-    await withCollectionLock('transactions', async () => {
-      const txs = readCollection('transactions');
+    await withTransaction(async (txCtx) => {
+      const txs = txCtx.read('transactions');
       const tx = txs.find(t => String(t.id) === String(txId));
 
       // 1. Ownership & Existencia: la transacción debe existir y pertenecer al cliente autenticado (req.portalUser.id)
@@ -3115,7 +3248,54 @@ app.post('/api/portal/client/transactions/:id/approve', requirePortalAuth, requi
       tx.approvedByClientAt = new Date().toISOString();
       tx.approvedByClientIp = req.ip || '';
 
-      writeCollection('transactions', txs, { action: 'update', collection: 'transactions', doc: tx });
+      // 7. Generación Server-Side Determinista e Idempotente de Installments para compras Mundo Kalu con cuotas
+      const modalidad = tx.kaluCreditData?.modalidad || (Number(tx.installmentsCount ?? 0) > 0 ? `${tx.installmentsCount}_cuotas` : null);
+      const cuotasArray = Array.isArray(tx.kaluCreditData?.cuotas) && tx.kaluCreditData.cuotas.length > 0
+        ? tx.kaluCreditData.cuotas
+        : [];
+
+      if (cuotasArray.length > 0 && modalidad !== 'fiado_total') {
+        const installments = txCtx.read('installments');
+        const nowMs = Date.now();
+        let instChanged = false;
+
+        cuotasArray.forEach((cuotaAmt, index) => {
+          const installmentNum = index + 1;
+          const instId = `INST-${tx.id}-${installmentNum}`;
+          const existingInst = installments.find(i => String(i.id) === instId || (String(i.transactionId) === String(tx.id) && Number(i.installmentNumber) === installmentNum));
+
+          if (!existingInst) {
+            const dueDate = new Date(nowMs + (installmentNum * 15 * 86400000)).toISOString().split('T')[0];
+            const newInstDoc = {
+              id: instId,
+              clientId: tx.clientId,
+              clientName: tx.entity || '',
+              saleId: tx.id,
+              transactionId: tx.id,
+              amount: Number(cuotaAmt),
+              amountUSD: Number(cuotaAmt),
+              paidAmount: 0,
+              dueDate: dueDate,
+              status: 'pending',
+              installmentNumber: installmentNum,
+              totalInstallments: cuotasArray.length,
+              pointsEarned: Math.round(Number(cuotaAmt)),
+              pointsAwarded: false,
+              createdAt: new Date(nowMs).toISOString(),
+              type: (modalidad === '1_inicial' || modalidad === '2_iniciales') ? 'cotidiano' : 'repuestos',
+              kaluOption: modalidad
+            };
+            installments.push(newInstDoc);
+            instChanged = true;
+          }
+        });
+
+        if (instChanged) {
+          txCtx.write('installments', installments, { action: 'batchUpdate', collection: 'installments' });
+        }
+      }
+
+      txCtx.write('transactions', txs, { action: 'update', collection: 'transactions', doc: tx });
       updatedTx = tx;
     });
 
@@ -5931,31 +6111,58 @@ app.post('/api/pwa-payments/:id/approve', requireAuth, requireRole('admin', 'con
           tx.write('suppliers', suppliers, { action: 'update', collection: 'suppliers', doc: updatedSupplier });
         }
       } else {
-        // Cliente Normal: Manejo autoritativo de deuda (outstandingDebt vs currentDebtUsd legacy)
+        // Cliente Normal: Manejo autoritativo de deuda
         const clients = tx.read('clients');
         const cIndex = clients.findIndex(c => String(c.id) === String(targetId));
         if (cIndex !== -1) {
           const c = clients[cIndex];
-          const { effectiveDebt } = resolveClientDebtState(c);
-
-          // Si es pago de deuda abierta (sin installmentId), validar que el monto no supere la deuda efectiva
-          if (!payment.installmentId && payment.amount > effectiveDebt + 0.0001) {
-            const debtExceedErr = new Error('PAYMENT_EXCEEDS_CLIENT_DEBT');
-            debtExceedErr.statusCode = 400;
-            debtExceedErr.effectiveDebt = effectiveDebt;
-            throw debtExceedErr;
-          }
-
           const currentPoints = Number(c.loyaltyPoints || 0);
           const pointsToAdd = Math.round(payment.amount);
-          const newEffectiveDebt = Math.max(0, Math.round((effectiveDebt - payment.amount) * 100) / 100);
 
-          updatedClient = {
-            ...c,
-            outstandingDebt: newEffectiveDebt,
-            currentDebtUsd: 0,
-            loyaltyPoints: currentPoints + pointsToAdd
-          };
+          // Detectar server-side si el pago pertenece a Crédito Mundo Kalu (Marcadores Inequívocos Canónicos)
+          let isMundoKaluPayment = false;
+          if (payment.installmentId) {
+            const inst = installments.find(i => String(i.id) === String(payment.installmentId));
+            if (inst) {
+              const txs = tx.read('transactions');
+              const parentTx = txs.find(t => String(t.id) === String(inst.transactionId || inst.saleId));
+              if (parentTx && (parentTx.paymentMethod === 'Mundo Kalu' || parentTx.kaluCreditData)) {
+                isMundoKaluPayment = true;
+              } else if (!parentTx && (inst.kaluOption || inst.type === 'fiado_total')) {
+                isMundoKaluPayment = true;
+              }
+            }
+          } else if (payment.transactionId) {
+            const txs = tx.read('transactions');
+            const parentTx = txs.find(t => String(t.id) === String(payment.transactionId));
+            if (parentTx && (parentTx.paymentMethod === 'Mundo Kalu' || parentTx.kaluCreditData)) {
+              isMundoKaluPayment = true;
+            }
+          }
+
+          if (isMundoKaluPayment) {
+            // Regla Canónica: Un pago Mundo Kalu NO reduce ni altera la deuda legacy (outstandingDebt / currentDebtUsd)
+            updatedClient = {
+              ...c,
+              loyaltyPoints: currentPoints + pointsToAdd
+            };
+          } else {
+            // Pagos de deuda general legacy del CRM
+            const { effectiveDebt } = resolveClientDebtState(c);
+            if (!payment.installmentId && payment.amount > effectiveDebt + 0.0001) {
+              const debtExceedErr = new Error('PAYMENT_EXCEEDS_CLIENT_DEBT');
+              debtExceedErr.statusCode = 400;
+              debtExceedErr.effectiveDebt = effectiveDebt;
+              throw debtExceedErr;
+            }
+            const newEffectiveDebt = Math.max(0, Math.round((effectiveDebt - payment.amount) * 100) / 100);
+            updatedClient = {
+              ...c,
+              outstandingDebt: newEffectiveDebt,
+              currentDebtUsd: 0,
+              loyaltyPoints: currentPoints + pointsToAdd
+            };
+          }
           clients[cIndex] = updatedClient;
           tx.write('clients', clients, { action: 'update', collection: 'clients', doc: updatedClient });
         }

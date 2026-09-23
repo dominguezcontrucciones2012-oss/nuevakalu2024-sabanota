@@ -24,39 +24,20 @@ export default function ClientsCreditView({
   onRecordDebtPayment,
   onAddNotification
 }: ClientsCreditViewProps) {
-  const [activeSubTab, setActiveSubTab] = useState<'directory' | 'receivables' | 'reconciliation'>('directory');
+  const [activeSubTab, setActiveSubTab] = useState<'directory' | 'receivables'>('directory');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Mundo Kalu Conciliation States
-  const [pendingPayments, setPendingPayments] = useState<Transaction[]>([]);
-  const [allInstallments, setAllInstallments] = useState<DebtInstallment[]>([]);
+  // Comprobantes / Captures para el historial de clientes
   const [allPwaPayments, setAllPwaPayments] = useState<any[]>([]);
   const [selectedReceipt, setSelectedReceipt] = useState<{ imageUrl: string; title: string; reference?: string; amount?: number; date?: string } | null>(null);
-  const [isProcessingApproval, setIsProcessingApproval] = useState(false);
 
   useEffect(() => {
-    // Escuchar Pagos por Conciliar (Mundo Kalu)
-    const unsubPayments = onCollectionSnapshot('transactions', (data) => {
-      const arr = data.filter((d: any) => d.category === 'ingresos_cobranza' && d.status === 'pending_verification') as Transaction[];
-      arr.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-      setPendingPayments(arr);
-    });
-
-    // Escuchar Cuotas Históricas
-    const unsubInstallments = onCollectionSnapshot('installments', (data) => {
-      const arr = data as DebtInstallment[];
-      arr.sort((a, b) => new Date(b.dueDate).getTime() - new Date(a.dueDate).getTime());
-      setAllInstallments(arr);
-    });
-
-    // Escuchar Pagos PWA para resolver comprobantes / captures
+    // Escuchar Pagos PWA para resolver comprobantes / captures en el historial
     const unsubPwa = onCollectionSnapshot('pwa_payments', (data) => {
       setAllPwaPayments(data || []);
     });
 
     return () => {
-      unsubPayments();
-      unsubInstallments();
       unsubPwa();
     };
   }, []);
@@ -184,77 +165,7 @@ export default function ClientsCreditView({
     setShowAddForm(false);
   };
 
-  // Mundo Kalu Reconciliation Handlers
-  const handleApprovePayment = async (tx: Transaction) => {
-    if (isProcessingApproval || !tx.clientId) return;
-    setIsProcessingApproval(true);
-    try {
-      // 1. Update Transaction
-      await updateLocalDoc('transactions', tx.id, { status: 'approved' });
 
-      let pointsToAward = 0;
-      if ((tx.kaluCreditData as any)?.installmentIds) {
-        for (const iId of (tx.kaluCreditData as any).installmentIds) {
-          const matchingInst = allInstallments.find(inst => String(inst.id) === String(iId));
-          const isOverdue = matchingInst && (matchingInst.status === 'overdue' || (matchingInst.dueDate && new Date(matchingInst.dueDate).getTime() < Date.now()));
-
-          // Regla: Si pagó a tiempo (no en mora), se le abona 1 punto por cada $1 de la cuota
-          const installmentPts = matchingInst ? Math.round(Number(matchingInst.amount || 0)) : 0;
-          if (!isOverdue && installmentPts > 0) {
-            pointsToAward += installmentPts;
-          }
-
-          await updateLocalDoc('installments', iId, {
-            status: 'paid',
-            paidAt: new Date().toISOString(),
-            pointsAwarded: !isOverdue
-          });
-        }
-      }
-
-      // 3. Update Client Outstanding Debt and Loyalty Points
-      const client = clients.find(c => c.id === tx.clientId);
-      if (client && onUpdateClient) {
-        const newDebt = Math.max(0, client.outstandingDebt - tx.amount);
-        const newPoints = Number(client.loyaltyPoints || 0) + pointsToAward;
-        onUpdateClient(client.id, {
-          outstandingDebt: newDebt,
-          loyaltyPoints: newPoints
-        });
-      }
-
-      const ptsMsg = pointsToAward > 0 ? ` (+${pointsToAward} pts Mundo Kalu por pago a tiempo)` : ' (Sin puntos adicionales por mora en la cuota)';
-      onAddNotification(`Pago aprobado. Cuotas y balance actualizados.${ptsMsg}`, 'success');
-    } catch (e) {
-      console.error(e);
-      onAddNotification('Error al aprobar el pago', 'warning');
-    } finally {
-      setIsProcessingApproval(false);
-    }
-  };
-
-  const handleRejectPayment = async (tx: Transaction) => {
-    if (isProcessingApproval) return;
-    setIsProcessingApproval(true);
-    try {
-      await updateLocalDoc('transactions', tx.id, { status: 'rejected' });
-
-      if ((tx as any).installmentIds && (tx as any).installmentIds.length > 0) {
-        for (const iId of (tx as any).installmentIds) {
-          await updateLocalDoc('installments', iId, {
-            status: 'pending'
-          });
-        }
-      }
-
-      onAddNotification('Pago rechazado. Las cuotas volvieron a estado Pendiente.', 'info');
-    } catch (e) {
-      console.error(e);
-      onAddNotification('Error al rechazar el pago', 'warning');
-    } finally {
-      setIsProcessingApproval(false);
-    }
-  };
 
   const handlePayDebtSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -349,19 +260,6 @@ export default function ClientsCreditView({
             }`}
           >
             Cuentas por Cobrar
-          </button>
-          <button
-            onClick={() => setActiveSubTab('reconciliation')}
-            className={`pb-2.5 font-serif text-lg font-bold tracking-tight transition-all border-b-2 relative -bottom-[2px] cursor-pointer flex items-center gap-2 ${
-              activeSubTab === 'reconciliation' ? 'border-emerald-500 text-editorial-text-primary' : 'border-transparent text-editorial-text-muted hover:text-editorial-text-primary'
-            }`}
-          >
-            Mundo Kalu / Conciliación
-            {pendingPayments.length > 0 && (
-              <span className="bg-amber-500 text-editorial-bg text-[10px] px-1.5 py-0.5 rounded-full font-black animate-pulse">
-                {pendingPayments.length}
-              </span>
-            )}
           </button>
         </div>
 
@@ -1022,132 +920,7 @@ export default function ClientsCreditView({
         );
       })()}
 
-      {/* RECONCILIATION TAB */}
-      {activeSubTab === 'reconciliation' && (
-        <div className="space-y-6">
-          {/* Block 1: Bandeja de Pagos por Conciliar */}
-          <div className="bg-editorial-card border border-editorial-border rounded p-6 shadow-sm">
-            <h3 className="font-serif text-lg font-bold text-editorial-text-primary mb-4 flex items-center gap-2">
-              <Clock className="w-5 h-5 text-amber-500" />
-              Bandeja de Pagos por Conciliar (Robot / Caja)
-            </h3>
-            <div className="space-y-4">
-              {pendingPayments.length === 0 ? (
-                <div className="text-center py-8 text-editorial-text-muted italic border border-dashed border-editorial-border/60 rounded">
-                  No hay pagos pendientes por verificar.
-                </div>
-              ) : (
-                pendingPayments.map(tx => {
-                  const client = clients.find(c => c.id === tx.clientId);
-                  return (
-                    <div key={tx.id} className="border border-editorial-border rounded-lg p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-editorial-bg">
-                      <div>
-                        <p className="font-bold text-editorial-text-primary text-sm flex items-center gap-2">
-                          <Users className="w-4 h-4 text-editorial-text-muted" />
-                          {client ? client.name : 'Cliente Desconocido'} <span className="text-[10px] text-editorial-text-muted font-mono bg-editorial-card px-1.5 py-0.5 rounded border border-editorial-border">{client ? (client.cedula || client.rfc) : ''}</span>
-                        </p>
-                        <p className="text-[11px] text-editorial-text-muted mt-1 font-mono">
-                          Ref: <span className="text-amber-500 font-bold">{tx.notes?.split('Ref: ')[1] || 'N/A'}</span> • Banco: {tx.paymentMethod}
-                        </p>
-                        <p className="text-[10px] text-editorial-text-muted mt-0.5">
-                          Asociado a cuotas: {tx.installmentIds?.join(', ')}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-4 w-full md:w-auto">
-                        <div className="text-right flex-1 md:flex-none">
-                          <p className="font-black text-emerald-500 text-lg">${Number(tx.amount).toFixed(2)}</p>
-                          <p className="text-[9px] text-editorial-text-muted font-mono">Bs. {Number(tx.changeBs).toFixed(2)}</p>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => handleApprovePayment(tx)}
-                            disabled={isProcessingApproval}
-                            className="w-10 h-10 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 flex items-center justify-center transition-colors disabled:opacity-50"
-                            title="Aprobar Pago"
-                          >
-                            <CheckCircle className="w-5 h-5" />
-                          </button>
-                          <button
-                            onClick={() => handleRejectPayment(tx)}
-                            disabled={isProcessingApproval}
-                            className="w-10 h-10 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 flex items-center justify-center transition-colors disabled:opacity-50"
-                            title="Rechazar Pago"
-                          >
-                            <XCircle className="w-5 h-5" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
 
-          {/* Block 2: Expedientes y Cuotas de Mundo Kalu */}
-          <div className="bg-editorial-card border border-editorial-border rounded p-6 shadow-sm">
-            <h3 className="font-serif text-lg font-bold text-editorial-text-primary mb-4 flex items-center gap-2">
-              <FileCheck className="w-5 h-5 text-emerald-500" />
-              Expedientes y Cuotas de Mundo Kalu
-            </h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b-2 border-editorial-border text-xs uppercase tracking-widest text-editorial-text-muted font-mono">
-                    <th className="py-4 px-4 font-normal">Cliente</th>
-                    <th className="py-4 px-4 font-normal">Vencimiento</th>
-                    <th className="py-4 px-4 font-normal">Monto</th>
-                    <th className="py-4 px-4 font-normal">Estado</th>
-                    <th className="py-4 px-4 font-normal">Liquidación</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-editorial-border/40">
-                  {allInstallments.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="py-8 text-center text-editorial-text-muted italic">
-                        No hay cuotas registradas en el sistema.
-                      </td>
-                    </tr>
-                  ) : (
-                    allInstallments.map(inst => {
-                      const client = clients.find(c => c.id === inst.clientId);
-                      return (
-                        <tr key={inst.id} className="hover:bg-white/5 transition-colors">
-                          <td className="py-3 px-4">
-                            <p className="text-xs font-bold text-editorial-text-primary">{client ? client.name : 'Desconocido'}</p>
-                            <p className="text-[10px] text-editorial-text-muted font-mono">{inst.id}</p>
-                          </td>
-                          <td className="py-3 px-4 text-xs font-mono text-editorial-text-muted">
-                            {new Date(inst.dueDate).toLocaleDateString()}
-                          </td>
-                          <td className="py-3 px-4 text-xs font-bold text-editorial-text-primary">
-                            ${Number(inst.amount).toFixed(2)}
-                          </td>
-                          <td className="py-3 px-4">
-                            <span className={`inline-block px-2 py-0.5 rounded text-[9px] uppercase border font-bold ${
-                              inst.status === 'paid' ? 'bg-emerald-950/30 border-emerald-800 text-emerald-400' :
-                              inst.status === 'in_review' ? 'bg-amber-950/30 border-amber-800 text-amber-400' :
-                              inst.status === 'overdue' ? 'bg-rose-950/30 border-rose-800 text-rose-400' :
-                              'bg-zinc-950/30 border-zinc-800 text-zinc-400'
-                            }`}>
-                              {inst.status === 'paid' ? 'Pagada' :
-                               inst.status === 'in_review' ? 'En Revisión' :
-                               inst.status === 'overdue' ? 'Vencida' : 'Pendiente'}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-[10px] text-editorial-text-muted">
-                            {inst.paidAt ? new Date(inst.paidAt).toLocaleString() : '-'}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* EDIT MODAL */}
       {editingClient && (

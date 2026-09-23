@@ -93,7 +93,7 @@ export default function CheesePOSView({
   const [kaluInitialPaymentMethod, setKaluInitialPaymentMethod] = useState<string>('Efectivo $');
   const [kaluInitialPaymentAmount, setKaluInitialPaymentAmount] = useState<string>('');
   const [kaluInitialPaymentRef, setKaluInitialPaymentRef] = useState<string>('');
-  
+
   // DIAGNOSTIC STATE
   const [approvalTimer, setApprovalTimer] = useState(40);
   const [isDiagnosticVisible, setIsDiagnosticVisible] = useState(false);
@@ -120,7 +120,7 @@ export default function CheesePOSView({
     }
     return () => clearInterval(interval);
   }, [isWaitingForApproval]);
-  
+
   const handleManualDiagnosticCheck = async () => {
     if (!pendingApprovalId) return;
     setDiagnosticManualCheck(true);
@@ -132,7 +132,7 @@ export default function CheesePOSView({
           const tx = txs.find((t: any) => String(t.id) === String(pendingApprovalId));
           if (tx && tx.status === 'approved') {
               onAddNotification('Transacción aprobada por el cliente y verificada en servidor.', 'success');
-              await updateLocalDoc('transactions', pendingApprovalId, { 
+              await updateLocalDoc('transactions', pendingApprovalId, {
                 status: 'approved',
                 authSignature: tx.authSignature,
                 authNonce: tx.authNonce,
@@ -151,7 +151,7 @@ export default function CheesePOSView({
   };
 
 
-  
+
   const [mixedChangeUsd, setMixedChangeUsd] = useState('');
   const [mixedChangeBs, setMixedChangeBs] = useState('');
   const [mixedChangeMobile, setMixedChangeMobile] = useState('');
@@ -235,7 +235,7 @@ export default function CheesePOSView({
   const [startingCashUsdInput, setStartingCashUsdInput] = useState<string>(() => {
     return String(Number(localStorage.getItem('kalu_starting_usd')) || 0);
   });
-  
+
   const [startingCashBs, setStartingCashBs] = useState<number>(() => {
     return Number(localStorage.getItem('kalu_starting_bs')) || 0;
   });
@@ -272,7 +272,7 @@ export default function CheesePOSView({
   useEffect(() => {
     localStorage.setItem('kalu_starting_usd', startingCashUsd.toString());
   }, [startingCashUsd]);
-  
+
   useEffect(() => {
     localStorage.setItem('kalu_starting_bs', startingCashBs.toString());
   }, [startingCashBs]);
@@ -281,7 +281,7 @@ export default function CheesePOSView({
   const [closingsHistory, setClosingsHistory] = useState<any[]>([]);
   const [selectedAuditClosing, setSelectedAuditClosing] = useState<any | null>(null);
   const [expandedTickets, setExpandedTickets] = useState<string[]>([]);
-  
+
   const [isClosingDrawer, setIsClosingDrawer] = useState<boolean>(false);
   const [kaluAutoCheckoutTrigger, setKaluAutoCheckoutTrigger] = useState<boolean>(false);
 
@@ -308,7 +308,7 @@ export default function CheesePOSView({
       });
       setClosingsHistory(data);
     });
-    
+
     return () => unsub();
   }, []);
 
@@ -340,8 +340,8 @@ export default function CheesePOSView({
     }
 
     if (existing) {
-      setCart(prev => prev.map(item => 
-        item.productId === product.id 
+      setCart(prev => prev.map(item =>
+        item.productId === product.id
           ? { ...item, quantityKg: newQty, subtotal: parseNum((newQty * pPrice).toFixed(2)) }
           : item
       ));
@@ -395,10 +395,10 @@ export default function CheesePOSView({
   };
 
   // Unificación central de tasa de cambio activa
-  const activeExchangeRate = Number(exchangeRate) > 1 
-    ? Number(exchangeRate) 
-    : Number(settings?.exchangeRate) > 1 
-      ? Number(settings.exchangeRate) 
+  const activeExchangeRate = Number(exchangeRate) > 1
+    ? Number(exchangeRate)
+    : Number(settings?.exchangeRate) > 1
+      ? Number(settings.exchangeRate)
       : 832.4883;
 
   const rawAbonado = addedPayments.reduce((sum, p) => sum + p.amount, 0);
@@ -488,15 +488,15 @@ export default function CheesePOSView({
           onAddNotification('Ingrese la cédula del cliente para aplicar el Crédito Kalu.', 'warning');
           return;
        }
-       
+
        const currentClient = customerType === 'client' ? clients.find(c => c.id === selectedClientId) : null;
-       
+
        if (!currentClient) {
           onAddNotification('Debe seleccionar un cliente antes de procesar un crédito.', 'warning');
           return;
        }
 
-       const clientCiMatch = 
+       const clientCiMatch =
           (currentClient.cedula && currentClient.cedula === paymentReference) ||
           (currentClient.ci && currentClient.ci === paymentReference) ||
           (currentClient.ciRif && currentClient.ciRif === paymentReference) ||
@@ -507,7 +507,7 @@ export default function CheesePOSView({
           onAddNotification('La cédula ingresada no coincide con el cliente seleccionado.', 'warning');
           return;
        }
-       
+
        const foundClient = currentClient;
        const breakdown = calculateKaluCreditBreakdown(kaluOption, total, foundClient?.loyaltyPoints || 0);
        rawAmount = breakdown.initialAmount; // Fuerza la inicial calculada (o 0 para fiado_total)
@@ -533,7 +533,7 @@ export default function CheesePOSView({
       currency,
       reference: paymentReference
     };
-    
+
     setAddedPayments([...addedPayments, newPayment]);
     setPaidAmountInput('');
     setPaymentReference('');
@@ -556,7 +556,7 @@ export default function CheesePOSView({
         status: 'pending_approval',
         clientId: client?.id,
         clientCi: client?.ciRif || client?.ci || client?.idNumber || client?.cedula || client?.rfc || '',
-        
+
         totalUSD: total,
         downPayment: kaluInitial,
         financedAmount: kaluDebt,
@@ -582,44 +582,19 @@ export default function CheesePOSView({
           };
           const docRef = await addLocalDoc('transactions', finalPendingTx);
           if (!docRef || !docRef.id) throw new Error("Fallo al guardar transacción");
-          
+
           setIsWaitingForApproval(true);
           setPendingApprovalId(docRef.id);
-        
+
         // Setup listener via WebSocket for real-time approval with strict cryptographic verification
         const handleApprovedDoc = async (updatedDoc: any) => {
             if (updatedDoc.status === 'approved') {
                    setIsWaitingForApproval(false);
                    setPendingApprovalId(null);
-    
-                   // FASE 1: GENERACIÓN DE CUOTAS EXACTAS CON CONTROL DE CENTAVOS
-                   if (breakdown.installments.length > 0 && client) {
-                     let nextDate = new Date();
-                     
-                     for (const inst of breakdown.installments) {
-                       nextDate.setDate(nextDate.getDate() + 15);
-                       const installmentDoc = {
-                         id: `INST-${updatedDoc.id}-${inst.installmentNumber}`,
-                         clientId: client.id,
-                         clientName: client.name || '',
-                         saleId: updatedDoc.id,
-                         transactionId: updatedDoc.id,
-                         amount: inst.amount,
-                         amountUSD: inst.amount,
-                         dueDate: nextDate.toISOString().split('T')[0],
-                         status: 'pending',
-                         installmentNumber: inst.installmentNumber,
-                         totalInstallments: breakdown.installmentsCount,
-                         pointsEarned: Math.round(inst.amount),
-                         pointsAwarded: false,
-                         createdAt: new Date().toISOString(),
-                         type: kaluOption === 'fiado_total' ? 'fiado_total' : (kaluOption === '1_inicial' || kaluOption === '2_iniciales') ? 'cotidiano' : 'repuestos',
-                         kaluOption: kaluOption
-                       };
-                       await addLocalDoc('installments', installmentDoc);
-                     }
-                   }
-                   
+
+                   // FASE 1: Las cuotas son generadas atómica e idempotentemente por el backend en POST /api/portal/client/transactions/:id/approve
+                   // El frontend ya no tiene la responsabilidad de crear la deuda financiera.
+
                    // FASE 2: PREPARAR REGISTRO MANDATORIO DE INICIAL FÍSICA EN CAJA
                    const kaluPayment = {
                      id: Date.now().toString(),
@@ -629,10 +604,10 @@ export default function CheesePOSView({
                      currency: '$',
                      reference: updatedDoc.invoiceNumber || ''
                    };
-                   
+
                    setAddedPayments(prev => [...prev.filter(p => p.id !== newPayment.id), kaluPayment]);
                    onAddNotification('Crédito Mundo Kalu verificado criptográficamente.', 'success');
-                   
+
                    // Si la inicial es > $0, bloquear cierre automático y exigir cobro físico de la inicial
                    if (kaluInitial > 0.01) {
                      setKaluApprovedPendingInitial({
@@ -697,7 +672,7 @@ export default function CheesePOSView({
 
   const handleProcessSaleSubmit = async (e?: React.FormEvent, bypassChangeModal = false, customPayments?: any[]) => {
     if (e) e.preventDefault();
-    
+
     // Seguro Antirrebote Sincrónico Inmediato (Prevención de Doble Clic / Concurrencia)
     const now = Date.now();
     if (isSubmittingRef.current || isProcessing || (now - lastSubmitTimeRef.current < 800)) {
@@ -707,7 +682,7 @@ export default function CheesePOSView({
     isSubmittingRef.current = true;
     lastSubmitTimeRef.current = now;
     setIsProcessing(true);
-    
+
     if (cart.length === 0) {
       onAddNotification('El carrito de compras está vacío.', 'warning');
       isSubmittingRef.current = false;
@@ -752,8 +727,8 @@ export default function CheesePOSView({
       }
     }
 
-    const currentTotalAbonado = currentPayments.length > 0 
-      ? Math.round(currentPayments.reduce((sum, p) => sum + p.amount, 0) * 100) / 100 
+    const currentTotalAbonado = currentPayments.length > 0
+      ? Math.round(currentPayments.reduce((sum, p) => sum + p.amount, 0) * 100) / 100
       : totalAbonado;
     const currentRemainingDebt = Math.max(0, Math.round((total - currentTotalAbonado) * 100) / 100);
     const effectiveFullyPaid = currentRemainingDebt <= 0.02 || (currentTotalAbonado >= total - 0.02);
@@ -820,7 +795,7 @@ export default function CheesePOSView({
       const currentDebt = selectedSupplier ? Number(selectedSupplier.storeDebt || 0) : 0;
       const creditPortion = currentRemainingDebt;
       const projectedDebt = currentDebt + creditPortion;
-      
+
       if (projectedDebt > producerDynamicCreditLimit) {
         const excess = projectedDebt - producerDynamicCreditLimit;
         onAddNotification(`Tope de crédito excedido: El límite según su última entrega es $${producerDynamicCreditLimit.toFixed(2)}. Debe abonar al menos $${excess.toFixed(2)} de contado para autorizar la venta.`, 'warning');
@@ -929,19 +904,19 @@ export default function CheesePOSView({
       const today = new Date();
       today.setHours(0, 0, 0, 0); // Inicio del día local
       const startOfTodayMs = today.getTime();
-      
+
       const orphans = allTransactions.filter(t => !t.isClosed && parseTime(t) < startOfTodayMs);
-      
+
       if (orphans.length > 0) {
         console.log(`Migrando ${orphans.length} transacciones huérfanas a cerradas.`);
         await Promise.all(
-          orphans.map(t => 
+          orphans.map(t =>
             updateLocalDoc('transactions', t.id, { isClosed: true, closureId: 'CLO-LEGACY-MIGRATED' }).catch(console.error)
           )
         );
       }
     };
-    
+
     if (allTransactions.length > 0) {
       runMigration();
     }
@@ -961,7 +936,7 @@ export default function CheesePOSView({
 
 
     const closingTime = parseTime(selectedAuditClosing);
-    
+
     const previousClosing = closingsHistory
       .filter(c => {
         const t = parseTime(c);
@@ -972,11 +947,11 @@ export default function CheesePOSView({
         const tB = parseTime(b);
         return tB - tA;
       })[0];
-      
-    const startTime = previousClosing 
+
+    const startTime = previousClosing
       ? parseTime(previousClosing)
       : 0;
-      
+
     const closingDateObj = closingTime && !isNaN(closingTime) ? new Date(closingTime) : null;
     const closingDateStr = closingDateObj ? `${closingDateObj.getFullYear()}-${String(closingDateObj.getMonth() + 1).padStart(2, '0')}-${String(closingDateObj.getDate()).padStart(2, '0')}` : '';
 
@@ -999,7 +974,7 @@ export default function CheesePOSView({
        const sDateStr = `${sDate.getFullYear()}-${String(sDate.getMonth() + 1).padStart(2, '0')}-${String(sDate.getDate()).padStart(2, '0')}`;
        return sDateStr === closingDateStr && sTime <= closingTime;
     });
-    
+
     const incomes = txsInShift.filter(t => (t.category === 'credito' || t.category === 'ingresos_cobranza') && t.isIncome === true);
     const expenses = txsInShift.filter(t => t.category === 'gastos' && t.isIncome === false);
 
@@ -1055,13 +1030,13 @@ export default function CheesePOSView({
       }
 
       let saleAmount = Number(s.amount) || Number(s.total) || Number(s.paidAmount) || 0;
-      
+
       // Si es un método en Bs y no es multipago (legacy), multiplicamos aquí mismo para devolver el monto en Bs nominal
       if (isMatch && (method === 'Efectivo Bs' || method === 'Pago Móvil' || method === 'Transferencia' || method === 'BioPago' || method === 'Tarjeta / Punto' || method === 'Tarjeta')) {
          const effectiveRate = Number(s.bcvRateAtSettlement) > 1 ? Number(s.bcvRateAtSettlement) : (Number(exchangeRate) > 1 ? Number(exchangeRate) : (Number(settings?.exchangeRate) > 1 ? Number(settings.exchangeRate) : 807.3862));
          saleAmount = saleAmount * effectiveRate;
       }
-      
+
       return sum + (isMatch ? saleAmount : 0);
     }, 0);
   };
@@ -1156,7 +1131,7 @@ export default function CheesePOSView({
       // YYYYMMDDHHmmss based on local time, safer than toISOString
       const localTimestampStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
       const deterministicId = `CLO-${localTimestampStr}`;
-      
+
       const report = {
         id: deterministicId,
         date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
@@ -1192,12 +1167,12 @@ export default function CheesePOSView({
         status: (diffUsd === 0 && diffBs === 0) ? 'Balance Perfecto' : (diffUsd > 0 || diffBs > 0) ? 'Sobrante' : 'Faltante',
         bcvRateAtClose: exchangeRate || 1,
         };
-      
+
       await addLocalDoc('cashClosings', report);
 
       // CIERRE FUERTE: Marcar todas las transacciones del turno
       await Promise.all(
-        currentShiftTransactions.map(tx => 
+        currentShiftTransactions.map(tx =>
           updateLocalDoc('transactions', tx.id, { isClosed: true, closureId: deterministicId })
         )
       );
@@ -1224,7 +1199,7 @@ export default function CheesePOSView({
 
       setIsClosed(true);
       setClosingReport(report);
-      
+
       // Resetear estado del turno a cero
       setActualCashUsd(0);
       setActualCashBs(0);
@@ -1253,7 +1228,7 @@ export default function CheesePOSView({
 
         // Find T_fin and T_inicio
         const closingTime = new Date(closing.timestamp?.seconds ? closing.timestamp.seconds * 1000 : closing.timestamp).getTime();
-        
+
         // Find the immediately preceding closing
         const previousClosing = closingsHistory
           .filter(c => {
@@ -1265,15 +1240,15 @@ export default function CheesePOSView({
             const tB = new Date(b.timestamp?.seconds ? b.timestamp.seconds * 1000 : b.timestamp).getTime();
             return tB - tA;
           })[0];
-          
-        const startTime = previousClosing 
+
+        const startTime = previousClosing
           ? new Date(previousClosing.timestamp?.seconds ? previousClosing.timestamp.seconds * 1000 : previousClosing.timestamp).getTime()
           : 0;
 
         // Find transactions to delete
         const txsToDelete = allTransactions.filter(t => {
           if (t.closureId === closing.id) return true;
-          
+
           // Fallback para cierres viejos
           const tTime = new Date(t.timestamp?.seconds ? t.timestamp.seconds * 1000 : t.timestamp).getTime();
           return tTime > startTime && tTime <= closingTime;
@@ -1365,7 +1340,7 @@ export default function CheesePOSView({
               <button
                 onClick={() => setIsPedidosModalOpen(true)}
                 className={`flex items-center gap-2 px-4 py-2 font-mono text-xs font-bold uppercase rounded transition-colors ${
-                  hasPending 
+                  hasPending
                     ? 'bg-rose-500/10 text-rose-500 border border-rose-500/30 animate-pulse'
                     : 'bg-editorial-bg text-editorial-text-muted border border-editorial-border hover:text-editorial-text-primary'
                 }`}
@@ -1398,14 +1373,14 @@ export default function CheesePOSView({
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && searchQuery.trim().length > 3) {
                     const query = searchQuery.trim();
-                    const matches = products.filter(p => 
-                      (p.name || '').toLowerCase().includes(query.toLowerCase()) || 
+                    const matches = products.filter(p =>
+                      (p.name || '').toLowerCase().includes(query.toLowerCase()) ||
                       (p.category || '').toLowerCase().includes(query.toLowerCase()) ||
                       (p.id || '').toLowerCase().includes(query.toLowerCase()) ||
                       (p.barcode || '').toLowerCase() === query.toLowerCase() ||
                       (p.barcodes || []).some(b => b.toLowerCase() === query.toLowerCase())
                     );
-                    
+
                     if (matches.length === 0) {
                       // It's likely an unknown barcode scan
                       setUnknownBarcode(query);
@@ -1425,7 +1400,7 @@ export default function CheesePOSView({
                 {products
                   .filter(p => {
                     try {
-                      return (p.name || '').toLowerCase().includes((searchQuery || '').toLowerCase()) || 
+                      return (p.name || '').toLowerCase().includes((searchQuery || '').toLowerCase()) ||
                              (p.category || '').toLowerCase().includes((searchQuery || '').toLowerCase()) ||
                              (p.id || '').toLowerCase().includes((searchQuery || '').toLowerCase()) ||
                              (p.barcode || '').toLowerCase() === (searchQuery || '').toLowerCase() ||
@@ -1646,8 +1621,8 @@ export default function CheesePOSView({
                         onFocus={() => setIsClientDropdownOpen(true)}
                         onBlur={() => setTimeout(() => setIsClientDropdownOpen(false), 250)}
                         className={`w-full h-10 pl-9 pr-8 bg-editorial-bg border rounded text-xs font-sans focus:outline-none ${
-                          selectedClientId 
-                            ? 'border-amber-500 text-amber-400 font-semibold' 
+                          selectedClientId
+                            ? 'border-amber-500 text-amber-400 font-semibold'
                             : 'border-editorial-border text-editorial-text-primary focus:border-amber-500'
                         }`}
                       />
@@ -1679,7 +1654,7 @@ export default function CheesePOSView({
                               if (!clientSearchText.trim()) return true;
                               try {
                                 const q = clientSearchText.toLowerCase();
-                                return (c.name || '').toLowerCase().includes(q) || 
+                                return (c.name || '').toLowerCase().includes(q) ||
                                        (c.rfc || '').toLowerCase().includes(q) ||
                                        (c.ci || '').toLowerCase().includes(q) ||
                                        (c.cedula || '').toLowerCase().includes(q) ||
@@ -1743,7 +1718,7 @@ export default function CheesePOSView({
                           {suppliers.filter(s => {
                               try {
                                 if (!s.isCheeseProducer && !s.isEmployee) return false;
-                                return (s.name || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) || 
+                                return (s.name || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
                                        (s.rfc || s.idNumber || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
                                        (s.phone || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
                                        (s.id || '').toLowerCase().includes((supplierSearchText || '').toLowerCase());
@@ -1756,7 +1731,7 @@ export default function CheesePOSView({
                             suppliers.filter(s => {
                                 try {
                                   if (!s.isCheeseProducer && !s.isEmployee) return false;
-                                  return (s.name || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) || 
+                                  return (s.name || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
                                          (s.rfc || s.idNumber || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
                                          (s.phone || '').toLowerCase().includes((supplierSearchText || '').toLowerCase()) ||
                                          (s.id || '').toLowerCase().includes((supplierSearchText || '').toLowerCase());
@@ -1774,7 +1749,7 @@ export default function CheesePOSView({
                                 }}
                                 className="px-4 py-2 hover:bg-amber-500 hover:text-white cursor-pointer text-xs transition-colors border-b border-editorial-border/30 last:border-0"
                               >
-                                {s.name} 
+                                {s.name}
                                 { (s.balanceOwed || 0) > 0 && (
                                   <span className="opacity-75 text-[10px] ml-2">- {s.rfc || s.idNumber || 'S/N'} (Deuda: ${(s.balanceOwed || 0).toFixed(0)})</span>
                                 )}
@@ -1872,14 +1847,14 @@ export default function CheesePOSView({
                   <button type="button" onClick={() => setIsPaymentModalOpen(false)} className="absolute top-4 right-4 text-editorial-text-muted hover:text-amber-500 transition-colors cursor-pointer">
                     <span className="text-3xl leading-none">&times;</span>
                   </button>
-                  
+
                   <div className="mb-6 border-b border-editorial-border/60 pb-4">
                     <h3 className="font-serif text-xl font-bold text-amber-500 tracking-tight uppercase">
                       PROCESAR COBRO (MULTIPAGO)
                     </h3>
                     <p className="text-xs text-editorial-text-muted mt-1 font-mono">Registra los abonos mixtos y finaliza la venta</p>
                   </div>
-                  
+
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
                      {/* Left Panel: Breakdowns & Summary */}
                      <div className="md:col-span-5 flex flex-col gap-4">
@@ -1898,9 +1873,9 @@ export default function CheesePOSView({
                               <div className="font-mono text-[10px] text-emerald-400/70">Bs {(totalAbonado * activeExchangeRate).toFixed(2)}</div>
                             </div>
                           </div>
-                          
+
                           <div className="h-px bg-editorial-border/60 my-2" />
-                          
+
                           {totalAbonado - total > 0.0099 ? (
                             <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded animate-in fade-in duration-300">
                               <div className="flex justify-between items-center text-sm mb-1">
@@ -1992,7 +1967,7 @@ export default function CheesePOSView({
                                 onClick={() => {
                                   setPaymentMethod(m.id);
                                   const rem = Math.max(0, total - totalAbonado);
-                                  
+
                                   if (m.id === 'Mundo Kalu' && customerType === 'client') {
                                     const client = clients.find(c => c.id === selectedClientId);
                                     if (client) {
@@ -2131,6 +2106,17 @@ export default function CheesePOSView({
                                          <button
                                             type="button"
                                             onClick={() => {
+                                               const currentClient = customerType === 'client' ? clients.find(c => c.id === selectedClientId) : null;
+                                               const points = currentClient?.loyaltyPoints || 0;
+                                               const vip = getVIPLevelInfo(points);
+                                               if (vip.level < 5) {
+                                                  const confirm6 = window.confirm(
+                                                     `Este plan de 6 cuotas no corresponde normalmente al nivel actual del cliente (${vip.code} - ${vip.name}).\n\n¿Desea autorizar el plan de 6 cuotas como excepción comercial o promoción?`
+                                                  );
+                                                  if (!confirm6) {
+                                                     return;
+                                                  }
+                                               }
                                                setKaluCreditType('repuestos');
                                                setKaluOption('6_cuotas');
                                                setIsRepuestosModalOpen(false);
@@ -2192,7 +2178,7 @@ export default function CheesePOSView({
                                   />
                                 </div>
                             )}
-                            
+
                             {/* Reference Inputs (Excluyendo Mundo Kalu aquí) */}
                             {(paymentMethod === 'Pago Móvil' || paymentMethod === 'BioPago' || paymentMethod === 'Tarjeta / Punto') && (
                               <div className="space-y-2 animate-in fade-in duration-200">
@@ -2209,11 +2195,11 @@ export default function CheesePOSView({
                               </div>
                             )}
                           </div>
-                          
+
                           {/* Mundo Kalu Breakdown */}
                           {paymentMethod === 'Mundo Kalu' && (
                             (() => {
-                              const foundClient = clients.find(c => 
+                              const foundClient = clients.find(c =>
                                 (c.cedula && c.cedula === paymentReference) ||
                                 (c.ci && c.ci === paymentReference) ||
                                 (c.ciRif && c.ciRif === paymentReference) ||
@@ -2284,7 +2270,7 @@ export default function CheesePOSView({
                                 />
                              </div>
                           )}
-                          
+
                           <button
                             type="button"
                             onClick={handleAddPayment}
@@ -2391,27 +2377,27 @@ export default function CheesePOSView({
                      >
                        Congelar Factura
                      </button>
-                     
+
                      <button
                        type="submit"
                        disabled={isProcessing || (!isCreditSale && !isFullyPaid) || isSupplierOverCreditLimit || (hasKaluPayment && !isKaluMathValid)}
                        className="h-12 px-8 bg-amber-500 text-black font-serif font-bold text-[13px] tracking-widest uppercase flex items-center justify-center gap-2 hover:brightness-110 active:scale-98 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer rounded shadow-[0_0_15px_rgba(245,158,11,0.2)]"
                        title={
-                         hasKaluPayment && !isKaluMathValid 
+                         hasKaluPayment && !isKaluMathValid
                            ? `Descuadre matemático de $${kaluMathDiscrepancy.toFixed(2)} USD entre inicial física y financiado.`
-                           : isSupplierOverCreditLimit 
-                             ? `Debe abonar al menos $${requiredSupplierDownPayment.toFixed(2)} al contado para autorizar la venta.` 
+                           : isSupplierOverCreditLimit
+                             ? `Debe abonar al menos $${requiredSupplierDownPayment.toFixed(2)} al contado para autorizar la venta.`
                              : undefined
                        }
                      >
                        <CheckCircle className="w-4 h-4" />
                        <span>
-                         {isProcessing 
-                           ? 'PROCESANDO...' 
+                         {isProcessing
+                           ? 'PROCESANDO...'
                            : (hasKaluPayment && !isKaluMathValid)
                              ? 'DESCUADRE KALÚ (BLOQUEADO)'
-                             : isSupplierOverCreditLimit 
-                               ? 'TOPE EXCEDIDO (BLOQUEADO)' 
+                             : isSupplierOverCreditLimit
+                               ? 'TOPE EXCEDIDO (BLOQUEADO)'
                                : 'FACTURAR / CONFIRMAR VENTA (F4)'}
                        </span>
                      </button>
@@ -2585,7 +2571,7 @@ export default function CheesePOSView({
                         </button>
                       </div>
                     </div>
-                    
+
                     <div className="bg-editorial-bg border border-editorial-border rounded p-4 font-mono text-xs space-y-2.5">
                       <div className="flex justify-between text-editorial-text-muted">
                         <span>Fondo Inicial USD:</span>
@@ -2802,9 +2788,9 @@ export default function CheesePOSView({
                     <span className="text-editorial-text-muted">Contado Real USD:</span>
                     <span>${closingReport.actualCashUsd.toFixed(2)}</span>
                   </div>
-                  
+
                   <div className="border-t border-dashed border-editorial-border/30 my-2" />
-                  
+
                   <div className="flex justify-between">
                     <span className="text-editorial-text-muted">Fondo Apertura Bs:</span>
                     <span>Bs {closingReport.startingCashBs.toFixed(2)}</span>
@@ -2896,8 +2882,8 @@ export default function CheesePOSView({
               <thead>
                 <tr className="border-b border-editorial-border text-[10px] font-mono text-editorial-text-muted uppercase tracking-wider">
                   <th className="py-3 px-4 w-10 text-center">
-                    <input 
-                      type="checkbox" 
+                    <input
+                      type="checkbox"
                       checked={(() => {
                         const filtered = closingsHistory.filter(c => !closingSearchDate || (new Date(c.timestamp?.seconds ? c.timestamp.seconds * 1000 : c.timestamp).toISOString().split('T')[0] === closingSearchDate));
                         const pageData = filtered.slice((closingPage - 1) * 15, closingPage * 15);
@@ -2945,8 +2931,8 @@ export default function CheesePOSView({
                     return (
                       <tr key={c.id} className="hover:bg-editorial-bg/40 transition-all">
                         <td className="py-3.5 px-4 text-center">
-                          <input 
-                            type="checkbox" 
+                          <input
+                            type="checkbox"
                             checked={selectedClosings.includes(c.id)}
                             onChange={(e) => {
                               if (e.target.checked) setSelectedClosings(prev => [...prev, c.id]);
@@ -2981,7 +2967,7 @@ export default function CheesePOSView({
               </tbody>
             </table>
           </div>
-          
+
           {/* Pagination Controls */}
           {(() => {
             const filtered = closingsHistory.filter(c => !closingSearchDate || (new Date(c.timestamp?.seconds ? c.timestamp.seconds * 1000 : c.timestamp).toISOString().split('T')[0] === closingSearchDate));
@@ -2991,12 +2977,12 @@ export default function CheesePOSView({
               <div className="mt-4 flex justify-between items-center text-xs font-mono">
                 <span className="text-editorial-text-muted">Página {closingPage} de {totalPages}</span>
                 <div className="flex gap-2">
-                  <button 
+                  <button
                     disabled={closingPage === 1}
                     onClick={() => setClosingPage(p => p - 1)}
                     className="px-3 py-1 bg-editorial-bg border border-editorial-border rounded disabled:opacity-50 hover:bg-editorial-border/50"
                   >Anterior</button>
-                  <button 
+                  <button
                     disabled={closingPage === totalPages}
                     onClick={() => setClosingPage(p => p + 1)}
                     className="px-3 py-1 bg-editorial-bg border border-editorial-border rounded disabled:opacity-50 hover:bg-editorial-border/50"
@@ -3012,11 +2998,11 @@ export default function CheesePOSView({
       {lastReceipt && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-editorial-bg border border-editorial-border rounded w-full max-w-sm flex flex-col shadow-2xl overflow-hidden animate-slide-up print-ticket">
-            
+
             {/* Modal Header (No print) */}
             <div className="flex items-center justify-between p-4 bg-editorial-card border-b border-editorial-border/60 no-print">
               <h3 className="font-serif font-bold text-editorial-text-primary text-lg">Ticket de Venta</h3>
-              <button 
+              <button
                 onClick={() => setLastReceipt(null)}
                 className="text-editorial-text-muted hover:text-white transition-colors p-1"
               >
@@ -3039,7 +3025,7 @@ export default function CheesePOSView({
               </div>
 
               <div className="border-t border-dashed border-gray-400 my-2" />
-              
+
               <table className="w-full text-left text-[10px]">
                 <thead>
                   <tr className="border-b border-dashed border-gray-400">
@@ -3074,7 +3060,7 @@ export default function CheesePOSView({
                   const receiptTotal = parseNum(lastReceipt.amount || lastReceipt.total);
                   const receiptSubtotal = lastReceipt.subtotal !== undefined ? parseNum(lastReceipt.subtotal) : receiptTotal / divisor;
                   const receiptTax = lastReceipt.tax !== undefined ? parseNum(lastReceipt.tax) : receiptTotal - receiptSubtotal;
-                  
+
                   return (
                     <>
                       <p className="text-[11px]">Subtotal: ${receiptSubtotal.toFixed(2)}</p>
@@ -3186,7 +3172,7 @@ export default function CheesePOSView({
                     </div>
                   </button>
                 </div>
-                
+
                 {changeCurrency === 'PAGO_MOVIL' && (
                   <div className="pt-2 animate-in fade-in slide-in-from-top-2">
                     <input
@@ -3217,7 +3203,7 @@ export default function CheesePOSView({
                           <span className={`text-xs ${pendingUsd === 0 ? 'text-emerald-400/70' : 'text-amber-500/70'}`}>Bs. {pendingBs.toFixed(2)}</span>
                         </div>
                       </div>
-                      
+
                       <div className="grid grid-cols-3 gap-2">
                         <div>
                           <div className="flex justify-between items-center mb-1">
@@ -3361,7 +3347,7 @@ export default function CheesePOSView({
                 <Archive className="w-5 h-5" />
                 Auditoría de Cierre: {selectedAuditClosing.id}
               </h3>
-              <button 
+              <button
                 onClick={() => setSelectedAuditClosing(null)}
                 className="text-editorial-text-muted hover:text-rose-400 transition-colors p-1"
               >
@@ -3369,7 +3355,7 @@ export default function CheesePOSView({
               </button>
             </div>
             <div className="p-6 overflow-y-auto max-h-[70vh] space-y-6">
-              
+
               <div className="grid grid-cols-4 gap-4 text-sm font-mono bg-editorial-bg p-4 border border-editorial-border rounded">
                 <div>
                   <div className="text-[9px] text-editorial-text-muted uppercase tracking-wider mb-1">Cajero Responsable</div>
@@ -3457,11 +3443,11 @@ export default function CheesePOSView({
                   <div className="bg-editorial-bg p-3 border border-editorial-border rounded text-center">
                     <div className="text-editorial-text-muted mb-1">Total Ventas (Turno)</div>
                     <div className="font-bold text-emerald-400 text-sm">${(
-                      (Number(selectedAuditClosing.salesCashUsd) || 0) + 
-                      ((Number(selectedAuditClosing.salesCashBs) || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) + 
-                      ((Number(selectedAuditClosing.totalCard) || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) + 
-                      ((Number(selectedAuditClosing.totalMobile) || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) + 
-                      ((Number(selectedAuditClosing.totalBiopago) || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) + 
+                      (Number(selectedAuditClosing.salesCashUsd) || 0) +
+                      ((Number(selectedAuditClosing.salesCashBs) || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) +
+                      ((Number(selectedAuditClosing.totalCard) || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) +
+                      ((Number(selectedAuditClosing.totalMobile) || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) +
+                      ((Number(selectedAuditClosing.totalBiopago) || 0) / (selectedAuditClosing.bcvRateAtClose || exchangeRate || 1)) +
                       (Number(selectedAuditClosing.totalCreditSales) || 0)
                     ).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                   </div>
@@ -3511,7 +3497,7 @@ export default function CheesePOSView({
                                   </td>
                                   <td className="py-2 px-3 font-bold text-emerald-400">${(sale.amount || 0).toFixed(2)}</td>
                                   <td className="py-2 px-3 text-center">
-                                    <button 
+                                    <button
                                       onClick={() => setLastReceipt(sale)}
                                       className="px-2 py-1 bg-editorial-card border border-editorial-border text-editorial-text-primary rounded hover:bg-amber-500/20 hover:text-amber-500 hover:border-amber-500/50 transition-colors inline-flex items-center gap-1 font-bold"
                                     >
@@ -3610,7 +3596,7 @@ export default function CheesePOSView({
               >
                 Cancelar Solicitud
               </button>
-              
+
             </div>
           </div>
         </div>
@@ -3820,7 +3806,7 @@ export default function CheesePOSView({
                 </p>
               </div>
             </div>
-            
+
             <div className="p-4 bg-editorial-card">
               <input
                 autoFocus
@@ -3831,7 +3817,7 @@ export default function CheesePOSView({
                 className="w-full bg-editorial-bg border border-editorial-border rounded p-3 text-sm text-editorial-text-primary focus:border-amber-500 transition-colors outline-none"
               />
             </div>
-            
+
             <div className="flex-1 overflow-y-auto p-4 space-y-2">
               {products
                 .filter(p => barcodeLinkSearch.length > 1 && (p.name || '').toLowerCase().includes(barcodeLinkSearch.toLowerCase()))
@@ -3839,9 +3825,9 @@ export default function CheesePOSView({
                   const currentBarcodes = p.barcodes || [];
                   if (p.barcode && !currentBarcodes.includes(p.barcode)) currentBarcodes.push(p.barcode);
                   const isFull = currentBarcodes.length >= 5;
-                  
+
                   return (
-                    <div 
+                    <div
                       key={p.id}
                       onClick={async () => {
                         if (isFull || linkingBarcode) return;
@@ -3849,7 +3835,7 @@ export default function CheesePOSView({
                         try {
                           const newBarcodes = [...new Set([...(p.barcodes || []), unknownBarcode])];
                           if (p.barcode && !newBarcodes.includes(p.barcode)) newBarcodes.push(p.barcode);
-                          
+
                           // 1. Persistir directamente en el archivo products_db.json via /api/products/:id
                           await updateLocalProduct(p.id, {
                             barcodes: newBarcodes
@@ -3862,11 +3848,11 @@ export default function CheesePOSView({
                             // Sincronización fallback en objeto local
                             p.barcodes = newBarcodes;
                           }
-                          
+
                           // After linking, add 1 to cart
                           handleAddToCart(p, 1);
                           onAddNotification(`Código vinculado a ${p.name}`, 'success');
-                          
+
                           setUnknownBarcode(null);
                           setBarcodeLinkSearch('');
                           setSearchQuery('');
@@ -3894,7 +3880,7 @@ export default function CheesePOSView({
             </div>
 
             <div className="p-4 border-t border-editorial-border bg-editorial-card flex justify-end">
-              <button 
+              <button
                 onClick={() => {
                   setUnknownBarcode(null);
                   setBarcodeLinkSearch('');
@@ -3919,14 +3905,14 @@ export default function CheesePOSView({
                 <Smartphone className="w-6 h-6 text-emerald-400" />
                 Pedidos Pendientes
               </h2>
-              <button 
+              <button
                 onClick={() => setIsPedidosModalOpen(false)}
                 className="w-10 h-10 rounded hover:bg-editorial-border flex items-center justify-center transition-colors text-editorial-text-muted hover:text-white"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            
+
             <div className="p-6 overflow-y-auto space-y-4">
               {(() => {
                 const pendingOrders = mobileOrders.filter(o => o.status === 'Pendiente');
@@ -3938,7 +3924,7 @@ export default function CheesePOSView({
                     </div>
                   );
                 }
-                
+
                 return pendingOrders.map(order => (
                   <div key={order.id} className="bg-editorial-card border border-editorial-border hover:border-emerald-500/30 p-4 rounded-xl flex items-center justify-between transition-colors">
                     <div>
@@ -3969,7 +3955,7 @@ export default function CheesePOSView({
                           const c = clients.find(cl => String(cl.id) === String(order.entityId));
                           setClientSearchText(c ? (c.name || '') : order.entityName);
                         }
-                        
+
                         // Marcar orden como entregada en la base de datos
                         try {
                           await updateLocalDoc('mobileOrders', order.id, { status: 'Entregado' });

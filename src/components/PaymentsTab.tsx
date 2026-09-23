@@ -15,7 +15,8 @@ import {
   ChevronDown,
   Image as ImageIcon,
   Utensils,
-  Wrench
+  Wrench,
+  Lock
 } from 'lucide-react';
 import { ClientProfile, DebtInstallment, Transaction } from '../types';
 import { submitPortalClientPaymentApi } from '../services/localApi';
@@ -38,6 +39,19 @@ interface PaymentsTabProps {
   vipCode?: string;
 }
 
+export interface FiadoTotalSaleItem {
+  transactionId: string;
+  invoiceNumber: string;
+  date: string;
+  financedAmount: number;
+  paidAmount: number;
+  remainingAmount: number;
+  status: 'pending' | 'in_review' | 'paid';
+  hasInReviewPayment: boolean;
+  purchase: Transaction | null;
+  payments: any[];
+}
+
 export default function PaymentsTab({
   bcvRate,
   clientData,
@@ -53,6 +67,7 @@ export default function PaymentsTab({
   // Modal de reporte de pago
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedDebt, setSelectedDebt] = useState<DebtInstallment | null>(null);
+  const [selectedOpenDebtSale, setSelectedOpenDebtSale] = useState<FiadoTotalSaleItem | null>(null);
   const [selectedBank, setSelectedBank] = useState<'0102' | '0134'>('0102');
   const [paymentAmountBs, setPaymentAmountBs] = useState('');
   const [reference, setReference] = useState('');
@@ -74,19 +89,68 @@ export default function PaymentsTab({
   const idStr = 'V-11120033';
 
   // 1. Agrupación Canónica: UNA COMPRA = UN ACORDEÓN
-  // Manejo autoritativo de cliente legacy: outstandingDebt > 0 -> outstanding; sino legacy
-  const outstanding = Number((clientData as any)?.outstandingDebt ?? 0);
-  const legacy = Number((clientData as any)?.currentDebtUsd ?? 0);
-  const clientEffectiveDebt = outstanding > 0 ? outstanding : legacy;
+  // Deuda Mundo Kalu: Derivada exclusivamente de cuotas Mundo Kalu y transacciones fiado_total individuales
+  // NO contamina con outstandingDebt general del CRM
+  const fiadoTotalSales = useMemo(() => {
+    const instTxIds = new Set((activeInstallments || []).map(i => String(i.transactionId || (i as any).saleId || '')));
+    const fiadoTotalTxs = (allTransactions || []).filter(t => {
+      if (!t || t.isVoided) return false;
+      const isKalu = (t as any).kaluCreditData?.modalidad === 'fiado_total' ||
+                     ((t.paymentMethod === 'Mundo Kalu' || (t as any).creditType === 'kalu') && Number((t as any).installmentsCount ?? 0) === 0);
+      const isApproved = ['approved', 'Aprobado', 'completed', 'Completado'].includes(t.status || '');
+      return isKalu && isApproved && !instTxIds.has(String(t.id));
+    });
+
+    return fiadoTotalTxs.map((tx): FiadoTotalSaleItem => {
+      const txId = String(tx.id);
+      const financed = Number((tx as any).financedAmount || (tx as any).kaluCreditData?.aFinanciar || tx.amount || 0);
+
+      // Pagos aprobados ligados EXCLUSIVAMENTE a esta transacción
+      const txPayments = (paymentHistory || []).filter(p => p && String(p.transactionId) === txId && !p.installmentId);
+      const approvedPaid = txPayments
+        .filter(p => p.status === 'approved')
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const remaining = Math.max(0, Math.round((financed - approvedPaid) * 100) / 100);
+      const hasInReview = txPayments.some(p => ['pending', 'in_review'].includes(p.status));
+      const status: 'pending' | 'in_review' | 'paid' = remaining <= 0.001 ? 'paid' : (hasInReview ? 'in_review' : 'pending');
+
+      const invoiceNumber = tx.invoiceNumber || `KALU-${txId.replace('TX-', '').slice(-6)}`;
+      const date = tx.date ? formatDisplayDate(tx.date) : 'Reciente';
+
+      return {
+        transactionId: txId,
+        invoiceNumber,
+        date,
+        financedAmount: financed,
+        paidAmount: approvedPaid,
+        remainingAmount: remaining,
+        status,
+        hasInReviewPayment: hasInReview,
+        purchase: tx,
+        payments: txPayments
+      };
+    });
+  }, [allTransactions, activeInstallments, paymentHistory]);
+
+  const kaluOpenDebt = useMemo(() => {
+    return Math.round(fiadoTotalSales.reduce((sum, s) => sum + s.remainingAmount, 0) * 100) / 100;
+  }, [fiadoTotalSales]);
 
   const debtOverview = useMemo(() => {
+    const cuotasRemaining = (activeInstallments || []).reduce((acc, inst) => {
+      const total = Number((inst as any).amountUSD ?? inst.amount ?? 0);
+      const paid = Number(inst.paidAmount ?? 0);
+      return acc + Math.max(0, total - paid);
+    }, 0);
+    const kaluEffectiveDebt = Math.round((cuotasRemaining + kaluOpenDebt) * 100) / 100;
+
     return buildClientDebtGroups({
       installments: activeInstallments,
       transactions: allTransactions,
       payments: paymentHistory,
-      clientDebt: clientEffectiveDebt
+      clientDebt: kaluEffectiveDebt
     });
-  }, [activeInstallments, allTransactions, paymentHistory, clientEffectiveDebt]);
+  }, [activeInstallments, allTransactions, paymentHistory, kaluOpenDebt]);
 
   const { activeGroups, totalEffectiveDebt, openDebtAmount, hasOpenDebt, openDebtPayments } = debtOverview;
 
@@ -106,6 +170,7 @@ export default function PaymentsTab({
   // Abrir modal para una cuota específica
   const openPaymentModalForInstallment = (debt: DebtInstallment) => {
     setSelectedDebt(debt);
+    setSelectedOpenDebtSale(null);
     const instTotal = Number((debt as any).amountUSD ?? debt.amount ?? 0);
     const instPaid = Number(debt.paidAmount ?? 0);
     const remainingUsd = Math.max(0, Math.round((instTotal - instPaid) * 100) / 100);
@@ -120,11 +185,12 @@ export default function PaymentsTab({
     setShowPaymentModal(true);
   };
 
-  // Abrir modal para deuda abierta / fiado sin cuotas
-  const openPaymentModalForOpenDebt = () => {
+  // Abrir modal para una venta fiado_total específica
+  const openPaymentModalForOpenDebtSale = (sale: FiadoTotalSaleItem) => {
     setSelectedDebt(null);
+    setSelectedOpenDebtSale(sale);
     const safeRate = Number(bcvRate) || 36.50;
-    const amountBs = (openDebtAmount * safeRate).toFixed(2);
+    const amountBs = (sale.remainingAmount * safeRate).toFixed(2);
     setPaymentAmountBs(amountBs);
     setReference('');
     setNotesText('');
@@ -182,6 +248,11 @@ export default function PaymentsTab({
         if (onAddNotification) onAddNotification(`El monto ingresado ($${amountUsd.toFixed(2)}) supera el saldo de la cuota ($${remainingUsd.toFixed(2)})`, 'warning');
         return;
       }
+    } else if (selectedOpenDebtSale) {
+      if (amountUsd > selectedOpenDebtSale.remainingAmount + 0.01) {
+        if (onAddNotification) onAddNotification(`El monto ingresado ($${amountUsd.toFixed(2)}) supera el saldo de la compra ($${selectedOpenDebtSale.remainingAmount.toFixed(2)})`, 'warning');
+        return;
+      }
     } else {
       if (amountUsd > openDebtAmount + 0.01) {
         if (onAddNotification) onAddNotification(`El monto ingresado ($${amountUsd.toFixed(2)}) supera la deuda abierta ($${openDebtAmount.toFixed(2)})`, 'warning');
@@ -200,6 +271,7 @@ export default function PaymentsTab({
       date: new Date().toISOString(),
       timestamp: new Date().toISOString(),
       installmentId: selectedDebt ? selectedDebt.id : null,
+      transactionId: selectedDebt ? null : (selectedOpenDebtSale ? selectedOpenDebtSale.transactionId : null),
       notes: notesText.trim() || undefined,
       receiptImageUrl: imagePreview,
       receiptImage: imagePreview
@@ -211,6 +283,7 @@ export default function PaymentsTab({
 
       if (onAddNotification) onAddNotification('Comprobante enviado exitosamente a Caja para verificación.', 'success');
       setShowPaymentModal(false);
+      setSelectedOpenDebtSale(null);
       if (onPaymentReported) {
         onPaymentReported();
       }
@@ -418,7 +491,7 @@ export default function PaymentsTab({
                             <Utensils className="w-3.5 h-3.5" /> Víveres y Alimentos
                           </h5>
                           <div className="space-y-2">
-                            {group.foodInstallments.map((inst, index) => renderInstallmentCard(inst, index + 1, group.foodInstallments.length))}
+                            {group.foodInstallments.map((inst, index) => renderInstallmentCard(inst, index + 1, group.foodInstallments.length, group.installments))}
                           </div>
                         </div>
                       )}
@@ -430,7 +503,7 @@ export default function PaymentsTab({
                             <Wrench className="w-3.5 h-3.5" /> Repuestos y Artículos Generales
                           </h5>
                           <div className="space-y-2">
-                            {group.otherInstallments.map((inst, index) => renderInstallmentCard(inst, index + 1, group.otherInstallments.length))}
+                            {group.otherInstallments.map((inst, index) => renderInstallmentCard(inst, index + 1, group.otherInstallments.length, group.installments))}
                           </div>
                         </div>
                       )}
@@ -495,71 +568,83 @@ export default function PaymentsTab({
           </div>
         )}
 
-        {/* 4. Acordeón de Deuda Abierta / Saldo Legacy sin Cuotas (Si aplica) */}
-        {hasOpenDebt && (
-          <div className="bg-zinc-900 border border-amber-500/30 rounded-2xl overflow-hidden shadow-sm">
-            <button
-              type="button"
-              onClick={() => setExpandedOpenDebt(!expandedOpenDebt)}
-              aria-expanded={expandedOpenDebt}
-              aria-controls="accordion-body-open-debt"
-              className="w-full p-4 flex justify-between items-center text-left cursor-pointer hover:bg-zinc-800/40 transition-colors min-h-[56px] focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-            >
-              <div className="space-y-0.5 pr-2">
-                <div className="flex items-center gap-2">
-                  <h4 className="font-bold text-sm text-amber-400 uppercase tracking-tight">
-                    Saldo anterior / Deuda abierta
-                  </h4>
-                  <span className="text-[9px] font-bold text-amber-400 bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 rounded-full uppercase">
-                    Saldo Abierto
-                  </span>
-                </div>
-                <p className="text-[11px] text-zinc-400">Saldo pendiente de cuenta sin cuotas fijas</p>
-              </div>
+        {/* 4. Compras Individuales Fiado Total (Deuda Abierta por Venta) */}
+        {fiadoTotalSales.length > 0 && (
+          <div className="space-y-3">
+            <h4 className="text-xs font-bold text-amber-400 uppercase tracking-widest flex items-center gap-1.5 px-1">
+              <ShoppingBag className="w-3.5 h-3.5" /> Compras a Fiado Total ({fiadoTotalSales.length})
+            </h4>
 
-              <div className="flex items-center gap-3 shrink-0">
-                <div className="text-right">
-                  <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-wider">Por pagar</p>
-                  <p className="text-base sm:text-lg font-black text-amber-400 font-mono">
-                    ${openDebtAmount.toFixed(2)}
-                  </p>
-                </div>
-                <div className={`w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center text-zinc-400 transition-transform duration-200 ${expandedOpenDebt ? 'rotate-180 text-white bg-zinc-700' : ''}`}>
-                  <ChevronDown className="w-4 h-4" />
-                </div>
-              </div>
-            </button>
-
-            {expandedOpenDebt && (
-              <div id="accordion-body-open-debt" className="bg-zinc-950/70 border-t border-zinc-800 p-4 space-y-4 animate-in fade-in duration-200">
-                <div className="bg-amber-950/20 border border-amber-500/20 rounded-xl p-3 flex justify-between items-center">
+            {fiadoTotalSales.map((sale) => (
+              <div
+                key={sale.transactionId}
+                className="bg-zinc-900 border border-amber-500/30 rounded-2xl p-4 shadow-sm space-y-3"
+              >
+                <div className="flex justify-between items-start">
                   <div>
-                    <span className="text-[10px] text-amber-400 uppercase font-bold block">Saldo por Cancelar</span>
-                    <span className="text-lg font-black text-white font-mono">${openDebtAmount.toFixed(2)}</span>
-                    <span className="text-xs text-zinc-400 font-mono block">≈ Bs. {(openDebtAmount * (Number(bcvRate) || 36.50)).toFixed(2)}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-white text-sm">
+                        {sale.invoiceNumber}
+                      </span>
+                      <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase border ${
+                        sale.status === 'paid'
+                          ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                          : sale.status === 'in_review'
+                          ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                          : 'bg-zinc-800 text-zinc-300 border-zinc-700'
+                      }`}>
+                        {sale.status === 'paid' ? 'Pagada' : sale.status === 'in_review' ? 'En Revisión' : 'Pendiente'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">Fecha: {sale.date} · Modalidad: Fiado Total</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={openPaymentModalForOpenDebt}
-                    className="bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold uppercase tracking-wider text-xs px-4 py-2.5 rounded-xl transition-all cursor-pointer min-h-[44px] shadow-sm flex items-center gap-1.5"
-                  >
-                    <Banknote className="w-4 h-4" /> Reportar Abono
-                  </button>
+
+                  <div className="text-right">
+                    <span className="text-[10px] text-zinc-400 uppercase font-bold block">Saldo Restante</span>
+                    <span className="text-base sm:text-lg font-black text-amber-400 font-mono">
+                      ${sale.remainingAmount.toFixed(2)}
+                    </span>
+                  </div>
                 </div>
 
-                {/* Pagos huérfanos / deuda abierta */}
-                {openDebtPayments.length > 0 && (
-                  <div className="space-y-1.5 pt-2 border-t border-zinc-800">
-                    <h5 className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest">
-                      Abonos a Deuda Abierta ({openDebtPayments.length})
-                    </h5>
-                    {openDebtPayments.map((p) => (
+                <div className="grid grid-cols-2 gap-2 bg-zinc-950/60 p-2.5 rounded-xl border border-zinc-800/80 text-xs">
+                  <div>
+                    <span className="text-[10px] text-zinc-500 uppercase block font-bold">Total Financiado</span>
+                    <span className="font-bold text-zinc-300 font-mono">${sale.financedAmount.toFixed(2)}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-zinc-500 uppercase block font-bold">Total Abonado</span>
+                    <span className="font-bold text-emerald-400 font-mono">${sale.paidAmount.toFixed(2)}</span>
+                  </div>
+                </div>
+
+                {sale.status !== 'paid' && (
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="button"
+                      disabled={sale.hasInReviewPayment}
+                      onClick={() => openPaymentModalForOpenDebtSale(sale)}
+                      className="bg-amber-500 hover:bg-amber-400 disabled:bg-zinc-800 disabled:text-zinc-500 disabled:cursor-not-allowed text-zinc-950 font-bold uppercase tracking-wider text-xs px-4 py-2.5 rounded-xl transition-all cursor-pointer min-h-[44px] shadow-sm flex items-center gap-1.5"
+                    >
+                      <Banknote className="w-4 h-4" />
+                      {sale.hasInReviewPayment ? 'Abono en Revisión' : 'Reportar Abono'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Historial de pagos específicos de esta compra */}
+                {sale.payments.length > 0 && (
+                  <div className="space-y-1.5 pt-2 border-t border-zinc-800/80">
+                    <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest block">
+                      Abonos de esta compra ({sale.payments.length})
+                    </span>
+                    {sale.payments.map((p) => (
                       <div
                         key={p.id}
-                        className="flex justify-between items-center bg-zinc-900 border border-zinc-800 p-2.5 rounded-xl text-xs"
+                        className="flex justify-between items-center bg-zinc-950/40 border border-zinc-800/50 p-2 rounded-lg text-xs"
                       >
                         <div>
-                          <p className="font-bold text-white font-mono">${Number(p.amount || 0).toFixed(2)}</p>
+                          <p className="font-bold text-white font-mono">${Number(p.amount || 0).toFixed(2)} USD</p>
                           <p className="text-[10px] text-zinc-400 font-mono">
                             {formatDisplayDate(p.date || p.timestamp || p.createdAt)}
                             {p.reference ? ` · Ref: ${p.reference}` : ''}
@@ -585,7 +670,7 @@ export default function PaymentsTab({
                   </div>
                 )}
               </div>
-            )}
+            ))}
           </div>
         )}
       </div>
@@ -593,11 +678,16 @@ export default function PaymentsTab({
       {/* 5. Modal Inmersivo y Reutilizable de Reporte de Pago Móvil */}
       {showPaymentModal && (() => {
         const isInstallment = Boolean(selectedDebt);
+        const isOpenDebtSale = Boolean(selectedOpenDebtSale);
         const singleTotalUSD = isInstallment
           ? Number((selectedDebt as any).amountUSD ?? selectedDebt?.amount ?? 0)
-          : openDebtAmount;
-        const singlePaidUSD = isInstallment ? Number(selectedDebt?.paidAmount ?? 0) : 0;
-        const singleRemainingUSD = Math.max(0, Math.round((singleTotalUSD - singlePaidUSD) * 100) / 100);
+          : (isOpenDebtSale ? selectedOpenDebtSale!.financedAmount : openDebtAmount);
+        const singlePaidUSD = isInstallment
+          ? Number(selectedDebt?.paidAmount ?? 0)
+          : (isOpenDebtSale ? selectedOpenDebtSale!.paidAmount : 0);
+        const singleRemainingUSD = isInstallment
+          ? Math.max(0, Math.round((singleTotalUSD - singlePaidUSD) * 100) / 100)
+          : (isOpenDebtSale ? selectedOpenDebtSale!.remainingAmount : openDebtAmount);
 
         return (
           <div className="fixed inset-0 z-[100] bg-neutral-950 flex flex-col animate-in slide-in-from-bottom duration-300 overflow-y-auto w-full">
@@ -800,8 +890,8 @@ export default function PaymentsTab({
     </div>
   );
 
-  // Helper de renderizado de tarjeta de cuota
-  function renderInstallmentCard(inst: DebtInstallment, num: number, total: number) {
+  // Helper de renderizado de tarjeta de cuota con regla secuencial estricta
+  function renderInstallmentCard(inst: DebtInstallment, num: number, total: number, allGroupInsts: DebtInstallment[] = []) {
     const instTotal = Number((inst as any).amountUSD ?? inst.amount ?? 0);
     const instPaid = Number(inst.paidAmount ?? 0);
     const remaining = Math.max(0, Math.round((instTotal - instPaid) * 100) / 100);
@@ -816,6 +906,32 @@ export default function PaymentsTab({
       ? `Cuota ${instNum} de ${totalInst}`
       : (instNum != null ? `Cuota ${instNum}` : 'Cuota');
 
+    // Regla de Orden Estricto: verificar si alguna cuota anterior no está saldada
+    let isBlockedByPrevious = false;
+    let blockingPrevNum = 1;
+    let isPrevInReview = false;
+
+    const currentIdx = allGroupInsts.findIndex(i => String(i.id) === String(inst.id));
+    if (currentIdx > 0) {
+      for (let j = 0; j < currentIdx; j++) {
+        const prev = allGroupInsts[j];
+        const prevTotal = Number((prev as any).amountUSD ?? prev.amount ?? 0);
+        const prevP = Number(prev.paidAmount ?? 0);
+        const prevRem = Math.max(0, Math.round((prevTotal - prevP) * 100) / 100);
+        if (prev.status === 'in_review') {
+          isBlockedByPrevious = true;
+          isPrevInReview = true;
+          blockingPrevNum = Number((prev as any).installmentNumber || (j + 1));
+          break;
+        }
+        if (prevRem > 0.001 || prev.status !== 'paid') {
+          isBlockedByPrevious = true;
+          blockingPrevNum = Number((prev as any).installmentNumber || (j + 1));
+          break;
+        }
+      }
+    }
+
     return (
       <div
         key={inst.id}
@@ -826,6 +942,8 @@ export default function PaymentsTab({
             ? 'border-amber-500/40 bg-amber-950/10'
             : isPaid
             ? 'border-emerald-500/20 bg-zinc-900/40'
+            : isBlockedByPrevious
+            ? 'border-zinc-800/60 bg-zinc-900/30 opacity-75'
             : 'border-zinc-800'
         }`}
       >
@@ -865,6 +983,11 @@ export default function PaymentsTab({
           ) : isPaid ? (
             <div className="w-full py-2 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-lg text-center font-bold uppercase tracking-wider text-[10px] flex items-center justify-center gap-1.5 min-h-[38px]">
               <Check className="w-3.5 h-3.5" /> Cuota Pagada
+            </div>
+          ) : isBlockedByPrevious ? (
+            <div className="w-full py-2 bg-neutral-800/80 border border-neutral-700 text-zinc-400 rounded-lg text-center font-bold uppercase tracking-wider text-[10px] flex items-center justify-center gap-1.5 min-h-[38px]">
+              <Lock className="w-3.5 h-3.5 text-zinc-500" />
+              {isPrevInReview ? `Bloqueada (Cuota ${blockingPrevNum} en revisión)` : `Bloqueada (Debe saldar Cuota ${blockingPrevNum} primero)`}
             </div>
           ) : (
             <button

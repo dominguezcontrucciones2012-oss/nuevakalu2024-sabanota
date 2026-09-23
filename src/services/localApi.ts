@@ -598,7 +598,10 @@ export const approvePortalClientTransactionApi = async (txId: string, approvalDa
   });
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error || 'Error al aprobar transacción');
+    const error: any = new Error(errData.error || 'Error al aprobar transacción');
+    error.status = res.status;
+    error.code = errData.code;
+    throw error;
   }
   return await res.json();
 };

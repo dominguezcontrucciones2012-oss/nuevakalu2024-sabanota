@@ -23,7 +23,7 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [fetchError, setFetchError] = useState('');
   const [scannedStore, setScannedStore] = useState('Mundo Kalu - Tienda Principal (Caja)');
-  
+
   const scannerRef = useRef<Html5Qrcode | null>(null);
 
   const doFetchAndShowModal = async (storeName: string) => {
@@ -45,11 +45,11 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
     try {
       const transactions = await fetchPortalClientTransactionsApi();
       const clientList = Array.isArray(transactions) ? transactions : [];
-      
+
       console.log(`[QR DIAGNOSTIC] Total de transacciones descargadas del servidor: ${clientList.length}`);
 
       const pending = clientList.filter((tx: any) => tx.status === 'pending_approval');
-      
+
       console.log(`[QR DIAGNOSTIC] Órdenes pendientes que coinciden con este cliente:`, pending);
 
       if (pending.length > 0) {
@@ -71,30 +71,44 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
     }
   };
 
+  const stopScannerSafely = async () => {
+    try {
+      if (scannerRef.current) {
+        if (scannerRef.current.isScanning) {
+          await scannerRef.current.stop();
+        }
+        try {
+          scannerRef.current.clear();
+        } catch {}
+      }
+    } catch (err) {
+      console.warn('[QR Scanner] Error deteniendo scanner:', err);
+    } finally {
+      setScannerActive(false);
+    }
+  };
+
   // Initialize Scanner safely
   const startScanner = async () => {
     try {
       if (!scannerRef.current) {
         scannerRef.current = new Html5Qrcode("reader");
       }
-      
+
       const config = { fps: 10, qrbox: { width: 250, height: 250 } };
-      
+
       await scannerRef.current.start(
         { facingMode: "environment" },
         config,
-        (decodedText) => {
-          if (scannerRef.current?.isScanning) {
-            scannerRef.current.stop().catch(console.error);
-            setScannerActive(false);
-          }
+        async (decodedText) => {
+          await stopScannerSafely();
           handleSuccessfulScan(decodedText);
         },
         () => {
           // Frame errors are normal when no QR is in view
         }
       );
-      
+
       setHasPermission(true);
       setScannerActive(true);
     } catch (err) {
@@ -110,12 +124,12 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
     console.log('[QR DIAGNOSTIC] Cadena de texto / URL cruda obtenida:', cleanText);
 
     // Validar concordancia con el QR Maestro Institucional del Menú (AccessControlView)
-    const isOfficialInstitutionalQr = cleanText.includes('sistemakalu.com') || 
-                                     cleanText.includes('portal=cliente') || 
+    const isOfficialInstitutionalQr = cleanText.includes('sistemakalu.com') ||
+                                     cleanText.includes('portal=cliente') ||
                                      cleanText.includes('#qr') ||
                                      cleanText.includes('kalu');
 
-    const storeTitle = isOfficialInstitutionalQr 
+    const storeTitle = isOfficialInstitutionalQr
       ? "Mundo Kalu - Tienda Principal (Caja)"
       : "Punto de Venta Autorizado Kalu";
 
@@ -134,16 +148,14 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (scannerRef.current && scannerRef.current.isScanning) {
-        scannerRef.current.stop().catch(console.error);
-      }
+      stopScannerSafely();
     };
   }, []);
 
   return (
     <div className="flex-1 bg-neutral-950 flex flex-col relative animate-fade-in pb-16 h-full">
       <div className={`absolute inset-0 ${theme.glowBg} opacity-30`}></div>
-      
+
       <div className="relative z-10 flex flex-col h-full p-6 pt-8">
         <div className="text-center mb-6">
           <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full ${theme.accentBg} border ${theme.borderSubtle} ${theme.textAccent} text-xs font-semibold mb-3`}>
@@ -154,12 +166,12 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
             Apunta la cámara de tu teléfono al código QR físico ubicado en la vitrina o caja de la tienda.
           </p>
         </div>
-        
+
         <div className="flex-1 flex flex-col items-center justify-center pb-12">
           {/* Scanner Container */}
           <div className={`relative w-full max-w-[300px] aspect-square rounded-3xl overflow-hidden bg-black border-2 ${theme.borderSubtle} ${theme.glow}`}>
             <div id="reader" className="w-full h-full object-cover"></div>
-            
+
             {/* Visual Guide Overlay (only when scanning) */}
             {scannerActive && (
               <div className="absolute inset-0 pointer-events-none z-10">
@@ -189,7 +201,7 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
                       <Camera className={`w-8 h-8 ${theme.textAccent}`} />
                     </div>
                     <p className="text-xs text-zinc-300 mb-4 font-medium">Activa tu cámara para vincular tu compra activa en caja</p>
-                    <button 
+                    <button
                       onClick={requestCamera}
                       className={`${theme.btnPrimary} font-black uppercase rounded-xl text-xs px-6 py-3.5 tracking-wider shadow-lg transition-all active:scale-95`}
                     >
@@ -221,14 +233,14 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
                 </div>
                 <p className={`text-[11px] ${theme.textAccent} font-bold uppercase tracking-wider mt-0.5`}>{scannedStore}</p>
               </div>
-              <button 
-                onClick={() => { setShowQrPaymentModal(false); setFetchedTx(null); }} 
+              <button
+                onClick={() => { setShowQrPaymentModal(false); setFetchedTx(null); }}
                 className="w-8 h-8 flex items-center justify-center bg-neutral-900 text-zinc-400 hover:text-white rounded-full transition-colors"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-            
+
             {/* DYNAMIC CONTENT BASED ON FETCH */}
             {isFetching ? (
               <div className="py-12 flex flex-col items-center justify-center text-center space-y-3">
@@ -294,10 +306,11 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
                 <div className={`p-3 ${theme.accentBg} border ${theme.borderSubtle} rounded-xl ${theme.textAccentLight} text-[11px] leading-relaxed`}>
                   <strong>Nota:</strong> Al firmar digitalmente, autorizas financiar ${Number(fetchedTx.financedAmount || fetchedTx.kaluCreditData?.aFinanciar || 0).toFixed(2)} USD. {Number(fetchedTx.downPayment || 0) > 0 ? `El cajero procederá a cobrar la inicial de $${Number(fetchedTx.downPayment).toFixed(2)} USD en caja para entregarte tus productos.` : 'Venta autorizada sin inicial requerida.'}
                 </div>
-                
-                <button 
+
+                <button
                   disabled={isSubmitting}
                   onClick={async () => {
+                    if (isSubmitting) return;
                     setIsSubmitting(true);
                     try {
                       const nonce = fetchedTx.authNonce;
@@ -315,14 +328,35 @@ export function QrScannerTab({ loggedClient, onNavigateTab, getClientLevelInfo, 
                       await approvePortalClientTransactionApi(fetchedTx.id, {
                         authNonce: nonce
                       });
-                      
+
+                      await stopScannerSafely();
                       onAddNotification('¡Compra Autorizada y Aprobada con Éxito!', 'success');
                       setShowQrPaymentModal(false);
                       setFetchedTx(null);
                       onNavigateTab('inicio');
-                    } catch (e) {
+                    } catch (e: any) {
                       console.error('Error al firmar transacción:', e);
-                      onAddNotification('Error al firmar y aprobar la compra a crédito.', 'warning');
+                      const errMsg = String(e?.message || '');
+                      const isAlreadyApproved =
+                        errMsg.includes('estado actual: approved') ||
+                        errMsg.includes('estado actual: Aprobado') ||
+                        errMsg.includes('estado actual: completed') ||
+                        errMsg.includes('estado actual: Completado') ||
+                        errMsg.includes('TRANSACTION_ALREADY_APPROVED') ||
+                        errMsg.includes('ya fue aprobada') ||
+                        errMsg.includes('ya había sido aprobada') ||
+                        e?.code === 'TRANSACTION_ALREADY_APPROVED';
+
+                      // Tratar como éxito previo confirmado SOLAMENTE si el backend demuestra que ya estaba aprobada
+                      if (isAlreadyApproved) {
+                        await stopScannerSafely();
+                        onAddNotification('¡Compra ya confirmada y aprobada exitosamente!', 'success');
+                        setShowQrPaymentModal(false);
+                        setFetchedTx(null);
+                        onNavigateTab('inicio');
+                      } else {
+                        onAddNotification(errMsg || 'Error al firmar y aprobar la compra a crédito.', 'warning');
+                      }
                     } finally {
                       setIsSubmitting(false);
                     }
