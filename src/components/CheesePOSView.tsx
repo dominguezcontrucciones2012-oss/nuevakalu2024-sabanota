@@ -1,9 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { CheeseProduct, ClientProfile, SupplierProfile, CheeseSaleItem, MobileOrder, Transaction } from '../types';
-import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X, Scan, Store, ShieldAlert } from 'lucide-react';
+import { ShoppingCart, Calendar, Printer, FileText, CheckCircle, RefreshCw, AlertCircle, Trash2, Plus, Minus, User, Smartphone, Zap, Archive, Eye, Banknote, Coins, CreditCard, Fingerprint, Layers, Send, RotateCcw, X, Scan, Store, ShieldAlert, Snowflake, Play } from 'lucide-react';
 import { parseSafeDecimal, formatCurrency, formatQuantity, getUnitLabel } from '../utils';
 
-import { fetchCollection, addLocalDoc, updateLocalDoc, deleteLocalDoc, batchDeleteLocalDocs, onCollectionSnapshot } from '../services/localApi';
+import { fetchCollection, addLocalDoc, updateLocalDoc, deleteLocalDoc, batchDeleteLocalDocs, onCollectionSnapshot, closeShiftApi, parseClosingTimestamp, resumeHeldSaleApi, consumeHeldSaleApi, discardHeldSaleApi, isPosHeldSale } from '../services/localApi';
 import { updateLocalProduct } from '../services/productApi';
 
 interface CheesePOSViewProps {
@@ -77,6 +77,8 @@ export default function CheesePOSView({
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isChangeModalOpen, setIsChangeModalOpen] = useState(false);
   const [isPedidosModalOpen, setIsPedidosModalOpen] = useState(false);
+  const [heldInvoices, setHeldInvoices] = useState<any[]>([]);
+  const [isHeldInvoicesModalOpen, setIsHeldInvoicesModalOpen] = useState(false);
   const [changeCurrency, setChangeCurrency] = useState<'USD' | 'BS' | 'PAGO_MOVIL' | 'MIXED'>('USD');
   const [changeReference, setChangeReference] = useState('');
   const [isWaitingForApproval, setIsWaitingForApproval] = useState(false);
@@ -120,6 +122,23 @@ export default function CheesePOSView({
     }
     return () => clearInterval(interval);
   }, [isWaitingForApproval]);
+
+  // Sincronización en tiempo real de facturas congeladas / en espera (daily_drafts)
+  useEffect(() => {
+    const unsubDrafts = onCollectionSnapshot('daily_drafts', (data) => {
+      const drafts = (data || []).filter((d: any) => isPosHeldSale(d));
+      drafts.sort((a: any, b: any) => {
+        const tA = Number(a.timestamp || (a.createdAt ? new Date(a.createdAt).getTime() : 0)) || 0;
+        const tB = Number(b.timestamp || (b.createdAt ? new Date(b.createdAt).getTime() : 0)) || 0;
+        return tB - tA;
+      });
+      setHeldInvoices(drafts);
+    });
+
+    return () => {
+      if (unsubDrafts) unsubDrafts();
+    };
+  }, []);
 
   const handleManualDiagnosticCheck = async () => {
     if (!pendingApprovalId) return;
@@ -206,26 +225,100 @@ export default function CheesePOSView({
     }
   });
 
+  const initialContextRef = useRef<{
+    customerType: 'client' | 'supplier';
+    selectedClientId: string;
+    selectedSupplierId: string;
+    clientSearchText: string;
+    supplierSearchText: string;
+    paymentMethod: string;
+    addedPayments: { id: string; method: string; amount: number; reference: string; currency?: string; originalAmount?: number }[];
+    isCreditSale: boolean;
+  }>(() => {
+    try {
+      const saved = localStorage.getItem('pos_customer_context');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {}
+    return {
+      customerType: 'client',
+      selectedClientId: '',
+      selectedSupplierId: '',
+      clientSearchText: '',
+      supplierSearchText: '',
+      paymentMethod: 'Efectivo $',
+      addedPayments: [],
+      isCreditSale: false
+    };
+  });
+
   useEffect(() => {
     localStorage.setItem('pos_cart', JSON.stringify(cart));
   }, [cart]);
 
-  const [customerType, setCustomerType] = useState<'client' | 'supplier'>('client');
-  const [selectedClientId, setSelectedClientId] = useState<string>('');
-  const [selectedSupplierId, setSelectedSupplierId] = useState<string>('');
-  const [clientSearchText, setClientSearchText] = useState('');
+  const [customerType, setCustomerType] = useState<'client' | 'supplier'>(() => {
+    const ctx = typeof initialContextRef.current === 'function' ? (initialContextRef.current as any)() : initialContextRef.current;
+    return ctx?.customerType || 'client';
+  });
+  const [selectedClientId, setSelectedClientId] = useState<string>(() => {
+    const ctx = typeof initialContextRef.current === 'function' ? (initialContextRef.current as any)() : initialContextRef.current;
+    return ctx?.selectedClientId || '';
+  });
+  const [selectedSupplierId, setSelectedSupplierId] = useState<string>(() => {
+    const ctx = typeof initialContextRef.current === 'function' ? (initialContextRef.current as any)() : initialContextRef.current;
+    return ctx?.selectedSupplierId || '';
+  });
+  const [clientSearchText, setClientSearchText] = useState(() => {
+    const ctx = typeof initialContextRef.current === 'function' ? (initialContextRef.current as any)() : initialContextRef.current;
+    return ctx?.clientSearchText || '';
+  });
   const [isClientDropdownOpen, setIsClientDropdownOpen] = useState(false);
-  const [supplierSearchText, setSupplierSearchText] = useState('');
+  const [supplierSearchText, setSupplierSearchText] = useState(() => {
+    const ctx = typeof initialContextRef.current === 'function' ? (initialContextRef.current as any)() : initialContextRef.current;
+    return ctx?.supplierSearchText || '';
+  });
   const [isSupplierDropdownOpen, setIsSupplierDropdownOpen] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<string>('Efectivo $');
+  const [paymentMethod, setPaymentMethod] = useState<string>(() => {
+    const ctx = typeof initialContextRef.current === 'function' ? (initialContextRef.current as any)() : initialContextRef.current;
+    return ctx?.paymentMethod || 'Efectivo $';
+  });
   const [kaluCreditType, setKaluCreditType] = useState<'cotidiano'|'repuestos'>('cotidiano');
   const [kaluOption, setKaluOption] = useState<KaluCreditOption>('1_inicial');
   const [isCotidianoModalOpen, setIsCotidianoModalOpen] = useState(false);
   const [isRepuestosModalOpen, setIsRepuestosModalOpen] = useState(false);
   const [paymentReference, setPaymentReference] = useState<string>('');
   const [paidAmountInput, setPaidAmountInput] = useState<string>('');
-  const [addedPayments, setAddedPayments] = useState<{ id: string; method: string; amount: number; reference: string; currency?: string; originalAmount?: number }[]>([]);
-  const [isCreditSale, setIsCreditSale] = useState<boolean>(false);
+  const [addedPayments, setAddedPayments] = useState<{ id: string; method: string; amount: number; reference: string; currency?: string; originalAmount?: number }[]>(() => {
+    const ctx = typeof initialContextRef.current === 'function' ? (initialContextRef.current as any)() : initialContextRef.current;
+    return Array.isArray(ctx?.addedPayments) ? ctx.addedPayments : [];
+  });
+  const [isCreditSale, setIsCreditSale] = useState<boolean>(() => {
+    const ctx = typeof initialContextRef.current === 'function' ? (initialContextRef.current as any)() : initialContextRef.current;
+    return Boolean(ctx?.isCreditSale);
+  });
+
+  useEffect(() => {
+    if (cart.length > 0 || selectedClientId || selectedSupplierId || addedPayments.length > 0) {
+      try {
+        const ctx = {
+          customerType,
+          selectedClientId,
+          selectedSupplierId,
+          clientSearchText,
+          supplierSearchText,
+          paymentMethod,
+          addedPayments,
+          isCreditSale
+        };
+        localStorage.setItem('pos_customer_context', JSON.stringify(ctx));
+      } catch (e) {
+        console.warn('Error persisting pos_customer_context to localStorage:', e);
+      }
+    } else {
+      localStorage.removeItem('pos_customer_context');
+    }
+  }, [cart, customerType, selectedClientId, selectedSupplierId, clientSearchText, supplierSearchText, paymentMethod, addedPayments, isCreditSale]);
   const [lastReceipt, setLastReceipt] = useState<any | null>(null);
 
   // Cierre de caja States
@@ -300,10 +393,10 @@ export default function CheesePOSView({
 
   useEffect(() => {
     const unsub = onCollectionSnapshot('cashClosings', (data) => {
-      // Sort descending by timestamp locally
+      // Sort descending by timestamp using robust numeric parseClosingTimestamp
       data.sort((a: any, b: any) => {
-        const tA = new Date(a.timestamp?.seconds ? a.timestamp.seconds * 1000 : a.timestamp).getTime();
-        const tB = new Date(b.timestamp?.seconds ? b.timestamp.seconds * 1000 : b.timestamp).getTime();
+        const tA = parseClosingTimestamp(a.timestamp);
+        const tB = parseClosingTimestamp(b.timestamp);
         return tB - tA;
       });
       setClosingsHistory(data);
@@ -476,6 +569,153 @@ export default function CheesePOSView({
   const kaluMathSum = Math.round((kaluFinancedAmount + physicalPaymentsTotal) * 100) / 100;
   const kaluMathDiscrepancy = Math.abs(Math.round((total - kaluMathSum) * 100) / 100);
   const isKaluMathValid = !hasKaluPayment || kaluMathDiscrepancy <= 0.02;
+
+  // Acciones de Ventas en Espera / Congelar / Descongelar (daily_drafts)
+  const handleHoldInvoice = async () => {
+    if (cart.length === 0) {
+      onAddNotification('El carrito está vacío. Agregue productos antes de congelar.', 'warning');
+      return;
+    }
+
+    try {
+      const selectedClientObj = customerType === 'client' ? clients.find(c => c.id === selectedClientId) : null;
+      const customerDisplayName = customerType === 'supplier'
+        ? (selectedSupplier ? selectedSupplier.name : supplierSearchText || 'Productor / Quesero')
+        : (selectedClientObj ? selectedClientObj.name : clientSearchText || 'Cliente Mostrador');
+
+      const now = Date.now();
+      const draftDoc = {
+        id: `draft-${now}-${Math.random().toString(36).substring(2, 6)}`,
+        type: 'invoice_draft',
+        draftKind: 'pos_held_sale',
+        source: 'pos',
+        status: 'on_hold',
+        timestamp: now,
+        createdAt: new Date().toISOString(),
+        date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+        customerType,
+        clientId: selectedClientId || null,
+        selectedClientId: selectedClientId || null,
+        supplierId: selectedSupplierId || null,
+        selectedSupplierId: selectedSupplierId || null,
+        customerName: customerDisplayName,
+        clientSearchText: clientSearchText || '',
+        supplierSearchText: supplierSearchText || '',
+        items: [...cart],
+        totalAmount: total,
+        total: total,
+        addedPayments: [...addedPayments],
+        paymentMethod,
+        isCreditSale,
+        note: 'Venta congelada desde POS'
+      };
+
+      await addLocalDoc('daily_drafts', draftDoc);
+
+      // Limpiar estado activo del carrito y cobro
+      setCart([]);
+      setSelectedClientId('');
+      setSelectedSupplierId('');
+      setClientSearchText('');
+      setSupplierSearchText('');
+      setAddedPayments([]);
+      setIsCreditSale(false);
+      setIsPaymentModalOpen(false);
+
+      onAddNotification('✅ Venta congelada y guardada en Ventas en Espera.', 'success');
+    } catch (err) {
+      console.error('Error al congelar venta en daily_drafts:', err);
+      onAddNotification('Error al congelar la venta en la base de datos.', 'warning');
+    }
+  };
+
+  const handleResumeDraft = async (draft: any) => {
+    if (!draft || !draft.id) return;
+
+    if (cart.length > 0) {
+      const confirmReplace = window.confirm(
+        '⚠️ El carrito actual contiene productos.\n\n¿Desea descartar el carrito actual y restaurar esta venta en espera?'
+      );
+      if (!confirmReplace) {
+        return;
+      }
+    }
+
+    try {
+      // 1. Obtener la venta en espera del servidor SIN borrarla todavía
+      const result = await resumeHeldSaleApi(draft.id);
+      const resumedDraft = result?.draft || draft;
+
+      // 2. Mapear items y contexto completo del cliente/proveedor
+      const restoredCart = (resumedDraft.items || []).map((it: any) => ({
+        ...it,
+        quantityKg: Number(it.quantityKg ?? it.quantity) || 1,
+        pricePerKg: Number(it.pricePerKg ?? it.price ?? it.costPrice) || 0,
+        subtotal: Number(it.subtotal) || 0
+      }));
+
+      const isSupplier = resumedDraft.customerType === 'supplier';
+      const restoredContext = {
+        customerType: (isSupplier ? 'supplier' : 'client') as 'client' | 'supplier',
+        selectedClientId: !isSupplier ? (resumedDraft.selectedClientId || resumedDraft.clientId || '') : '',
+        selectedSupplierId: isSupplier ? (resumedDraft.selectedSupplierId || resumedDraft.supplierId || '') : '',
+        clientSearchText: !isSupplier ? (resumedDraft.clientSearchText || resumedDraft.customerName || '') : '',
+        supplierSearchText: isSupplier ? (resumedDraft.supplierSearchText || resumedDraft.customerName || '') : '',
+        paymentMethod: resumedDraft.paymentMethod || 'Efectivo $',
+        addedPayments: Array.isArray(resumedDraft.addedPayments) ? resumedDraft.addedPayments : [],
+        isCreditSale: Boolean(resumedDraft.isCreditSale)
+      };
+
+      // 3. Persistencia local síncrona en localStorage (Regla: ABORTAR si falla cualquier escritura)
+      try {
+        localStorage.setItem('pos_cart', JSON.stringify(restoredCart));
+        localStorage.setItem('pos_customer_context', JSON.stringify(restoredContext));
+      } catch (storageErr) {
+        console.error('[POS] Error crítico de almacenamiento local al reanudar venta:', storageErr);
+        onAddNotification('⚠️ Error al persistir el carrito localmente. La venta permanece en espera intacta.', 'warning');
+        return; // ABORTAR: NO borrar draft del backend, NO modificar React state
+      }
+
+      // 4. Actualizar estado reactivo en memoria SOLO tras almacenamiento local exitoso
+      setCart(restoredCart);
+      setCustomerType(restoredContext.customerType);
+      setSelectedClientId(restoredContext.selectedClientId);
+      setClientSearchText(restoredContext.clientSearchText);
+      setSelectedSupplierId(restoredContext.selectedSupplierId);
+      setSupplierSearchText(restoredContext.supplierSearchText);
+      setAddedPayments(restoredContext.addedPayments);
+      setPaymentMethod(restoredContext.paymentMethod);
+      setIsCreditSale(restoredContext.isCreditSale);
+
+      // 5. Eliminar el borrador en servidor SOLO después de haber asegurado el carrito
+      try {
+        await consumeHeldSaleApi(draft.id);
+        setIsHeldInvoicesModalOpen(false);
+        onAddNotification(`✅ Venta de "${resumedDraft.customerName || 'Cliente'}" reanudada en el carrito.`, 'success');
+      } catch (consumeErr) {
+        console.warn('[POS] No se pudo quitar la venta de daily_drafts en servidor tras restaurar carrito:', consumeErr);
+        setIsHeldInvoicesModalOpen(false);
+        onAddNotification('⚠️ La venta fue recuperada en el carrito, pero no se pudo quitar de Ventas en Espera. Revise conexión antes de continuar.', 'warning');
+      }
+    } catch (err: any) {
+      console.error('Error al reanudar venta congelada:', err);
+      onAddNotification(err.message || 'Error al reanudar la venta congelada.', 'warning');
+    }
+  };
+
+  const handleDeleteDraft = async (draftId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!window.confirm('¿Está seguro de descartar definitivamente esta venta en espera?')) {
+      return;
+    }
+    try {
+      await discardHeldSaleApi(draftId);
+      onAddNotification('Venta en espera descartada.', 'info');
+    } catch (err: any) {
+      console.error('Error al descartar venta en espera:', err);
+      onAddNotification(err.message || 'Error al eliminar la venta en espera.', 'warning');
+    }
+  };
 
   const handleAddPayment = async () => {
     let rawAmount = parseSafeDecimal(paidAmountInput);
@@ -880,6 +1120,15 @@ export default function CheesePOSView({
   // Helper to extract amount from sales  // FILTER VOIDED SALES
   const validSalesHistory = (salesHistory || []).filter(s => !s.isVoided);
 
+  // Historial completo de ventas (abiertas y cerradas, excluyendo anuladas)
+  const allSalesHistory = React.useMemo(() => {
+    return [...validSalesHistory].sort((a: any, b: any) => {
+      const tA = Number(a.createdAt) || (a.date ? new Date(a.date).getTime() : 0);
+      const tB = Number(b.createdAt) || (b.date ? new Date(b.date).getTime() : 0);
+      return tB - tA;
+    });
+  }, [validSalesHistory]);
+
   const parseTime = React.useCallback((obj: any) => {
     if (!obj) return 0;
     if (obj.timestamp?.seconds) return obj.timestamp.seconds * 1000;
@@ -887,40 +1136,16 @@ export default function CheesePOSView({
       const time = new Date(obj.timestamp).getTime();
       if (!isNaN(time)) return time;
     }
+    if (obj.createdAt) {
+      const time = Number(obj.createdAt);
+      if (!isNaN(time) && time > 0) return time;
+    }
     if (obj.date) {
       const time = new Date(obj.date).getTime();
       if (!isNaN(time)) return time;
     }
-    if (obj.createdAt) {
-      const time = new Date(obj.createdAt).getTime();
-      if (!isNaN(time)) return time;
-    }
     return 0;
   }, []);
-
-  React.useEffect(() => {
-    // Rutina de Auto-Saneamiento / Migración al Iniciar
-    const runMigration = async () => {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0); // Inicio del día local
-      const startOfTodayMs = today.getTime();
-
-      const orphans = allTransactions.filter(t => !t.isClosed && parseTime(t) < startOfTodayMs);
-
-      if (orphans.length > 0) {
-        console.log(`Migrando ${orphans.length} transacciones huérfanas a cerradas.`);
-        await Promise.all(
-          orphans.map(t =>
-            updateLocalDoc('transactions', t.id, { isClosed: true, closureId: 'CLO-LEGACY-MIGRATED' }).catch(console.error)
-          )
-        );
-      }
-    };
-
-    if (allTransactions.length > 0) {
-      runMigration();
-    }
-  }, [allTransactions, parseTime]);
 
   const currentShiftDetails = React.useMemo(() => {
     const currentShiftTransactions = allTransactions.filter(t => !t.isClosed && !t.isVoided);
@@ -934,8 +1159,10 @@ export default function CheesePOSView({
   const closingDetails = React.useMemo(() => {
     if (!selectedAuditClosing || selectedAuditClosing.purged) return { sales: [], incomes: [], expenses: [] };
 
-
     const closingTime = parseTime(selectedAuditClosing);
+    const closingTxIds = Array.isArray(selectedAuditClosing.transactionIds) && selectedAuditClosing.transactionIds.length > 0
+      ? new Set(selectedAuditClosing.transactionIds.map(String))
+      : null;
 
     const previousClosing = closingsHistory
       .filter(c => {
@@ -948,31 +1175,26 @@ export default function CheesePOSView({
         return tB - tA;
       })[0];
 
-    const startTime = previousClosing
-      ? parseTime(previousClosing)
-      : 0;
-
-    const closingDateObj = closingTime && !isNaN(closingTime) ? new Date(closingTime) : null;
-    const closingDateStr = closingDateObj ? `${closingDateObj.getFullYear()}-${String(closingDateObj.getMonth() + 1).padStart(2, '0')}-${String(closingDateObj.getDate()).padStart(2, '0')}` : '';
+    const startTime = previousClosing ? parseTime(previousClosing) : 0;
 
     const txsInShift = allTransactions.filter(t => {
+      if (closingTxIds && closingTxIds.has(String(t.id))) return true;
       if (t.closureId === selectedAuditClosing.id) return true;
-      const tTime = parseTime(t);
-      if (tTime >= startTime && tTime <= closingTime) return true;
-      if (!tTime || isNaN(tTime) || !closingDateStr) return false;
-      const tDate = new Date(tTime);
-      const tDateStr = `${tDate.getFullYear()}-${String(tDate.getMonth() + 1).padStart(2, '0')}-${String(tDate.getDate()).padStart(2, '0')}`;
-      return tDateStr === closingDateStr && tTime <= closingTime;
+      if (!closingTxIds) {
+        const tTime = parseTime(t);
+        if (tTime >= startTime && tTime <= closingTime) return true;
+      }
+      return false;
     });
 
     const salesInShift = validSalesHistory.filter(s => {
-       if (s.closureId === selectedAuditClosing.id) return true;
-       const sTime = parseTime(s);
-       if (sTime >= startTime && sTime <= closingTime) return true;
-       if (!sTime || isNaN(sTime) || !closingDateStr) return false;
-       const sDate = new Date(sTime);
-       const sDateStr = `${sDate.getFullYear()}-${String(sDate.getMonth() + 1).padStart(2, '0')}-${String(sDate.getDate()).padStart(2, '0')}`;
-       return sDateStr === closingDateStr && sTime <= closingTime;
+      if (closingTxIds && closingTxIds.has(String(s.id))) return true;
+      if (s.closureId === selectedAuditClosing.id) return true;
+      if (!closingTxIds) {
+        const sTime = parseTime(s);
+        if (sTime >= startTime && sTime <= closingTime) return true;
+      }
+      return false;
     });
 
     const incomes = txsInShift.filter(t => (t.category === 'credito' || t.category === 'ingresos_cobranza') && t.isIncome === true);
@@ -1127,76 +1349,14 @@ export default function CheesePOSView({
 
     setIsClosingDrawer(true);
     try {
-      const now = new Date();
-      // YYYYMMDDHHmmss based on local time, safer than toISOString
-      const localTimestampStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-      const deterministicId = `CLO-${localTimestampStr}`;
-
-      const report = {
-        id: deterministicId,
-        date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
-        timestamp: new Date().toISOString(),
+      const res = await closeShiftApi({
         startingCashUsd,
         startingCashBs,
-        salesCashUsd,
-        incomeCashUsd,
-        totalCashUsd,
-        salesCashBs,
-        incomeCashBs,
-        totalCashBs,
-        totalCard,
-        totalMobile,
-        totalBiopago,
-        totalCreditSales,
-        expensesCashUsd,
-        expensesCashBs,
-        expectedUsd,
-        expectedBs,
         actualCashUsd,
-        actualCashBs,
-        diffUsd,
-        diffBs,
-        initialCashUsd: startingCashUsd,
-        initialCashBs: startingCashBs,
-        countedCashUsd: actualCashUsd,
-        countedCashBs: actualCashBs,
-        expectedCashUsd: expectedUsd,
-        expectedCashBs: expectedBs,
-        differenceUsd: diffUsd,
-        differenceBs: diffBs,
-        status: (diffUsd === 0 && diffBs === 0) ? 'Balance Perfecto' : (diffUsd > 0 || diffBs > 0) ? 'Sobrante' : 'Faltante',
-        bcvRateAtClose: exchangeRate || 1,
-        };
+        actualCashBs
+      });
 
-      await addLocalDoc('cashClosings', report);
-
-      // CIERRE FUERTE: Marcar todas las transacciones del turno
-      await Promise.all(
-        currentShiftTransactions.map(tx =>
-          updateLocalDoc('transactions', tx.id, { isClosed: true, closureId: deterministicId })
-        )
-      );
-
-      // Actualizar Bóveda Central (única fuente de verdad) en Firebase / Local API
-      // Nota: Como las ventas en vivo ya suman los cobros de inmediato, el cierre de turno
-      // consolida las diferencias del arqueo físico contado (diffUsd, diffBs) para que la bóveda cuadre con la realidad de caja.
-      const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
-      const updatedVault = {
-        usd: Number((currentVault.usd + diffUsd).toFixed(2)),
-        bs: Number((currentVault.bs + diffBs).toFixed(2)),
-        bankBs: Number(currentVault.bankBs.toFixed(2)),
-        bankUsd: Number(currentVault.bankUsd.toFixed(2))
-      };
-
-      if (onUpdateSettings) {
-        onUpdateSettings({ centralVaultBalance: updatedVault });
-      }
-      if (settings) {
-        await updateLocalDoc('settings', 'general', {
-          centralVaultBalance: updatedVault
-        });
-      }
-
+      const report = res.closing;
       setIsClosed(true);
       setClosingReport(report);
 
@@ -1206,10 +1366,10 @@ export default function CheesePOSView({
       setStartingCashUsd(0);
       setStartingCashBs(0);
 
-      onAddNotification('Cierre de caja registrado y Tesorería actualizada.', 'success');
-    } catch (error) {
+      onAddNotification('Cierre de caja registrado exitosamente y Bóveda actualizada.', 'success');
+    } catch (error: any) {
       console.error('Error al guardar cierre de caja:', error);
-      onAddNotification('Error al guardar el cierre en la nube. Reintente.', 'warning');
+      onAddNotification(`Error al guardar el cierre: ${error?.message || 'Error en servidor'}`, 'warning');
     } finally {
       setIsClosingDrawer(false);
     }
@@ -1351,6 +1511,25 @@ export default function CheesePOSView({
               </button>
             );
           })()}
+
+          {/* Ventas en Espera / Borradores */}
+          <button
+            type="button"
+            onClick={() => setIsHeldInvoicesModalOpen(true)}
+            className={`flex items-center gap-2 px-4 py-2 font-mono text-xs font-bold uppercase rounded transition-colors cursor-pointer ${
+              heldInvoices.length > 0
+                ? 'bg-sky-500/15 text-sky-400 border border-sky-500/40 hover:bg-sky-500/25 shadow-[0_0_12px_rgba(56,189,248,0.15)]'
+                : 'bg-editorial-bg text-editorial-text-muted border border-editorial-border hover:text-editorial-text-primary'
+            }`}
+          >
+            <Snowflake className={`w-4 h-4 ${heldInvoices.length > 0 ? 'text-sky-400 animate-pulse' : ''}`} />
+            <span>Ventas en Espera</span>
+            {heldInvoices.length > 0 && (
+              <span className="bg-sky-500 text-black px-1.5 py-0.2 rounded font-extrabold text-[10px]">
+                {heldInvoices.length}
+              </span>
+            )}
+          </button>
         </div>
       </div>
 
@@ -1822,21 +2001,33 @@ export default function CheesePOSView({
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (customerType === 'supplier' && !selectedSupplierId) {
-                      onAddNotification('Debe seleccionar un productor para ventas con Libreta.', 'warning');
-                      return;
-                    }
-                    setIsPaymentModalOpen(true);
-                  }}
-                  disabled={cart.length === 0 || (customerType === 'supplier' && !selectedSupplierId)}
-                  className="w-full h-12 bg-amber-500 text-white font-serif font-bold text-md tracking-tight flex items-center justify-center gap-2 hover:brightness-110 active:scale-98 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                >
-                  <ShoppingCart className="w-4 h-4" />
-                  <span>Pasar a modo cobro (F4)</span>
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleHoldInvoice}
+                    disabled={cart.length === 0}
+                    className="h-12 px-4 bg-editorial-bg border border-sky-500/30 text-sky-400 hover:bg-sky-500/10 font-serif font-bold text-xs tracking-tight flex items-center justify-center gap-1.5 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer rounded"
+                    title="Pausar venta y guardarla en Ventas en Espera"
+                  >
+                    <Snowflake className="w-4 h-4" />
+                    <span className="hidden sm:inline">Poner en Espera</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (customerType === 'supplier' && !selectedSupplierId) {
+                        onAddNotification('Debe seleccionar un productor para ventas con Libreta.', 'warning');
+                        return;
+                      }
+                      setIsPaymentModalOpen(true);
+                    }}
+                    disabled={cart.length === 0 || (customerType === 'supplier' && !selectedSupplierId)}
+                    className="flex-1 h-12 bg-amber-500 text-white font-serif font-bold text-md tracking-tight flex items-center justify-center gap-2 hover:brightness-110 active:scale-98 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer rounded"
+                  >
+                    <ShoppingCart className="w-4 h-4" />
+                    <span>Pasar a modo cobro (F4)</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2362,20 +2553,11 @@ export default function CheesePOSView({
                    <form ref={formRef} onSubmit={handleProcessSaleSubmit} className="pt-6 mt-6 border-t border-editorial-border/60 flex items-center justify-end gap-4">
                      <button
                        type="button"
-                       onClick={() => {
-                         setIsPaymentModalOpen(false);
-                         setCart([]);
-                         setSelectedClientId('');
-                         setSelectedSupplierId('');
-                         setClientSearchText('');
-                         setSupplierSearchText('');
-                         setAddedPayments([]);
-                         setIsCreditSale(false);
-                         onAddNotification('Factura congelada y carrito limpiado exitosamente.', 'info');
-                       }}
-                       className="h-12 px-6 bg-editorial-bg border border-editorial-border text-editorial-text-primary font-serif font-bold text-[11px] tracking-widest uppercase hover:bg-editorial-card transition-all cursor-pointer rounded"
+                       onClick={handleHoldInvoice}
+                       className="h-12 px-6 bg-editorial-bg border border-sky-500/30 text-sky-400 hover:bg-sky-500/10 font-serif font-bold text-[11px] tracking-widest uppercase transition-all cursor-pointer rounded flex items-center gap-2"
                      >
-                       Congelar Factura
+                       <Snowflake className="w-4 h-4" />
+                       <span>Congelar Factura</span>
                      </button>
 
                      <button
@@ -2414,14 +2596,14 @@ export default function CheesePOSView({
         <div className="bg-editorial-card border border-editorial-border rounded p-6">
           <div className="flex justify-between items-center mb-6">
             <h3 className="font-serif text-2xl font-bold text-editorial-text-primary tracking-tight">
-              Historial Crítico de Ventas
+              Historial de Ventas
             </h3>
             <div className="flex items-center gap-3">
               <span className="text-[10px] font-mono bg-editorial-bg border border-editorial-border px-3 py-1 rounded">
-                VENTAS HOY: {dailySalesCount}
+                VENTAS EN HISTORIAL: {allSalesHistory.length}
               </span>
               <span className="text-[10px] font-mono bg-amber-500/10 text-amber-500 border border-amber-500/30 px-3 py-1 rounded font-bold">
-                FACTURADO HOY: ${dailyRevenue.toFixed(2)}
+                FACTURADO TOTAL: ${allSalesHistory.reduce((sum, s) => sum + (Number(s.amount) || Number(s.total) || 0), 0).toFixed(2)}
               </span>
             </div>
           </div>
@@ -2435,19 +2617,20 @@ export default function CheesePOSView({
                   <th className="py-3 px-4">Cliente</th>
                   <th className="py-3 px-4">Artículos</th>
                   <th className="py-3 px-4">Método</th>
+                  <th className="py-3 px-4">Estado</th>
                   <th className="py-3 px-4 text-right">Monto Total</th>
                   <th className="py-3 px-4 text-center">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-editorial-border/60 font-sans">
-                {currentShiftSales.length === 0 ? (
+                {allSalesHistory.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-8 text-center text-editorial-text-muted">
-                      No se han procesado ventas en esta sesión.
+                    <td colSpan={8} className="py-8 text-center text-editorial-text-muted">
+                      No se han procesado ventas en el sistema.
                     </td>
                   </tr>
                 ) : (
-                  currentShiftSales.map((s) => (
+                  allSalesHistory.map((s) => (
                     <tr key={s.id} className="hover:bg-editorial-bg/40 transition-all">
                       <td className="py-3.5 px-4 font-mono font-bold text-editorial-text-primary">{s.invoiceNumber || s.id}</td>
                       <td className="py-3.5 px-4 text-editorial-text-muted">{s.date}</td>
@@ -2481,6 +2664,17 @@ export default function CheesePOSView({
                             </span>
                           );
                         })()}
+                      </td>
+                      <td className="py-3.5 px-4">
+                        {s.isClosed ? (
+                          <span className="px-2 py-0.5 rounded text-[9px] font-mono border border-neutral-700 bg-neutral-800 text-neutral-400" title={`Cierre: ${s.closureId || 'Legacy'}`}>
+                            Cerrado
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[9px] font-mono border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 font-bold">
+                            Turno Abierto
+                          </span>
+                        )}
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono font-bold text-amber-500">${(s.total || s.amount || 0).toFixed(2)}</td>
                       <td className="py-3.5 px-4 text-center">
@@ -2823,7 +3017,7 @@ export default function CheesePOSView({
                 <div className="space-y-1.5">
                   <div className="flex justify-between">
                     <span className="text-editorial-text-muted">Fecha y Hora:</span>
-                    <span className="text-editorial-text-primary font-bold">{new Date(closingsHistory[0].timestamp).toLocaleString('es-ES')}</span>
+                    <span className="text-editorial-text-primary font-bold">{new Date(parseClosingTimestamp(closingsHistory[0].timestamp)).toLocaleString('es-ES')}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-editorial-text-muted">Reporte:</span>
@@ -2885,12 +3079,12 @@ export default function CheesePOSView({
                     <input
                       type="checkbox"
                       checked={(() => {
-                        const filtered = closingsHistory.filter(c => !closingSearchDate || (new Date(c.timestamp?.seconds ? c.timestamp.seconds * 1000 : c.timestamp).toISOString().split('T')[0] === closingSearchDate));
+                        const filtered = closingsHistory.filter(c => !closingSearchDate || (new Date(parseClosingTimestamp(c.timestamp)).toISOString().split('T')[0] === closingSearchDate));
                         const pageData = filtered.slice((closingPage - 1) * 15, closingPage * 15);
                         return pageData.length > 0 && pageData.every(c => selectedClosings.includes(c.id));
                       })()}
                       onChange={() => {
-                        const filtered = closingsHistory.filter(c => !closingSearchDate || (new Date(c.timestamp?.seconds ? c.timestamp.seconds * 1000 : c.timestamp).toISOString().split('T')[0] === closingSearchDate));
+                        const filtered = closingsHistory.filter(c => !closingSearchDate || (new Date(parseClosingTimestamp(c.timestamp)).toISOString().split('T')[0] === closingSearchDate));
                         const pageData = filtered.slice((closingPage - 1) * 15, closingPage * 15);
                         const isAllSelected = pageData.length > 0 && pageData.every(c => selectedClosings.includes(c.id));
                         if (isAllSelected) {
@@ -2904,6 +3098,8 @@ export default function CheesePOSView({
                     />
                   </th>
                   <th className="py-3 px-4">Fecha / Hora</th>
+                  <th className="py-3 px-4">Tipo</th>
+                  <th className="py-3 px-4">Cajero / Cierre</th>
                   <th className="py-3 px-4">Total Ventas</th>
                   <th className="py-3 px-4">Efectivo USD</th>
                   <th className="py-3 px-4">Efectivo BS</th>
@@ -2915,19 +3111,22 @@ export default function CheesePOSView({
               </thead>
               <tbody className="divide-y divide-editorial-border/60 font-sans">
                 {(() => {
-                  const filtered = closingsHistory.filter(c => !closingSearchDate || (new Date(c.timestamp?.seconds ? c.timestamp.seconds * 1000 : c.timestamp).toISOString().split('T')[0] === closingSearchDate));
+                  const filtered = closingsHistory.filter(c => !closingSearchDate || (new Date(parseClosingTimestamp(c.timestamp)).toISOString().split('T')[0] === closingSearchDate));
                   const pageData = filtered.slice((closingPage - 1) * 15, closingPage * 15);
                   if (pageData.length === 0) {
                     return (
                       <tr>
-                        <td colSpan={9} className="py-8 text-center text-editorial-text-muted">
+                        <td colSpan={11} className="py-8 text-center text-editorial-text-muted">
                           No hay cierres encontrados.
                         </td>
                       </tr>
                     );
                   }
                   return pageData.map((c) => {
-                    const totalVentas = (c.salesCashUsd || 0) + ((c.salesCashBs || 0) / (c.bcvRateAtClose || exchangeRate || 1)) + (c.totalCard || 0) + (c.totalMobile || 0) + (c.totalBiopago || 0) + (c.totalCreditSales || 0);
+                    const totalVentas = c.totalSalesAmount !== undefined
+                      ? Number(c.totalSalesAmount)
+                      : ((c.salesCashUsd || 0) + ((c.salesCashBs || 0) / (c.bcvRateAtClose || exchangeRate || 1)) + (c.totalCard || 0) + (c.totalMobile || 0) + (c.totalBiopago || 0) + (c.totalCreditSales || 0));
+                    const isContingency = c.type === 'CONTINGENCIA' || c.type === 'AUTOMATICO' || String(c.closedBy || '').includes('SYSTEM');
                     return (
                       <tr key={c.id} className="hover:bg-editorial-bg/40 transition-all">
                         <td className="py-3.5 px-4 text-center">
@@ -2942,8 +3141,22 @@ export default function CheesePOSView({
                           />
                         </td>
                         <td className="py-3.5 px-4 font-mono">
-                          {new Date(c.timestamp?.seconds ? c.timestamp.seconds * 1000 : c.timestamp).toLocaleString('es-ES')}
+                          {c.date ? `${c.date} • ` : ''}{new Date(parseClosingTimestamp(c.timestamp)).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
                           {c.purged && <span className="ml-2 px-1.5 py-0.5 rounded text-[8px] bg-neutral-700 text-neutral-300 border border-neutral-600 uppercase">Purgado</span>}
+                        </td>
+                        <td className="py-3.5 px-4 font-mono">
+                          {isContingency ? (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-950/70 text-purple-400 border border-purple-800/50 uppercase" title="Cierre de contingencia del sistema - Sin arqueo físico">
+                              Contingencia
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-950/70 text-amber-400 border border-amber-800/50 uppercase" title="Cierre manual con arqueo físico de caja">
+                              Manual
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-4 font-medium text-editorial-text-primary text-[11px] truncate max-w-[120px]" title={c.closedBy || 'Admin'}>
+                          {c.closedBy || 'Admin'}
                         </td>
                         <td className="py-3.5 px-4 text-emerald-400 font-bold font-mono">${totalVentas.toFixed(2)}</td>
                         <td className="py-3.5 px-4 font-mono">${(c.salesCashUsd || 0).toFixed(2)}</td>
@@ -3891,6 +4104,148 @@ export default function CheesePOSView({
               >
                 Cancelar
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Held Invoices / Ventas en Espera Modal */}
+      {isHeldInvoicesModalOpen && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-editorial-bg border border-editorial-border rounded-xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl animate-scale-in relative overflow-hidden">
+            <div className="p-6 border-b border-editorial-border flex justify-between items-center bg-editorial-card">
+              <div>
+                <h2 className="text-xl font-serif font-bold text-white flex items-center gap-3 tracking-tight">
+                  <Snowflake className="w-6 h-6 text-sky-400" />
+                  Ventas en Espera (Pausadas)
+                </h2>
+                <p className="text-xs text-editorial-text-muted font-mono mt-1">
+                  Ventas pausadas guardadas en el sistema para reanudar el cobro
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 px-3 py-1 rounded text-xs font-mono font-bold">
+                  {heldInvoices.length} {heldInvoices.length === 1 ? 'venta' : 'ventas'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsHeldInvoicesModalOpen(false)}
+                  className="w-10 h-10 rounded hover:bg-editorial-border flex items-center justify-center transition-colors text-editorial-text-muted hover:text-white cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-4 flex-1">
+              {heldInvoices.length === 0 ? (
+                <div className="text-center py-16 text-editorial-text-muted space-y-3">
+                  <div className="w-14 h-14 rounded-full bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400 mx-auto">
+                    <Snowflake className="w-7 h-7 opacity-70" />
+                  </div>
+                  <p className="font-serif text-lg font-bold text-editorial-text-primary">
+                    No hay ventas en espera
+                  </p>
+                  <p className="text-xs font-mono text-editorial-text-muted max-w-sm mx-auto">
+                    Para pausar una venta activa, use el botón &quot;Poner en Espera&quot; o &quot;Congelar Factura&quot; en el terminal de caja.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {heldInvoices.map((draft) => {
+                    const totalQty = (draft.items || []).reduce((acc: number, it: any) => acc + (Number(it.quantityKg ?? it.quantity) || 1), 0);
+                    const formattedDate = draft.timestamp
+                      ? new Date(draft.timestamp).toLocaleString('es-VE', { dateStyle: 'short', timeStyle: 'short' })
+                      : draft.date || 'Fecha no registrada';
+
+                    return (
+                      <div
+                        key={draft.id}
+                        className="bg-editorial-card border border-editorial-border hover:border-sky-500/40 rounded-xl p-4 flex flex-col justify-between space-y-3 transition-colors"
+                      >
+                        <div className="space-y-2.5">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <span className="bg-sky-500/20 text-sky-300 text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase tracking-wider">
+                                  ❄️ EN ESPERA
+                                </span>
+                                {draft.customerType === 'supplier' && (
+                                  <span className="bg-amber-500/20 text-amber-300 text-[10px] font-mono px-2 py-0.5 rounded font-bold uppercase">
+                                    Libreta
+                                  </span>
+                                )}
+                              </div>
+                              <h4 className="text-sm font-bold text-white uppercase tracking-wider truncate max-w-[200px]">
+                                {draft.customerName || 'Cliente Mostrador'}
+                              </h4>
+                            </div>
+                            <span className="text-[11px] font-mono text-editorial-text-muted">
+                              {formattedDate}
+                            </span>
+                          </div>
+
+                          {/* Items List Preview */}
+                          <div className="bg-editorial-bg/70 border border-editorial-border/40 rounded p-2 space-y-1 max-h-28 overflow-y-auto">
+                            {(draft.items || []).map((it: any, idx: number) => (
+                              <div key={idx} className="flex justify-between text-xs font-mono">
+                                <span className="truncate max-w-[170px] text-editorial-text-muted">
+                                  {it.quantityKg ?? it.quantity} {getUnitLabel(it)} {it.name}
+                                </span>
+                                <span className="text-editorial-text-primary font-bold ml-2">
+                                  ${(Number(it.subtotal) || 0).toFixed(2)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+
+                          {draft.note && (
+                            <p className="text-[11px] font-mono text-editorial-text-muted italic">
+                              📝 {draft.note}
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Totals & Action Buttons */}
+                        <div className="pt-3 border-t border-editorial-border/60 space-y-3">
+                          <div className="flex justify-between items-baseline">
+                            <span className="text-xs font-mono text-editorial-text-muted uppercase">
+                              {(draft.items || []).length} prod. ({totalQty.toFixed(1)} uds)
+                            </span>
+                            <div className="text-right">
+                              <span className="text-base font-serif font-bold text-amber-500">
+                                ${(Number(draft.totalAmount ?? draft.total) || 0).toFixed(2)} USD
+                              </span>
+                              <span className="text-[10px] font-mono text-editorial-text-muted block">
+                                Bs {((Number(draft.totalAmount ?? draft.total) || 0) * (settings?.exchangeRate || exchangeRate || 1)).toFixed(2)}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => handleResumeDraft(draft)}
+                              className="flex-1 h-9 bg-sky-500/15 hover:bg-sky-500 hover:text-black text-sky-300 font-mono font-bold text-xs uppercase tracking-wider rounded flex items-center justify-center gap-1.5 transition-colors border border-sky-500/30 cursor-pointer"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                              <span>Reanudar Venta</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleDeleteDraft(draft.id, e)}
+                              className="h-9 px-3 bg-rose-500/10 hover:bg-rose-500 text-rose-400 hover:text-white border border-rose-500/30 rounded transition-colors cursor-pointer flex items-center justify-center"
+                              title="Descartar venta en espera"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -5421,6 +5421,16 @@ function emitCollectionDeltaScoped(delta, previousDoc = null) {
   if (ADMIN_ONLY_COLLECTIONS.has(collection)) {
     // Colecciones estrictamente administrativas: ÚNICAMENTE room:crm:admin
     io.to('room:crm:admin').emit('collection_delta', delta);
+  } else if (collection === 'daily_drafts') {
+    // AISLAMIENTO SERVER-SIDE DE daily_drafts:
+    // Eventos de ventas en espera POS se emiten a room:crm:staff (cajeros y administradores).
+    // Eventos de borradores contables (compras, notas de voz, fotos) se emiten ÚNICAMENTE a room:crm:admin.
+    const isPos = isPosHeldSale(doc) || isPosHeldSale(previousDoc);
+    if (isPos) {
+      io.to('room:crm:staff').emit('collection_delta', delta);
+    } else {
+      io.to('room:crm:admin').emit('collection_delta', delta);
+    }
   } else {
     // Colecciones operativas generales del CRM: room:crm:staff (incluye a administradores y cajeros)
     io.to('room:crm:staff').emit('collection_delta', delta);
@@ -5536,6 +5546,10 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
     if (!Array.isArray(saleItems) || saleItems.length === 0) {
       return res.status(400).json({ error: 'La venta debe contener al menos un producto (saleItems).' });
     }
+
+    // Frontera de Nuevo Día: Si existen ventas finalizadas de días anteriores sin cierre,
+    // procesar cierre de contingencia de esos días antes de aceptar/procesar la nueva venta.
+    await performContingencyCloseForOrphans('NEW_DAY_FRONTIER');
 
     const saleTotal = Number(saleTotalAmount !== undefined ? saleTotalAmount : (saleItems || []).reduce((sum, it) => sum + (it.subtotal || 0), 0));
     const amountPaid = Number(paidAmount !== undefined ? paidAmount : saleTotal);
@@ -5883,6 +5897,8 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
         isIncome: true,
         status: 'Completado',
         paymentMethod: finalPaymentMethod,
+        isClosed: false,
+        isVoided: false,
         items: saleItems || [],
         addedPayments: addedPayments || [],
         changeAmount: changeAmount || 0,
@@ -5936,6 +5952,360 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
   }
 });
 
+// Configuración de Zona Horaria de Negocio (Sabanota, Venezuela: UTC-4)
+const BUSINESS_TIMEZONE = process.env.BUSINESS_TIMEZONE || 'America/Caracas';
+
+function getCaracasDateParts(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: BUSINESS_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  return formatter.format(d); // YYYY-MM-DD
+}
+
+function getCaracasStartOfDayMs(dateStr) {
+  return new Date(`${dateStr}T00:00:00.000-04:00`).getTime();
+}
+
+function parseClosingTimestamp(value) {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'object' && value.seconds) return Number(value.seconds) * 1000;
+  const num = Number(value);
+  if (!isNaN(num) && num > 0) return num;
+  const parsed = Date.parse(String(value));
+  return !isNaN(parsed) ? parsed : 0;
+}
+
+// Función central autoritativa de Cierre de Caja / Turno
+async function executeShiftClosing({
+  type = 'MANUAL',
+  closedBy = 'admin',
+  startingCashUsd = 0,
+  startingCashBs = 0,
+  actualCashUsd = null,
+  actualCashBs = null,
+  isAuto = false,
+  targetDateStr = null
+} = {}) {
+  return await withTransaction(async (tx) => {
+    const txsData = tx.read('transactions');
+    const closingsData = tx.read('cashClosings');
+    const settingsData = tx.read('settings');
+
+    const now = new Date();
+    const todayCaracas = getCaracasDateParts(now);
+    const startOfTodayMs = getCaracasStartOfDayMs(todayCaracas);
+    const endOfTodayMs = startOfTodayMs + 24 * 60 * 60 * 1000 - 1;
+
+    // Identificar transacciones no cerradas
+    let unclosedTxs = [];
+    if (isAuto && targetDateStr) {
+      const targetStartMs = getCaracasStartOfDayMs(targetDateStr);
+      const targetEndMs = targetStartMs + 24 * 60 * 60 * 1000 - 1;
+      unclosedTxs = txsData.filter(t => {
+        if (t.isClosed || t.isVoided) return false;
+        const tTime = Number(t.createdAt) || (t.date ? new Date(t.date).getTime() : 0);
+        return tTime >= targetStartMs && tTime <= targetEndMs;
+      });
+    } else if (isAuto) {
+      // Auto-close para huérfanas de días anteriores a hoy
+      unclosedTxs = txsData.filter(t => {
+        if (t.isClosed || t.isVoided) return false;
+        const tTime = Number(t.createdAt) || (t.date ? new Date(t.date).getTime() : 0);
+        return tTime > 0 && tTime < startOfTodayMs;
+      });
+    } else {
+      // Cierre manual: ÚNICAMENTE transacciones no cerradas del día comercial actual (America/Caracas)
+      unclosedTxs = txsData.filter(t => {
+        if (t.isClosed || t.isVoided) return false;
+        const tTime = Number(t.createdAt) || (t.date ? new Date(t.date).getTime() : 0);
+        return tTime >= startOfTodayMs && tTime <= endOfTodayMs;
+      });
+    }
+
+    if (unclosedTxs.length === 0) {
+      return { closing: null, count: 0, reason: 'NO_UNCLOSED_TRANSACTIONS' };
+    }
+
+    // ID determinista y Timestamp numérico Unix milliseconds
+    const numericTimestamp = targetDateStr ? new Date(`${targetDateStr}T23:59:59.000-04:00`).getTime() : now.getTime();
+    const dToFormat = targetDateStr ? new Date(`${targetDateStr}T12:00:00.000-04:00`) : now;
+    const dateFormatted = new Intl.DateTimeFormat('es-ES', {
+      timeZone: BUSINESS_TIMEZONE,
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    }).format(dToFormat);
+    const deterministicId = `CLO-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
+
+    // Tasa BCV autoritativa del servidor (Settings General)
+    let generalSettingsIndex = settingsData.findIndex(d => String(d.id) === 'general');
+    let generalSettings = generalSettingsIndex !== -1 ? settingsData[generalSettingsIndex] : { id: 'general' };
+    const effectiveRate = Number(generalSettings.exchangeRate || 42.50);
+
+    // Totales desglosados
+    let salesCashUsd = 0;
+    let salesCashBs = 0;
+    let incomeCashUsd = 0;
+    let incomeCashBs = 0;
+    let totalCard = 0;
+    let totalMobile = 0;
+    let totalBiopago = 0;
+    let totalCreditSales = 0;
+    let expensesCashUsd = 0;
+    let expensesCashBs = 0;
+    let totalSalesAmount = 0;
+
+    const transactionIds = unclosedTxs.map(t => t.id);
+
+    unclosedTxs.forEach(t => {
+      const isSale = t.category === 'ventas';
+      const isIncome = t.isIncome === true && (t.category === 'credito' || t.category === 'ingresos_cobranza');
+      const isExpense = t.category === 'gastos';
+      const amt = Number(t.amount || t.total || 0);
+
+      if (isSale) {
+        totalSalesAmount += amt;
+      }
+
+      const payments = (Array.isArray(t.addedPayments) && t.addedPayments.length > 0)
+        ? t.addedPayments
+        : [{ method: t.paymentMethod || 'Efectivo', amount: amt, currency: 'USD' }];
+
+      payments.forEach(p => {
+        const m = String(p.method || '').toLowerCase().trim();
+        const pAmt = Number(p.amount) || 0;
+        const pOrig = Number(p.originalAmount) || 0;
+
+        if (m.includes('kalu') || m.includes('crédito') || m.includes('credito') || m.includes('fiado') || m.includes('libreta')) {
+          if (isSale) totalCreditSales += pAmt;
+        } else if (m.includes('efectivo') && (m.includes('$') || m.includes('usd') || (!m.includes('bs') && !m.includes('ves')))) {
+          if (isSale) salesCashUsd += pAmt;
+          else if (isIncome) incomeCashUsd += pAmt;
+          else if (isExpense) expensesCashUsd += pAmt;
+        } else if (m.includes('efectivo') && (m.includes('bs') || m.includes('ves'))) {
+          const bsVal = pOrig || (pAmt * effectiveRate);
+          if (isSale) salesCashBs += bsVal;
+          else if (isIncome) incomeCashBs += bsVal;
+          else if (isExpense) expensesCashBs += bsVal;
+        } else if (m.includes('movil') || m.includes('móvil')) {
+          const bsVal = pOrig || (pAmt * effectiveRate);
+          totalMobile += bsVal;
+        } else if (m.includes('bio')) {
+          const bsVal = pOrig || (pAmt * effectiveRate);
+          totalBiopago += bsVal;
+        } else if (m.includes('tarjeta') || m.includes('punto') || m.includes('transfer')) {
+          const bsVal = pOrig || (pAmt * effectiveRate);
+          totalCard += bsVal;
+        } else {
+          if (isSale) salesCashUsd += pAmt;
+        }
+      });
+    });
+
+    const expectedUsd = Math.round((Number(startingCashUsd) + salesCashUsd + incomeCashUsd - expensesCashUsd) * 100) / 100;
+    const expectedBs = Math.round((Number(startingCashBs) + salesCashBs + incomeCashBs - expensesCashBs) * 100) / 100;
+
+    const isContingency = type === 'CONTINGENCIA';
+    const countedUsd = isContingency ? null : (actualCashUsd !== null && actualCashUsd !== undefined ? Number(actualCashUsd) : expectedUsd);
+    const countedBs = isContingency ? null : (actualCashBs !== null && actualCashBs !== undefined ? Number(actualCashBs) : expectedBs);
+
+    const diffUsd = isContingency ? null : Math.round((countedUsd - expectedUsd) * 100) / 100;
+    const diffBs = isContingency ? null : Math.round((countedBs - expectedBs) * 100) / 100;
+
+    const status = isContingency
+      ? 'Cierre de contingencia - Sin arqueo físico'
+      : (diffUsd === 0 && diffBs === 0) ? 'Balance Perfecto' : (diffUsd > 0 || diffBs > 0) ? 'Sobrante' : 'Faltante';
+
+    const closingDoc = {
+      id: deterministicId,
+      date: dateFormatted,
+      timestamp: numericTimestamp,
+      type: type, // 'MANUAL' | 'CONTINGENCIA'
+      closedBy: closedBy,
+      status: status,
+      salesCount: unclosedTxs.filter(t => t.category === 'ventas').length,
+      totalSalesAmount: Math.round(totalSalesAmount * 100) / 100,
+      transactionIds: transactionIds,
+      startingCashUsd: isContingency ? 0 : Number(startingCashUsd),
+      startingCashBs: isContingency ? 0 : Number(startingCashBs),
+      salesCashUsd: Math.round(salesCashUsd * 100) / 100,
+      incomeCashUsd: Math.round(incomeCashUsd * 100) / 100,
+      totalCashUsd: Math.round((startingCashUsd + salesCashUsd + incomeCashUsd) * 100) / 100,
+      salesCashBs: Math.round(salesCashBs * 100) / 100,
+      incomeCashBs: Math.round(incomeCashBs * 100) / 100,
+      totalCashBs: Math.round((startingCashBs + salesCashBs + incomeCashBs) * 100) / 100,
+      totalCard: Math.round(totalCard * 100) / 100,
+      totalMobile: Math.round(totalMobile * 100) / 100,
+      totalBiopago: Math.round(totalBiopago * 100) / 100,
+      totalCreditSales: Math.round(totalCreditSales * 100) / 100,
+      expensesCashUsd: Math.round(expensesCashUsd * 100) / 100,
+      expensesCashBs: Math.round(expensesCashBs * 100) / 100,
+      expectedUsd: expectedUsd,
+      expectedBs: expectedBs,
+      actualCashUsd: countedUsd,
+      actualCashBs: countedBs,
+      diffUsd: diffUsd,
+      diffBs: diffBs,
+      differenceUsd: diffUsd,
+      differenceBs: diffBs,
+      countedCashUsd: countedUsd,
+      countedCashBs: countedBs,
+      expectedCashUsd: expectedUsd,
+      expectedCashBs: expectedBs,
+      initialCashUsd: isContingency ? 0 : Number(startingCashUsd),
+      initialCashBs: isContingency ? 0 : Number(startingCashBs),
+      bcvRateAtClose: effectiveRate
+    };
+
+    // 1. Guardar cashClosing
+    closingsData.unshift(closingDoc);
+    tx.write('cashClosings', closingsData, { action: 'add', collection: 'cashClosings', doc: closingDoc });
+
+    // 2. Actualizar transacciones con isClosed: true y closureId
+    const updatedTxsList = [];
+    unclosedTxs.forEach(ut => {
+      const idx = txsData.findIndex(t => String(t.id) === String(ut.id));
+      if (idx !== -1) {
+        txsData[idx] = { ...txsData[idx], isClosed: true, closureId: deterministicId };
+        updatedTxsList.push(txsData[idx]);
+      }
+    });
+    tx.write('transactions', txsData, { action: 'batchUpdate', collection: 'transactions', docs: updatedTxsList });
+
+    // 3. Actualizar Bóveda Central en settings ÚNICAMENTE si es cierre MANUAL con arqueo físico real
+    if (!isContingency && (diffUsd !== 0 || diffBs !== 0)) {
+      const currentVault = generalSettings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+      const updatedVault = {
+        usd: Math.round((currentVault.usd + (diffUsd || 0)) * 100) / 100,
+        bs: Math.round((currentVault.bs + (diffBs || 0)) * 100) / 100,
+        bankBs: Number(currentVault.bankBs || 0),
+        bankUsd: Number(currentVault.bankUsd || 0)
+      };
+      generalSettings.centralVaultBalance = updatedVault;
+      if (generalSettingsIndex !== -1) {
+        settingsData[generalSettingsIndex] = generalSettings;
+      } else {
+        settingsData.push(generalSettings);
+      }
+      tx.write('settings', settingsData, { action: 'update', collection: 'settings', doc: generalSettings });
+    }
+
+    return { closing: closingDoc, count: unclosedTxs.length, reason: 'SUCCESS' };
+  });
+}
+
+async function performContingencyCloseForOrphans(reason = 'STARTUP_CATCHUP') {
+  try {
+    const txsData = readCollection('transactions');
+    const now = new Date();
+    const todayCaracas = getCaracasDateParts(now);
+    const startOfTodayMs = getCaracasStartOfDayMs(todayCaracas);
+
+    // Encontrar todas las transacciones finalizadas huérfanas de días anteriores a hoy en zona horaria comercial
+    const orphanTxs = (txsData || []).filter(t => {
+      if (t.isClosed || t.isVoided) return false;
+      const tTime = Number(t.createdAt) || (t.date ? new Date(t.date).getTime() : 0);
+      return tTime > 0 && tTime < startOfTodayMs;
+    });
+
+    if (orphanTxs.length === 0) {
+      return { count: 0, closings: [], closing: null };
+    }
+
+    // Agrupar por fecha comercial en Caracas (YYYY-MM-DD) para crear un cierre histórico por cada día huérfano
+    const orphanDatesMap = new Map();
+    for (const ot of orphanTxs) {
+      const tTime = Number(ot.createdAt) || (ot.date ? new Date(ot.date).getTime() : 0);
+      const dStr = getCaracasDateParts(new Date(tTime));
+      if (!orphanDatesMap.has(dStr)) {
+        orphanDatesMap.set(dStr, []);
+      }
+      orphanDatesMap.get(dStr).push(ot);
+    }
+
+    const sortedDates = Array.from(orphanDatesMap.keys()).sort();
+    const createdClosings = [];
+
+    for (const dateStr of sortedDates) {
+      const result = await executeShiftClosing({
+        type: 'CONTINGENCIA',
+        closedBy: `SYSTEM_CONTINGENCY (${reason})`,
+        isAuto: true,
+        targetDateStr: dateStr
+      });
+      if (result && result.closing) {
+        createdClosings.push(result.closing);
+        console.log(`[ContingencyClose] 🛡️ Cierre de contingencia ejecutado (${dateStr} - ${reason}): ${result.count} transacciones asignadas a ${result.closing.id}`);
+      }
+    }
+
+    return {
+      count: createdClosings.reduce((sum, c) => sum + (c.salesCount || 0), 0),
+      closings: createdClosings,
+      closing: createdClosings[createdClosings.length - 1] || null
+    };
+  } catch (err) {
+    console.error(`[ContingencyClose] ❌ Error en cierre de contingencia (${reason}):`, err);
+    return null;
+  }
+}
+
+// Endpoint autoritativo para cierre de turno / caja
+app.post('/api/pos/close-shift', requireAuth, requireRole('admin', 'cajero'), verifyCsrf, async (req, res) => {
+  try {
+    const {
+      startingCashUsd = 0,
+      startingCashBs = 0,
+      actualCashUsd,
+      actualCashBs
+    } = req.body || {};
+
+    const userRole = req.user?.role || 'cajero';
+    const userName = req.user?.name || req.user?.username || userRole;
+
+    // Contingencia previa: Resolver primero operaciones huérfanas de días anteriores si existiesen
+    await performContingencyCloseForOrphans('PRE_MANUAL_CLOSE');
+
+    const result = await executeShiftClosing({
+      type: 'MANUAL',
+      closedBy: userName,
+      startingCashUsd: Number(startingCashUsd || 0),
+      startingCashBs: Number(startingCashBs || 0),
+      actualCashUsd: actualCashUsd !== undefined && actualCashUsd !== null ? Number(actualCashUsd) : null,
+      actualCashBs: actualCashBs !== undefined && actualCashBs !== null ? Number(actualCashBs) : null,
+      isAuto: false
+    });
+
+    if (!result.closing) {
+      return res.status(400).json({ error: 'No hay transacciones pendientes para cerrar el turno.', count: 0 });
+    }
+
+    await recordAuditLog({
+      req,
+      action: 'pos.close_shift',
+      resourceType: 'cashClosings',
+      resourceId: result.closing.id,
+      result: 'success',
+      metadata: {
+        closingId: result.closing.id,
+        salesCount: result.closing.salesCount,
+        totalSalesAmount: result.closing.totalSalesAmount,
+        status: result.closing.status
+      }
+    });
+
+    res.json({ success: true, closing: result.closing, count: result.count });
+  } catch (error) {
+    console.error('[POST /api/pos/close-shift] Error al cerrar turno:', error);
+    res.status(500).json({ error: 'Error al procesar el cierre de turno en el servidor', details: error.message });
+  }
+});
+
 // Helper puro para verificar la existencia real de un comprobante válido antes de aprobar
 function hasValidPaymentReceipt(payment, capturesDir, protectedMediaDir) {
   if (!payment) return false;
@@ -5975,6 +6345,116 @@ function hasValidPaymentReceipt(payment, capturesDir, protectedMediaDir) {
   // URLs arbitrarias sin respaldo de archivo no son comprobantes válidos
   return false;
 }
+
+// ============================================================
+// ENDPOINTS ATÓMICOS DE VENTAS EN ESPERA / BORRADORES POS (ONE-TIME RESUME)
+// ============================================================
+
+function isPosHeldSale(draft) {
+  if (!draft || typeof draft !== 'object') return false;
+  if (draft.draftKind === 'pos_held_sale' || draft.source === 'pos') {
+    return draft.status === 'on_hold' || draft.status === 'claimed' || !draft.status;
+  }
+  if (draft.status === 'on_hold' || draft.status === 'claimed') {
+    return draft.customerType !== undefined ||
+           draft.totalAmount !== undefined ||
+           draft.total !== undefined ||
+           draft.paymentMethod !== undefined ||
+           Array.isArray(draft.addedPayments);
+  }
+  return false;
+}
+
+app.post('/api/pos/resume-held-sale/:id', requireAuth, requireRole('admin', 'cajero'), verifyCsrf, async (req, res) => {
+  try {
+    const draftId = String(req.params.id);
+    const drafts = readCollection('daily_drafts') || [];
+    const draft = drafts.find(d => String(d.id) === draftId);
+    if (!draft) {
+      return res.status(404).json({
+        error: 'Venta en espera no encontrada o ya fue reanudada.'
+      });
+    }
+    if (!isPosHeldSale(draft)) {
+      return res.status(404).json({
+        error: 'El borrador no corresponde a una venta en espera del POS.'
+      });
+    }
+
+    // Devuelve el borrador SIN borrarlo de daily_drafts todavía
+    res.json({
+      success: true,
+      draft
+    });
+  } catch (error) {
+    console.error('Error al obtener venta en espera en POS:', error);
+    res.status(500).json({ error: 'Error en servidor al obtener venta en espera' });
+  }
+});
+
+app.post('/api/pos/consume-held-sale/:id', requireAuth, requireRole('admin', 'cajero'), verifyCsrf, async (req, res) => {
+  try {
+    const draftId = String(req.params.id);
+
+    await withTransaction(async (tx) => {
+      const drafts = tx.read('daily_drafts');
+      const index = drafts.findIndex(d => String(d.id) === draftId);
+      if (index === -1) {
+        const notFoundErr = new Error('DRAFT_NOT_FOUND');
+        notFoundErr.statusCode = 404;
+        throw notFoundErr;
+      }
+      const draft = drafts[index];
+      if (!isPosHeldSale(draft)) {
+        const notPosErr = new Error('NOT_A_POS_HELD_SALE');
+        notPosErr.statusCode = 404;
+        throw notPosErr;
+      }
+      drafts.splice(index, 1);
+      tx.write('daily_drafts', drafts, { action: 'delete', collection: 'daily_drafts', doc: draft }, draft);
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    if (error.statusCode === 404 || error.message === 'DRAFT_NOT_FOUND' || error.message === 'NOT_A_POS_HELD_SALE') {
+      return res.status(404).json({ error: 'Venta en espera no encontrada o no pertenece al punto de venta.' });
+    }
+    console.error('Error al consumir venta en espera en POS:', error);
+    res.status(500).json({ error: 'Error al consumir venta en espera' });
+  }
+});
+
+app.post('/api/pos/discard-held-sale/:id', requireAuth, requireRole('admin', 'cajero'), verifyCsrf, async (req, res) => {
+  try {
+    const draftId = String(req.params.id);
+
+    await withTransaction(async (tx) => {
+      const drafts = tx.read('daily_drafts');
+      const index = drafts.findIndex(d => String(d.id) === draftId);
+      if (index === -1) {
+        const notFoundErr = new Error('DRAFT_NOT_FOUND');
+        notFoundErr.statusCode = 404;
+        throw notFoundErr;
+      }
+      const draft = drafts[index];
+      if (!isPosHeldSale(draft)) {
+        const notPosErr = new Error('NOT_A_POS_HELD_SALE');
+        notPosErr.statusCode = 404;
+        throw notPosErr;
+      }
+      drafts.splice(index, 1);
+      tx.write('daily_drafts', drafts, { action: 'delete', collection: 'daily_drafts', doc: draft }, draft);
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    if (error.statusCode === 404 || error.message === 'DRAFT_NOT_FOUND' || error.message === 'NOT_A_POS_HELD_SALE') {
+      return res.status(404).json({ error: 'Venta en espera no encontrada o no pertenece al punto de venta.' });
+    }
+    console.error('Error al descartar venta en espera en POS:', error);
+    res.status(500).json({ error: 'Error al descartar venta en espera' });
+  }
+});
 
 // ============================================================
 // ENDPOINTS ATÓMICOS DE COBRANZAS PWA (FASE 2D)
@@ -6342,6 +6822,17 @@ app.get('/api/collections/:name', requireAuth, requireCollectionRead, (req, res)
       });
       return res.json(sanitized);
     }
+
+    // AISLAMIENTO SERVER-SIDE DE daily_drafts POR ROL:
+    // El rol cajero recibe exclusivamente ventas en espera del POS. Jamás borradores contables ajenos.
+    if (req.params.name === 'daily_drafts' && Array.isArray(data)) {
+      const userRole = String(req.user?.role || req.session?.userRole || '').toLowerCase();
+      if (userRole === 'cajero') {
+        const posDraftsOnly = data.filter(d => isPosHeldSale(d));
+        return res.json(posDraftsOnly);
+      }
+    }
+
     res.json(data);
   } catch (error) {
     console.error(`Error reading ${req.params.name}:`, error);
@@ -7829,12 +8320,13 @@ if (isDirectExecution || process.env.AUTO_START_SERVER === 'true') {
     console.log(`Backend server (Uploader & WS) running on port ${PORT}`);
     console.log(`Saving databases and files to: ${uploadDir}`);
 
-    // Ejecución inicial al arrancar el backend (tras 5 segundos de gracia)
+    // Ejecución inicial de contingencia al arrancar el backend (tras 5 segundos de gracia)
     setTimeout(() => {
       checkOverdueInstallments();
+      performContingencyCloseForOrphans('STARTUP_CATCHUP');
     }, 5000);
 
-    // Intervalo de revisión programada: Cada 12 Horas (12 * 60 * 60 * 1000 ms)
+    // Intervalo de revisión programada: Cada 12 Horas para cuotas
     const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
     setInterval(() => {
       checkOverdueInstallments();
@@ -7931,6 +8423,14 @@ export {
   downloadMetaMediaAsBase64,
   recordAuditLog,
   getClientInitialPin,
+  BUSINESS_TIMEZONE,
+  getCaracasDateParts,
+  getCaracasStartOfDayMs,
+  parseClosingTimestamp,
+  isPosHeldSale,
+  executeShiftClosing,
+  performContingencyCloseForOrphans,
+  performContingencyCloseForOrphans as performAutoCloseForOrphans,
   app,
   server
 };

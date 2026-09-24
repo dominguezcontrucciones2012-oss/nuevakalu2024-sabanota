@@ -1,4 +1,4 @@
-import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc } from '../../services/localApi';
+import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc, deleteLocalDoc, isPosHeldSale } from '../../services/localApi';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { extractInvoiceData, extractDictationData, pingGeminiAPI, normalizeTextForMatching } from '../../services/ocrService';
 import { INITIAL_CHEESE_PRODUCTS } from '../../data';
@@ -152,9 +152,9 @@ export default function InvoiceUploadView({
     };
     loadSuppliers();
 
-    // Listen to real-time updates of frozen drafts
+    // Listen to real-time updates of frozen drafts (excluding POS held sales)
     const unsubDrafts = onCollectionSnapshot('daily_drafts', (data) => {
-      const drafts = (data || []).filter((d: any) => d.type === 'invoice_draft');
+      const drafts = (data || []).filter((d: any) => d.type === 'invoice_draft' && !isPosHeldSale(d));
       setFrozenDrafts(drafts);
     });
 

@@ -285,6 +285,59 @@ export const processSaleAtomic = async (salePayload: any) => {
   }
 };
 
+export const parseClosingTimestamp = (value: any): number => {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'object' && value.seconds) return Number(value.seconds) * 1000;
+  const num = Number(value);
+  if (!isNaN(num) && num > 0) return num;
+  const parsed = Date.parse(String(value));
+  return !isNaN(parsed) ? parsed : 0;
+};
+
+export const isPosHeldSale = (draft: any): boolean => {
+  if (!draft || typeof draft !== 'object') return false;
+  if (draft.draftKind === 'pos_held_sale' || draft.source === 'pos') {
+    return draft.status === 'on_hold' || draft.status === 'claimed' || !draft.status;
+  }
+  if (draft.status === 'on_hold' || draft.status === 'claimed') {
+    return draft.customerType !== undefined ||
+           draft.totalAmount !== undefined ||
+           draft.total !== undefined ||
+           draft.paymentMethod !== undefined ||
+           Array.isArray(draft.addedPayments);
+  }
+  return false;
+};
+
+export const closeShiftApi = async (payload: {
+  startingCashUsd?: number;
+  startingCashBs?: number;
+  actualCashUsd?: number;
+  actualCashBs?: number;
+}) => {
+  try {
+    const csrf = await getCsrfToken();
+    const res = await fetch(`${API_URL}/pos/close-shift`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-csrf-token': csrf
+      },
+      credentials: 'include',
+      body: JSON.stringify(payload)
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(result.error || 'Error al procesar cierre de turno');
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in closeShiftApi:', error);
+    throw error;
+  }
+};
+
 export const batchDeleteLocalDocs = async (collectionName: string, ids: string[]) => {
   const csrf = await getCsrfToken();
   const res = await fetch(`${API_URL}/collections/${collectionName}/batchDelete`, {
@@ -303,18 +356,79 @@ export const batchDeleteLocalDocs = async (collectionName: string, ids: string[]
 export const deleteLocalDoc = async (collectionName: string, id: string) => {
   try {
     const csrf = await getCsrfToken();
-    await fetch(`${API_URL}/collections/${collectionName}/${id}`, {
+    const res = await fetch(`${API_URL}/collections/${collectionName}/${id}`, {
       method: 'DELETE',
       headers: {
         'x-csrf-token': csrf
       },
       credentials: 'include'
     });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || 'Error al eliminar documento');
+    }
     return true;
   } catch (error) {
     console.error(`Error deleting doc from ${collectionName}:`, error);
     throw error;
   }
+};
+
+export const resumeHeldSaleApi = async (draftId: string) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/pos/resume-held-sale/${draftId}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include'
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    const error: any = new Error(errData.error || 'Error al reanudar venta congelada');
+    error.status = res.status;
+    throw error;
+  }
+  return await res.json();
+};
+
+export const consumeHeldSaleApi = async (draftId: string) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/pos/consume-held-sale/${draftId}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include'
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    const error: any = new Error(errData.error || 'Error al eliminar venta reanudada');
+    error.status = res.status;
+    throw error;
+  }
+  return await res.json();
+};
+
+export const discardHeldSaleApi = async (draftId: string) => {
+  const csrf = await getCsrfToken();
+  const res = await fetch(`${API_URL}/pos/discard-held-sale/${draftId}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    },
+    credentials: 'include'
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    const error: any = new Error(errData.error || 'Error al descartar venta en espera');
+    error.status = res.status;
+    throw error;
+  }
+  return await res.json();
 };
 
 export const resetAccountingApi = async () => {

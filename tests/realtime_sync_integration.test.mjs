@@ -49,7 +49,7 @@ process.env.KALU_API_URL = `${BASE_URL}/api`;
 process.env.KALU_SOCKET_URL = `${BASE_URL}`;
 
 const { app, server, io, readCollection, writeCollection, withTransaction, emitCollectionDeltaScoped } = await import('../server.js');
-const { onCollectionSnapshot, clearRealtimeCacheForAuthBoundary } = await import('../src/services/localApi.ts');
+const { onCollectionSnapshot, clearRealtimeCacheForAuthBoundary, disconnectSocket } = await import('../src/services/localApi.ts');
 
 function connectTestSocket(cookie, extraOptions = {}) {
   return new Promise((resolve, reject) => {
@@ -255,6 +255,7 @@ describe('SUITE DE INTEGRACIÓN COMPLETA: REALTIME, ROOMS Y CACHE BOUNDARIES', (
   });
 
   after(async () => {
+    disconnectSocket();
     if (server && server.listening) {
       await new Promise((resolve) => server.close(resolve));
     }
