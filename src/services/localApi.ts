@@ -3,31 +3,173 @@ import { io, Socket } from 'socket.io-client';
 // Use standard relative/absolute routing instead of hardcoding localhost if possible,
 // but since the server runs on 3001 locally, we stick to localhost:3001.
 // In a true local network setup with phones, we should use window.location.hostname
-const isProd = import.meta.env.PROD;
+const isProd = typeof import.meta !== 'undefined' && import.meta.env ? Boolean(import.meta.env.PROD) : false;
 const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-export const API_URL = isProd ? `/api` : `http://${hostname}:3001/api`;
-export const SOCKET_URL = isProd ? `/` : `http://${hostname}:3001`;
+export const API_URL = isProd ? `/api` : (typeof process !== 'undefined' && process.env?.KALU_API_URL ? process.env.KALU_API_URL : `http://${hostname}:3001/api`);
+export const SOCKET_URL = isProd ? `/` : (typeof process !== 'undefined' && process.env?.KALU_SOCKET_URL ? process.env.KALU_SOCKET_URL : `http://${hostname}:3001`);
 
-// Global Socket Instance
+// Global Socket Instance and Centralized Real-time Subscription Manager
 let socket: Socket | null = null;
+
+// Registry of active subscribers per collection: collectionName -> Set<(data: any[]) => void>
+const collectionSubscribers = new Map<string, Set<(data: any[]) => void>>();
+
+// In-memory cache map per collection: collectionName -> Map<string (id), doc>
+const collectionCache = new Map<string, Map<string, any>>();
+
+// In-flight fetch deduplication promises: collectionName -> Promise<any[]>
+const inFlightFetches = new Map<string, Promise<any[]>>();
+
+// Notify all subscribers for a given collection
+const notifySubscribers = (collectionName: string) => {
+  const subs = collectionSubscribers.get(collectionName);
+  if (!subs || subs.size === 0) return;
+  const cacheMap = collectionCache.get(collectionName);
+  const data = cacheMap ? Array.from(cacheMap.values()) : [];
+  subs.forEach((cb) => {
+    try {
+      cb(data);
+    } catch (err) {
+      console.error(`[Realtime Sync] Error notifying subscriber for ${collectionName}:`, err);
+    }
+  });
+};
+
+// Central fetch and update cache
+export const refreshCollectionCache = async (collectionName: string): Promise<any[]> => {
+  if (inFlightFetches.has(collectionName)) {
+    return inFlightFetches.get(collectionName)!;
+  }
+
+  const fetchPromise = (async () => {
+    try {
+      const rawData = await fetchCollection(collectionName);
+      const data = Array.isArray(rawData) ? rawData : [];
+      let cacheMap = collectionCache.get(collectionName);
+      if (!cacheMap) {
+        cacheMap = new Map<string, any>();
+        collectionCache.set(collectionName, cacheMap);
+      }
+      cacheMap.clear();
+      data.forEach((item) => {
+        if (item && item.id !== undefined && item.id !== null) {
+          cacheMap!.set(String(item.id), item);
+        }
+      });
+      notifySubscribers(collectionName);
+      return data;
+    } catch (err) {
+      console.warn(`[Realtime Sync] Error fetching ${collectionName}:`, err);
+      return [];
+    } finally {
+      inFlightFetches.delete(collectionName);
+    }
+  })();
+
+  inFlightFetches.set(collectionName, fetchPromise);
+  return fetchPromise;
+};
+
+// Central Socket Event Handlers
+const handleSocketConnect = () => {
+  console.log('[Realtime Sync] Connected to WebSocket server:', socket?.id);
+  // Re-sync all actively subscribed collections on connect / reconnect
+  for (const collectionName of collectionSubscribers.keys()) {
+    if ((collectionSubscribers.get(collectionName)?.size || 0) > 0) {
+      refreshCollectionCache(collectionName).catch((e) =>
+        console.warn(`[Realtime Sync] Error refreshing ${collectionName} on reconnect:`, e)
+      );
+    }
+  }
+};
+
+const handleCollectionUpdated = (updatedCollection: string) => {
+  if (collectionSubscribers.has(updatedCollection) && (collectionSubscribers.get(updatedCollection)?.size || 0) > 0) {
+    refreshCollectionCache(updatedCollection).catch((e) =>
+      console.warn(`[Realtime Sync] Error refetching ${updatedCollection}:`, e)
+    );
+  }
+};
+
+const handleCollectionDelta = (payload: {
+  action?: string;
+  collection?: string;
+  doc?: any;
+  docs?: any[];
+  id?: string | number;
+}) => {
+  if (!payload || !payload.collection) return;
+  const colName = payload.collection;
+  const subs = collectionSubscribers.get(colName);
+  if (!subs || subs.size === 0) return;
+
+  let cacheMap = collectionCache.get(colName);
+  if (!cacheMap) {
+    cacheMap = new Map<string, any>();
+    collectionCache.set(colName, cacheMap);
+  }
+
+  const action = payload.action;
+  const doc = payload.doc;
+  const docId = doc?.id !== undefined ? String(doc.id) : (payload.id !== undefined ? String(payload.id) : null);
+
+  if ((action === 'add' || action === 'update') && doc && docId) {
+    const existing = cacheMap.get(docId) || {};
+    cacheMap.set(docId, { ...existing, ...doc });
+    notifySubscribers(colName);
+  } else if (action === 'delete' && docId) {
+    cacheMap.delete(docId);
+    notifySubscribers(colName);
+  } else if (action === 'clear') {
+    cacheMap.clear();
+    notifySubscribers(colName);
+  } else if ((action === 'batchAdd' || action === 'batchUpdate') && Array.isArray(payload.docs) && payload.docs.length > 0) {
+    payload.docs.forEach((d) => {
+      if (d && d.id !== undefined) {
+        const idStr = String(d.id);
+        const existing = cacheMap!.get(idStr) || {};
+        cacheMap!.set(idStr, { ...existing, ...d });
+      }
+    });
+    notifySubscribers(colName);
+  } else {
+    // Fallback: for batch operations or unknown actions without direct docs payload, refetch fresh collection
+    refreshCollectionCache(colName).catch((e) =>
+      console.warn(`[Realtime Sync] Fallback refetch failed for ${colName}:`, e)
+    );
+  }
+};
+
+function attachSocketListeners(s: Socket) {
+  s.off('connect', handleSocketConnect);
+  s.off('collection_updated', handleCollectionUpdated);
+  s.off('collection_delta', handleCollectionDelta);
+
+  s.on('connect', handleSocketConnect);
+  s.on('collection_updated', handleCollectionUpdated);
+  s.on('collection_delta', handleCollectionDelta);
+}
 
 export const initSocket = () => {
   if (!socket) {
     socket = io(SOCKET_URL, {
       withCredentials: true
     });
-    socket.on('connect', () => {
-      console.log('Connected to local WebSocket server', socket?.id);
-    });
-    socket.on('disconnect', (_reason) => {
-    });
+    attachSocketListeners(socket);
   }
   return socket;
 };
 
+export const clearRealtimeCacheForAuthBoundary = () => {
+  collectionCache.clear();
+  inFlightFetches.clear();
+};
+
 export const disconnectSocket = () => {
   if (socket) {
-    socket.removeAllListeners();
+    socket.off('connect', handleSocketConnect);
+    socket.off('collection_updated', handleCollectionUpdated);
+    socket.off('collection_delta', handleCollectionDelta);
     socket.disconnect();
     socket = null;
   }
@@ -35,69 +177,34 @@ export const disconnectSocket = () => {
 
 export const reconnectSocket = () => {
   disconnectSocket();
-  return initSocket();
+  const newSocket = initSocket();
+  return newSocket;
 };
 
-// Generic Collection Hook/Subscriber with Delta Updates
+// Generic Collection Hook/Subscriber with Delta Updates and Persistent Registry
 export const onCollectionSnapshot = (collectionName: string, callback: (data: any[]) => void) => {
-  const currentSocket = initSocket();
-  const cacheMap = new Map<string, any>();
+  initSocket();
 
-  const notifyCallback = (_source: string) => {
+  if (!collectionSubscribers.has(collectionName)) {
+    collectionSubscribers.set(collectionName, new Set());
+  }
+  const subs = collectionSubscribers.get(collectionName)!;
+  subs.add(callback);
+
+  // If we already have cached data, immediately deliver it to the subscriber
+  const cacheMap = collectionCache.get(collectionName);
+  if (cacheMap && cacheMap.size > 0) {
     callback(Array.from(cacheMap.values()));
-  };
+  }
 
-  // Initial fetch
-  fetchCollection(collectionName).then(data => {
-    const rawData = Array.isArray(data) ? data : [];
-    cacheMap.clear();
-    rawData.forEach(item => {
-      if (item && item.id) {
-        cacheMap.set(String(item.id), item);
-      }
-    });
-    notifyCallback('initial_fetch');
+  // Always trigger or queue a refresh if not fetched or on mount
+  refreshCollectionCache(collectionName).catch((err) => {
+    console.warn(`[Realtime Sync] Initial fetch failed for ${collectionName}:`, err);
   });
-
-  // Listen for full collection updates (Fallback)
-  const fallbackListener = (updatedCollection: string) => {
-    if (updatedCollection === collectionName) {
-      fetchCollection(collectionName).then(data => {
-        const rawData = Array.isArray(data) ? data : [];
-        cacheMap.clear();
-        rawData.forEach(item => {
-          if (item && item.id) {
-            cacheMap.set(String(item.id), item);
-          }
-        });
-        notifyCallback('fallback_refetch');
-      });
-    }
-  };
-
-  // Listen for granular delta updates
-  const deltaListener = (payload: { action: string, collection: string, doc: any }) => {
-    if (payload.collection === collectionName && payload.doc) {
-      const docId = String(payload.doc.id);
-      if (payload.action === 'add' || payload.action === 'update') {
-        const existing = cacheMap.get(docId) || {};
-        cacheMap.set(docId, { ...existing, ...payload.doc });
-      } else if (payload.action === 'delete') {
-        cacheMap.delete(docId);
-      } else if (payload.action === 'clear') {
-        cacheMap.clear();
-      }
-      notifyCallback('delta');
-    }
-  };
-
-  currentSocket.on('collection_updated', fallbackListener);
-  currentSocket.on('collection_delta', deltaListener);
 
   // Return unsubscribe function
   return () => {
-    currentSocket.off('collection_updated', fallbackListener);
-    currentSocket.off('collection_delta', deltaListener);
+    subs.delete(callback);
   };
 };
 
@@ -278,6 +385,8 @@ export const loginApi = async (credentials: {
   if (data.csrfToken) {
     cachedCsrfToken = data.csrfToken;
   }
+  // Purga estricta de caché previa para evitar fugas entre sesiones y roles
+  clearRealtimeCacheForAuthBoundary();
   // Reconectar socket con la nueva sesión HTTP (Fase 1D-D.3)
   reconnectSocket();
   return data;
@@ -293,6 +402,8 @@ export const logoutApi = async () => {
     credentials: 'include'
   });
   cachedCsrfToken = '';
+  // Purga estricta de caché privada al cerrar sesión
+  clearRealtimeCacheForAuthBoundary();
   // Desconectar socket localmente tras destruir sesión HTTP (Fase 1D-D.3)
   disconnectSocket();
   return await res.json();
@@ -337,6 +448,8 @@ export const portalLoginApi = async (credentials: {
   if (data.csrfToken) {
     cachedCsrfToken = data.csrfToken;
   }
+  // Purga estricta de caché previa para evitar fugas entre sesiones de portal
+  clearRealtimeCacheForAuthBoundary();
   // Reconectar socket con la nueva sesión de portal (Fase 1D-D.3)
   reconnectSocket();
   return data;
@@ -351,6 +464,8 @@ export const portalLogoutApi = async () => {
     },
     credentials: 'include'
   });
+  // Purga estricta de caché privada al cerrar sesión de portal
+  clearRealtimeCacheForAuthBoundary();
   // Reconectar socket para reevaluar sesión (o quedar anónimo) (Fase 1D-D.3)
   reconnectSocket();
   return await res.json();

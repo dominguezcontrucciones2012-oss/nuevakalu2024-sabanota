@@ -699,6 +699,8 @@ io.on('connection', (socket) => {
     }
   }
 
+  console.log(`[Socket.IO] Client connected: ${socket.id} | Anonymous: ${identity.isAnonymous} | CRM: ${identity.crm ? identity.crm.role : 'none'} | Portal: ${identity.portal ? identity.portal.type : 'none'}`);
+
   // Limpieza al desconectarse
   socket.on('disconnect', () => {
     unregisterSocketSession(socket);
@@ -3489,35 +3491,6 @@ if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
 }
 
-io.on('connection', (socket) => {
-  const identity = socket.data.identity || { isAnonymous: true, crm: null, portal: null };
-
-  // 1. Toda conexión pertenece a la room pública
-  socket.join('room:public');
-
-  // 2. Asignar rooms de CRM si tiene sesión CRM activa y válida
-  if (identity.crm) {
-    socket.join('room:crm:staff');
-    if (identity.crm.role === 'admin') {
-      socket.join('room:crm:admin');
-    }
-  }
-
-  // 3. Asignar room de Portal si tiene sesión Portal activa y válida
-  if (identity.portal) {
-    if (identity.portal.type === 'client') {
-      socket.join(`room:portal:client:${identity.portal.id}`);
-    } else if (identity.portal.type === 'producer') {
-      socket.join(`room:portal:producer:${identity.portal.id}`);
-    }
-  }
-
-  console.log(`[Socket.IO] Client connected: ${socket.id} | Anonymous: ${identity.isAnonymous} | CRM: ${identity.crm ? identity.crm.role : 'none'} | Portal: ${identity.portal ? identity.portal.type : 'none'}`);
-
-  socket.on('disconnect', () => {
-    // Desconexión limpia
-  });
-});
 
 
 // ============================================================
@@ -6044,6 +6017,7 @@ app.post('/api/pwa-payments/:id/approve', requireAuth, requireRole('admin', 'con
       // 1. REVALIDAR CUOTA ANTES DE TOCAR CLIENTE / COBRANZA
       const installments = tx.read('installments');
       let instChanged = false;
+      let targetInst = null;
 
       if (payment.installmentId) {
         const inst = installments.find(i => String(i.id) === String(payment.installmentId));
@@ -6090,11 +6064,12 @@ app.post('/api/pwa-payments/:id/approve', requireAuth, requireRole('admin', 'con
           inst.status = 'paid';
           inst.paidAt = new Date(nowMs).toISOString();
         }
+        targetInst = inst;
         instChanged = true;
       }
 
-      if (instChanged) {
-        tx.write('installments', installments, { action: 'batchUpdate', collection: 'installments' });
+      if (instChanged && targetInst) {
+        tx.write('installments', installments, { action: 'update', collection: 'installments', doc: targetInst });
       }
 
       if (isSupplier) {
