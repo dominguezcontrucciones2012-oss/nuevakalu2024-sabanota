@@ -6634,7 +6634,34 @@ app.post('/api/pwa-payments/:id/approve', requireAuth, requireRole('admin', 'con
         }
       }
 
-      // Transacción de Cobranza (TX de ingresos_cobranza con referencias cruzadas)
+      // Obtener settings autoritativo de Bóveda y Tasa BCV
+      const settingsData = tx.read('settings');
+      let generalSettingsIndex = settingsData.findIndex(d => String(d.id) === 'general');
+      let generalSettings = generalSettingsIndex !== -1 ? settingsData[generalSettingsIndex] : { id: 'general' };
+      const currentVault = generalSettings.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+      const parsedRate = Number(generalSettings.exchangeRate);
+      const hasValidRate = Number.isFinite(parsedRate) && parsedRate > 0;
+
+      const m = String(payment.method || payment.paymentMethod || 'Pago Móvil').toLowerCase().trim();
+      const curr = String(payment.currency || 'USD').toUpperCase().trim();
+      const isBsCurrency = curr === 'BS' || curr === 'VES';
+      const amt = Number(payment.amount) || 0;
+      const origBs = Number(payment.amountBs) || 0;
+
+      let effectiveBsAmount = 0;
+      if (isBsCurrency) {
+        if (origBs > 0) {
+          effectiveBsAmount = origBs;
+        } else if (hasValidRate && amt > 0) {
+          effectiveBsAmount = Math.round(amt * parsedRate * 100) / 100;
+        } else {
+          const rateErr = new Error('INVALID_EXCHANGE_RATE_FOR_BS_PAYMENT');
+          rateErr.statusCode = 400;
+          throw rateErr;
+        }
+      }
+
+      // Transacción de Cobranza (TX de ingresos_cobranza con referencias cruzadas y datos monetarios reales)
       const nowMs = Date.now();
       const newTx = {
         id: `TX-${nowMs}`,
@@ -6646,6 +6673,9 @@ app.post('/api/pwa-payments/:id/approve', requireAuth, requireRole('admin', 'con
         timestamp: new Date(nowMs).toISOString(),
         invoiceNumber: `PWA-${payment.reference || payment.id}`,
         amount: payment.amount,
+        amountBs: isBsCurrency ? effectiveBsAmount : (origBs > 0 ? origBs : undefined),
+        currency: payment.currency || (isBsCurrency ? 'Bs' : 'USD'),
+        reference: payment.reference || String(payment.id || ''),
         isIncome: true,
         status: 'Completado',
         paymentMethod: payment.method || payment.paymentMethod || 'Pago Móvil',
@@ -6659,6 +6689,50 @@ app.post('/api/pwa-payments/:id/approve', requireAuth, requireRole('admin', 'con
       txs.push(newTx);
       tx.write('transactions', txs, { action: 'add', collection: 'transactions', doc: newTx });
 
+      // Actualizar Bóveda / Banco en settings (CentralVaultBalance)
+      let deltaUsd = 0;
+      let deltaBs = 0;
+      let deltaBankBs = 0;
+      let deltaBankUsd = 0;
+
+      const isCash = m.includes('efectivo') || m.includes('cash');
+      const isBank = m.includes('movil') || m.includes('móvil') || m.includes('transfer') ||
+                     m.includes('tarjeta') || m.includes('punto') || m.includes('bio') ||
+                     m.includes('banco') || m.includes('zelle') || m.includes('binance');
+
+      if (isBsCurrency) {
+        if (isCash && !m.includes('movil') && !m.includes('móvil') && !m.includes('transfer') && !m.includes('tarjeta') && !m.includes('banco')) {
+          deltaBs += effectiveBsAmount;
+        } else {
+          // Por defecto en Bs (Pago Móvil, Transferencia, Punto, etc.) va a bankBs
+          deltaBankBs += effectiveBsAmount;
+        }
+      } else {
+        // Moneda USD / Moneda extranjera
+        if (isCash && !m.includes('zelle') && !m.includes('banco') && !m.includes('binance') && !m.includes('transfer')) {
+          deltaUsd += amt;
+        } else if (isBank || m.includes('zelle') || m.includes('binance') || m.includes('banco usd') || m.includes('dolar') || m.includes('usd')) {
+          deltaBankUsd += amt;
+        } else {
+          deltaUsd += amt;
+        }
+      }
+
+      const updatedVault = {
+        usd: Math.round(((currentVault.usd || 0) + deltaUsd) * 100) / 100,
+        bs: Math.round(((currentVault.bs || 0) + deltaBs) * 100) / 100,
+        bankBs: Math.round(((currentVault.bankBs || 0) + deltaBankBs) * 100) / 100,
+        bankUsd: Math.round(((currentVault.bankUsd || 0) + deltaBankUsd) * 100) / 100
+      };
+
+      generalSettings.centralVaultBalance = updatedVault;
+      if (generalSettingsIndex !== -1) {
+        settingsData[generalSettingsIndex] = generalSettings;
+      } else {
+        settingsData.push(generalSettings);
+      }
+      tx.write('settings', settingsData, { action: 'update', collection: 'settings', doc: generalSettings });
+
       // Actualizar estatus de pago PWA a 'approved'
       payment.status = 'approved';
       payment.approvedAt = new Date(nowMs).toISOString();
@@ -6669,7 +6743,8 @@ app.post('/api/pwa-payments/:id/approve', requireAuth, requireRole('admin', 'con
         payment,
         transaction: newTx,
         client: updatedClient,
-        supplier: updatedSupplier
+        supplier: updatedSupplier,
+        vault: updatedVault
       };
     });
 
@@ -6695,6 +6770,9 @@ app.post('/api/pwa-payments/:id/approve', requireAuth, requireRole('admin', 'con
     }
     if (error.statusCode === 400 && error.message === 'PAYMENT_EXCEEDS_CLIENT_DEBT') {
       return res.status(400).json({ error: `El monto del pago supera la deuda pendiente del cliente ($${error.effectiveDebt})` });
+    }
+    if (error.statusCode === 400 && error.message === 'INVALID_EXCHANGE_RATE_FOR_BS_PAYMENT') {
+      return res.status(400).json({ error: 'No se puede procesar el pago en Bs: monto en Bs ausente y tasa de cambio no configurada o inválida' });
     }
     if (error.statusCode === 400 && (error.message === 'PAYMENT_MISSING_RECEIPT' || error.message === 'RECEIPT_FILE_NOT_FOUND')) {
       return res.status(400).json({ error: 'El pago no posee comprobante de pago válido' });

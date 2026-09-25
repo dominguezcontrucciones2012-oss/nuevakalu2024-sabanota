@@ -1120,14 +1120,25 @@ export default function CheesePOSView({
   // Helper to extract amount from sales  // FILTER VOIDED SALES
   const validSalesHistory = (salesHistory || []).filter(s => !s.isVoided);
 
-  // Historial completo de ventas (abiertas y cerradas, excluyendo anuladas)
+  // Transacciones de cobranza (Cuotas Mundo Kalu / CxC) para auditoría de historial
+  const collectionTransactions = React.useMemo(() => {
+    return (allTransactions || [])
+      .filter(t => t.category === 'ingresos_cobranza' && t.isIncome === true && !t.isVoided)
+      .map(t => ({
+        ...t,
+        isCollectionTx: true,
+        invoiceNumber: t.invoiceNumber || (t.id ? `PWA-${String(t.id).slice(-8)}` : 'CXC-PAGO')
+      }));
+  }, [allTransactions]);
+
+  // Historial completo de movimientos (Ventas + Cobranzas CxC, abiertas y cerradas, excluyendo anuladas)
   const allSalesHistory = React.useMemo(() => {
-    return [...validSalesHistory].sort((a: any, b: any) => {
+    return [...validSalesHistory, ...collectionTransactions].sort((a: any, b: any) => {
       const tA = Number(a.createdAt) || (a.date ? new Date(a.date).getTime() : 0);
       const tB = Number(b.createdAt) || (b.date ? new Date(b.date).getTime() : 0);
       return tB - tA;
     });
-  }, [validSalesHistory]);
+  }, [validSalesHistory, collectionTransactions]);
 
   const parseTime = React.useCallback((obj: any) => {
     if (!obj) return 0;
@@ -2600,10 +2611,10 @@ export default function CheesePOSView({
             </h3>
             <div className="flex items-center gap-3">
               <span className="text-[10px] font-mono bg-editorial-bg border border-editorial-border px-3 py-1 rounded">
-                VENTAS EN HISTORIAL: {allSalesHistory.length}
+                REGISTROS EN HISTORIAL: {allSalesHistory.length}
               </span>
               <span className="text-[10px] font-mono bg-amber-500/10 text-amber-500 border border-amber-500/30 px-3 py-1 rounded font-bold">
-                FACTURADO TOTAL: ${allSalesHistory.reduce((sum, s) => sum + (Number(s.amount) || Number(s.total) || 0), 0).toFixed(2)}
+                FACTURADO TOTAL: ${allSalesHistory.filter(s => !s.isCollectionTx).reduce((sum, s) => sum + (Number(s.amount) || Number(s.total) || 0), 0).toFixed(2)}
               </span>
             </div>
           </div>
@@ -2615,7 +2626,7 @@ export default function CheesePOSView({
                   <th className="py-3 px-4">Referencia</th>
                   <th className="py-3 px-4">Fecha y Hora</th>
                   <th className="py-3 px-4">Cliente</th>
-                  <th className="py-3 px-4">Artículos</th>
+                  <th className="py-3 px-4">Artículos / Concepto</th>
                   <th className="py-3 px-4">Método</th>
                   <th className="py-3 px-4">Estado</th>
                   <th className="py-3 px-4 text-right">Monto Total</th>
@@ -2626,20 +2637,42 @@ export default function CheesePOSView({
                 {allSalesHistory.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="py-8 text-center text-editorial-text-muted">
-                      No se han procesado ventas en el sistema.
+                      No se han procesado ventas ni cobranzas en el sistema.
                     </td>
                   </tr>
                 ) : (
                   allSalesHistory.map((s) => (
                     <tr key={s.id} className="hover:bg-editorial-bg/40 transition-all">
-                      <td className="py-3.5 px-4 font-mono font-bold text-editorial-text-primary">{s.invoiceNumber || s.id}</td>
+                      <td className="py-3.5 px-4 font-mono font-bold text-editorial-text-primary">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span>{s.invoiceNumber || s.id}</span>
+                          {s.isCollectionTx && (
+                            <span className="px-1.5 py-0.2 rounded text-[8px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 uppercase">
+                              Cobro CxC
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="py-3.5 px-4 text-editorial-text-muted">{s.date}</td>
                       <td className="py-3.5 px-4 font-medium">{s.clientName || s.entity || 'Cliente General'}</td>
                       <td className="py-3.5 px-4 text-editorial-text-muted max-w-[200px] truncate">
-                        {s.items ? s.items.map((it: any) => `${it.name} (${it.quantityKg || it.quantity || 1} ${it.unit ? getUnitLabel(it).toLowerCase() : 'kg'})`).join(', ') : (s.notes || 'Varios Artículos')}
+                        {s.isCollectionTx ? (
+                          <span className="text-emerald-400/90 font-mono text-[11px]">
+                            {s.notes || 'Abono / Cuota Mundo Kalu'}
+                          </span>
+                        ) : (
+                          s.items ? s.items.map((it: any) => `${it.name} (${it.quantityKg || it.quantity || 1} ${it.unit ? getUnitLabel(it).toLowerCase() : 'kg'})`).join(', ') : (s.notes || 'Varios Artículos')
+                        )}
                       </td>
                       <td className="py-3.5 px-4">
                         {(() => {
+                          if (s.isCollectionTx) {
+                            return (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-mono border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 font-bold">
+                                {s.paymentMethod || 'Pago Móvil'}
+                              </span>
+                            );
+                          }
                           const hasKalu = (s.addedPayments && s.addedPayments.some((p: any) => (p.method || '').toLowerCase().includes('kalu'))) || (s.paymentMethod || '').toLowerCase().includes('kalu');
                           if (hasKalu) {
                             const kaluPay = (s.addedPayments || []).find((p: any) => (p.method || '').toLowerCase().includes('kalu'));
@@ -2676,7 +2709,9 @@ export default function CheesePOSView({
                           </span>
                         )}
                       </td>
-                      <td className="py-3.5 px-4 text-right font-mono font-bold text-amber-500">${(s.total || s.amount || 0).toFixed(2)}</td>
+                      <td className={`py-3.5 px-4 text-right font-mono font-bold ${s.isCollectionTx ? 'text-emerald-400' : 'text-amber-500'}`}>
+                        ${(s.total || s.amount || 0).toFixed(2)}
+                      </td>
                       <td className="py-3.5 px-4 text-center">
                         <div className="flex items-center justify-center gap-2">
                           <button
@@ -2686,7 +2721,7 @@ export default function CheesePOSView({
                             <FileText className="w-3 h-3" />
                             Ver Ticket
                           </button>
-                          {!s.isVoided && onVoidSale && (
+                          {!s.isCollectionTx && !s.isVoided && onVoidSale && (
                             <button
                               onClick={() => setTransactionToVoid(s)}
                               className="px-2.5 py-1 text-[9px] font-mono border border-rose-500/30 text-rose-400 hover:bg-rose-500 hover:text-white rounded transition-all cursor-pointer inline-flex items-center gap-1"
@@ -3214,7 +3249,9 @@ export default function CheesePOSView({
 
             {/* Modal Header (No print) */}
             <div className="flex items-center justify-between p-4 bg-editorial-card border-b border-editorial-border/60 no-print">
-              <h3 className="font-serif font-bold text-editorial-text-primary text-lg">Ticket de Venta</h3>
+              <h3 className="font-serif font-bold text-editorial-text-primary text-lg">
+                {lastReceipt.isCollectionTx ? 'Comprobante de Cobro CxC' : 'Ticket de Venta'}
+              </h3>
               <button
                 onClick={() => setLastReceipt(null)}
                 className="text-editorial-text-muted hover:text-white transition-colors p-1"
@@ -3235,42 +3272,69 @@ export default function CheesePOSView({
               <div className="space-y-1">
                 <p><span className="font-bold">Cliente:</span> {lastReceipt.clientName || lastReceipt.entity || 'Cliente Público'}</p>
                 <p><span className="font-bold">Método:</span> {lastReceipt.paymentMethod || 'Efectivo'}</p>
+                {lastReceipt.isCollectionTx && (
+                  <p><span className="font-bold">Concepto:</span> {lastReceipt.notes || 'Cobro de Cuota / Crédito'}</p>
+                )}
               </div>
 
               <div className="border-t border-dashed border-gray-400 my-2" />
 
-              <table className="w-full text-left text-[10px]">
-                <thead>
-                  <tr className="border-b border-dashed border-gray-400">
-                    <th className="py-1">CANT</th>
-                    <th className="py-1">PRODUCTO</th>
-                    <th className="py-1 text-right">TOTAL</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-dashed divide-gray-200">
-                  {lastReceipt.items && lastReceipt.items.length > 0 ? (
-                    lastReceipt.items.map((it: any, idx: number) => (
-                      <tr key={idx}>
-                        <td className="py-1.5 align-top">{it.quantityKg || it.quantity || 1}</td>
-                        <td className="py-1.5 align-top pr-2">{it.name} <br/><span className="text-[9px] text-gray-500">${parseNum(it.pricePerKg).toFixed(2)}/{it.unit ? getUnitLabel(it).toLowerCase() : 'kg'}</span></td>
-                        <td className="py-1.5 align-top text-right">${parseNum(it.subtotal).toFixed(2)}</td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={3} className="py-2 text-center text-gray-500 italic">{lastReceipt.notes || 'Varios Artículos'}</td>
-                    </tr>
+              {lastReceipt.isCollectionTx ? (
+                <div className="py-2 space-y-2">
+                  <div className="flex justify-between text-xs font-bold border-b border-dashed border-gray-200 pb-2">
+                    <span>Abono / Cuota Mundo Kalu</span>
+                    <span>${parseNum(lastReceipt.amount || lastReceipt.total).toFixed(2)}</span>
+                  </div>
+                  {lastReceipt.notes && (
+                    <p className="text-[10px] text-gray-600 italic">{lastReceipt.notes}</p>
                   )}
-                </tbody>
-              </table>
+                </div>
+              ) : (
+                <table className="w-full text-left text-[10px]">
+                  <thead>
+                    <tr className="border-b border-dashed border-gray-400">
+                      <th className="py-1">CANT</th>
+                      <th className="py-1">PRODUCTO</th>
+                      <th className="py-1 text-right">TOTAL</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-dashed divide-gray-200">
+                    {lastReceipt.items && lastReceipt.items.length > 0 ? (
+                      lastReceipt.items.map((it: any, idx: number) => (
+                        <tr key={idx}>
+                          <td className="py-1.5 align-top">{it.quantityKg || it.quantity || 1}</td>
+                          <td className="py-1.5 align-top pr-2">{it.name} <br/><span className="text-[9px] text-gray-500">${parseNum(it.pricePerKg).toFixed(2)}/{it.unit ? getUnitLabel(it).toLowerCase() : 'kg'}</span></td>
+                          <td className="py-1.5 align-top text-right">${parseNum(it.subtotal).toFixed(2)}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={3} className="py-2 text-center text-gray-500 italic">{lastReceipt.notes || 'Varios Artículos'}</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              )}
 
               <div className="border-t border-dashed border-gray-400 my-2" />
 
               <div className="space-y-1 text-right">
                 {(() => {
+                  const receiptTotal = parseNum(lastReceipt.amount || lastReceipt.total);
+                  if (lastReceipt.isCollectionTx) {
+                    const exactBs = lastReceipt.amountBs !== undefined && lastReceipt.amountBs !== null && Number(lastReceipt.amountBs) > 0
+                      ? parseNum(lastReceipt.amountBs)
+                      : receiptTotal * exchangeRate;
+                    return (
+                      <>
+                        <p className="text-lg font-bold mt-1 uppercase text-emerald-700">Monto Cobrado: ${receiptTotal.toFixed(2)}</p>
+                        <p className="text-xs font-bold text-gray-600">Bs. {exactBs.toFixed(2)}</p>
+                      </>
+                    );
+                  }
+
                   const activeTaxRate = settings?.taxRate !== undefined ? settings.taxRate : 5;
                   const divisor = 1 + (activeTaxRate / 100);
-                  const receiptTotal = parseNum(lastReceipt.amount || lastReceipt.total);
                   const receiptSubtotal = lastReceipt.subtotal !== undefined ? parseNum(lastReceipt.subtotal) : receiptTotal / divisor;
                   const receiptTax = lastReceipt.tax !== undefined ? parseNum(lastReceipt.tax) : receiptTotal - receiptSubtotal;
 
