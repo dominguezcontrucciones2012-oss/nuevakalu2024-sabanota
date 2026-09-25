@@ -5382,12 +5382,15 @@ function sanitizeProducerPayload(collection, doc) {
 /**
  * Extraer ID de cliente propietario de un documento
  */
-function extractClientId(doc) {
+function extractClientId(doc, collection = null) {
   if (!doc || typeof doc !== 'object') return null;
   if (doc.clientId) return String(doc.clientId);
   if (doc.client_id) return String(doc.client_id);
   if (doc.entityId && (doc.type === 'receivable' || doc.entityType === 'client' || doc.clientName)) {
     return String(doc.entityId);
+  }
+  if (collection === 'clients' && doc.id) {
+    return String(doc.id);
   }
   return null;
 }
@@ -5395,13 +5398,16 @@ function extractClientId(doc) {
 /**
  * Extraer ID de proveedor/productor propietario de un documento
  */
-function extractSupplierId(doc) {
+function extractSupplierId(doc, collection = null) {
   if (!doc || typeof doc !== 'object') return null;
   if (doc.supplierId) return String(doc.supplierId);
   if (doc.supplier_id) return String(doc.supplier_id);
   if (doc.producerId) return String(doc.producerId);
   if (doc.entityId && (doc.type === 'payable' || doc.entityType === 'producer' || doc.supplierName)) {
     return String(doc.entityId);
+  }
+  if (collection === 'suppliers' && doc.id) {
+    return String(doc.id);
   }
   return null;
 }
@@ -5437,14 +5443,15 @@ function emitCollectionDeltaScoped(delta, previousDoc = null) {
   }
 
   // 2. Destinatarios Portal Cliente
-  const CLIENT_PORTAL_COLLECTIONS = new Set(['transactions', 'installments', 'pwa_payments', 'mobileOrders']);
+  const CLIENT_PORTAL_COLLECTIONS = new Set(['clients', 'transactions', 'installments', 'pwa_payments', 'mobileOrders']);
   if (CLIENT_PORTAL_COLLECTIONS.has(collection)) {
-    const currentClientId = extractClientId(doc);
-    const prevClientId = extractClientId(previousDoc);
+    const currentClientId = delta.clientId || extractClientId(doc, collection) || (Array.isArray(delta.docs) && delta.docs[0] ? extractClientId(delta.docs[0], collection) : null);
+    const prevClientId = extractClientId(previousDoc, collection);
 
     if (currentClientId) {
       const sanitizedDoc = sanitizeClientPayload(collection, doc);
-      const clientDelta = { ...delta, doc: sanitizedDoc };
+      const sanitizedDocs = Array.isArray(delta.docs) ? delta.docs.map(d => sanitizeClientPayload(collection, d)) : undefined;
+      const clientDelta = { ...delta, doc: sanitizedDoc, ...(sanitizedDocs ? { docs: sanitizedDocs } : {}) };
       io.to(`room:portal:client:${currentClientId}`).emit('collection_delta', clientDelta);
     }
 
@@ -5460,14 +5467,15 @@ function emitCollectionDeltaScoped(delta, previousDoc = null) {
   }
 
   // 3. Destinatarios Portal Productor
-  const PRODUCER_PORTAL_COLLECTIONS = new Set(['cheeseTrips', 'transactions', 'mobileOrders']);
+  const PRODUCER_PORTAL_COLLECTIONS = new Set(['suppliers', 'cheeseTrips', 'transactions', 'mobileOrders']);
   if (PRODUCER_PORTAL_COLLECTIONS.has(collection)) {
-    const currentSupplierId = extractSupplierId(doc);
-    const prevSupplierId = extractSupplierId(previousDoc);
+    const currentSupplierId = delta.supplierId || extractSupplierId(doc, collection) || (Array.isArray(delta.docs) && delta.docs[0] ? extractSupplierId(delta.docs[0], collection) : null);
+    const prevSupplierId = extractSupplierId(previousDoc, collection);
 
     if (currentSupplierId) {
       const sanitizedDoc = sanitizeProducerPayload(collection, doc);
-      const producerDelta = { ...delta, doc: sanitizedDoc };
+      const sanitizedDocs = Array.isArray(delta.docs) ? delta.docs.map(d => sanitizeProducerPayload(collection, d)) : undefined;
+      const producerDelta = { ...delta, doc: sanitizedDoc, ...(sanitizedDocs ? { docs: sanitizedDocs } : {}) };
       io.to(`room:portal:producer:${currentSupplierId}`).emit('collection_delta', producerDelta);
     }
 
@@ -5737,6 +5745,7 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
 
           // Generación de Cuotas: Víveres = 1 cuota (15 días)
           let instIndex = 1;
+          const createdInstallments = [];
           if (foodFinanced > 0.009) {
             let nextDate = new Date(nowMs);
             nextDate.setDate(nextDate.getDate() + 15);
@@ -5756,6 +5765,7 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
               type: 'cotidiano'
             };
             installmentsData.push(foodInstDoc);
+            createdInstallments.push(foodInstDoc);
           }
 
           // Generación de Cuotas: Otros productos = 3 cuotas quincenales (con absorción exacta del redondeo en la última cuota)
@@ -5787,10 +5797,11 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
                 type: 'repuestos'
               };
               installmentsData.push(otherInstDoc);
+              createdInstallments.push(otherInstDoc);
             }
           }
 
-          tx.write('installments', installmentsData, { action: 'batchAdd', collection: 'installments' });
+          tx.write('installments', installmentsData, { action: 'batchAdd', collection: 'installments', docs: createdInstallments, clientId: clientId });
         }
       }
 

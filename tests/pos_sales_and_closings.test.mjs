@@ -1782,6 +1782,160 @@ test('SUITE INTEGRAL: HISTORIAL DE VENTAS, CIERRE MANUAL, CONTINGENCIA Y FACTURA
     assert.ok(accDraft, 'Draft contable debe seguir existiendo intacto');
     assert.equal(accDraft.supplierId, 'sup-1');
   });
+
+  // =========================================================================
+  // SECCIÓN: VERIFICACIÓN FORMAL DE HELPERS Y CONTRATO DE VENTAS CONGELADAS
+  // =========================================================================
+
+  await t.test('HELPER CONTRACT TEST 1: addLocalDoc con sesión real + CSRF persiste draft POS y confirma ID válido', async () => {
+    const { cookie: cCookie, csrf: cCsrf } = await loginCashier();
+
+    const draftDoc = {
+      type: 'pos_held_sale',
+      draftKind: 'pos_held_sale',
+      status: 'on_hold',
+      source: 'pos',
+      items: [
+        { productId: 'prod-1', name: 'Queso Llanero', quantityKg: 3.5, pricePerKg: 5.0, subtotal: 17.5 }
+      ],
+      clientId: 'client-1',
+      customerName: 'Juan Perez',
+      totalAmount: 17.5,
+      total: 17.5,
+      note: 'Venta congelada desde POS helper test'
+    };
+
+    const res = await fetch(`${BASE_URL}/api/collections/daily_drafts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-csrf-token': cCsrf,
+        'Cookie': cCookie
+      },
+      body: JSON.stringify(draftDoc)
+    });
+    assert.equal(res.status, 200);
+    const result = await res.json();
+    assert.ok(result.success);
+    assert.ok(result.doc);
+    assert.ok(typeof result.doc.id === 'string' && result.doc.id.length > 0, 'Documento persistido debe tener ID string no vacío');
+
+    const draftsInDb = serverModule.readCollection('daily_drafts');
+    const saved = draftsInDb.find(d => d.id === result.doc.id);
+    assert.ok(saved, 'Documento debe existir en daily_drafts en disco');
+    assert.equal(saved.total, 17.5);
+    assert.equal(saved.items.length, 1);
+  });
+
+  await t.test('HELPER CONTRACT TEST 2: Intento no autenticado de congelar responde 401 y no persiste', async () => {
+    const res = await fetch(`${BASE_URL}/api/collections/daily_drafts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ type: 'pos_held_sale', items: [] })
+    });
+    assert.equal(res.status, 401);
+  });
+
+  await t.test('HELPER CONTRACT TEST 3: resumeHeldSaleApi retorna result.draft y no borra de daily_drafts', async () => {
+    const { cookie: cCookie, csrf: cCsrf } = await loginCashier();
+
+    let createdId = '';
+    await serverModule.withTransaction(async (tx) => {
+      const drafts = tx.read('daily_drafts');
+      createdId = 'draft-helper-resume-1';
+      drafts.push({
+        id: createdId,
+        type: 'pos_held_sale',
+        draftKind: 'pos_held_sale',
+        status: 'on_hold',
+        source: 'pos',
+        items: [{ productId: 'prod-1', name: 'Queso Llanero', quantityKg: 1, pricePerKg: 5, subtotal: 5 }],
+        totalAmount: 5.0,
+        total: 5.0
+      });
+      tx.write('daily_drafts', drafts);
+    });
+
+    // Llamada POST /api/pos/resume-held-sale/:id
+    const resumeRes = await fetch(`${BASE_URL}/api/pos/resume-held-sale/${createdId}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-csrf-token': cCsrf,
+        'Cookie': cCookie
+      }
+    });
+    assert.equal(resumeRes.status, 200);
+    const result = await resumeRes.json();
+    assert.ok(result.success);
+    assert.ok(result.draft);
+    assert.equal(result.draft.id, createdId);
+    assert.equal(result.draft.items.length, 1);
+
+    // Assert: Sigue existiendo en daily_drafts
+    const draftsAfter = serverModule.readCollection('daily_drafts');
+    assert.ok(draftsAfter.some(d => d.id === createdId), 'Draft debe seguir existiendo tras resume');
+
+    // Ahora simular consumeHeldSaleApi
+    const consumeRes = await fetch(`${BASE_URL}/api/pos/consume-held-sale/${createdId}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-csrf-token': cCsrf,
+        'Cookie': cCookie
+      }
+    });
+    assert.equal(consumeRes.status, 200);
+    const consumeData = await consumeRes.json();
+    assert.ok(consumeData.success);
+
+    // Assert: Ya no existe en daily_drafts
+    const draftsFinal = serverModule.readCollection('daily_drafts');
+    assert.equal(draftsFinal.some(d => d.id === createdId), false, 'Draft consumido debe desaparecer');
+  });
+
+  await t.test('HELPER CONTRACT TEST 4: discardHeldSaleApi elimina únicamente el draft POS seleccionado', async () => {
+    const { cookie: cCookie, csrf: cCsrf } = await loginCashier();
+
+    await serverModule.withTransaction(async (tx) => {
+      const drafts = tx.read('daily_drafts');
+      drafts.push({
+        id: 'draft-discard-test-1',
+        type: 'pos_held_sale',
+        draftKind: 'pos_held_sale',
+        status: 'on_hold',
+        source: 'pos',
+        items: [{ productId: 'prod-1', name: 'Queso Llanero', quantityKg: 2, pricePerKg: 5, subtotal: 10 }],
+        total: 10
+      });
+      drafts.push({
+        id: 'draft-other-stay-1',
+        type: 'pos_held_sale',
+        draftKind: 'pos_held_sale',
+        status: 'on_hold',
+        source: 'pos',
+        items: [{ productId: 'prod-1', name: 'Queso Llanero', quantityKg: 4, pricePerKg: 5, subtotal: 20 }],
+        total: 20
+      });
+      tx.write('daily_drafts', drafts);
+    });
+
+    const discardRes = await fetch(`${BASE_URL}/api/pos/discard-held-sale/draft-discard-test-1`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-csrf-token': cCsrf,
+        'Cookie': cCookie
+      }
+    });
+    assert.equal(discardRes.status, 200);
+
+    const drafts = serverModule.readCollection('daily_drafts');
+    assert.equal(drafts.some(d => d.id === 'draft-discard-test-1'), false, 'El draft descartado no debe existir');
+    assert.ok(drafts.some(d => d.id === 'draft-other-stay-1'), 'El otro draft debe preservarse intacto');
+  });
 });
 
 

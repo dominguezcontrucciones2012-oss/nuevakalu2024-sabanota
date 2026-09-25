@@ -19,7 +19,8 @@ import {
   submitPortalProducerOrderApi,
   portalRecoveryRequestApi,
   portalRecoveryVerifyApi,
-  portalRecoveryResetPinApi
+  portalRecoveryResetPinApi,
+  onCollectionSignal
 } from '../../services/localApi';
 import KaluLoader from '../KaluLoader';
 import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
@@ -98,29 +99,48 @@ export default function ProducerPortal({
   }, []);
 
   useEffect(() => {
-    if (!loggedSupplier) {
+    if (!loggedSupplier?.id) {
       setProducerTrips([]);
       setProducerTxs([]);
       setProducerMobileOrders([]);
       return;
     }
     let mounted = true;
-    Promise.all([
-      fetchPortalProducerTripsApi(),
-      fetchPortalProducerTransactionsApi(),
-      fetchPortalProducerOrdersApi(),
-      fetchPortalPublicConfigApi(),
-      fetchPortalPublicCatalogApi()
-    ]).then(([trips, txs, orders, cfg, prods]) => {
-      if (!mounted) return;
-      if (trips) setProducerTrips(trips);
-      if (txs) setProducerTxs(txs);
-      if (orders) setProducerMobileOrders(orders);
-      if (cfg && cfg.exchangeRate > 0) setPublicRate(cfg.exchangeRate);
-      if (prods && prods.length > 0) setCatalogProducts(prods);
-    });
-    return () => { mounted = false; };
-  }, [loggedSupplier]);
+
+    const refreshProducerData = () => {
+      Promise.all([
+        fetchPortalProducerTripsApi(),
+        fetchPortalProducerTransactionsApi(),
+        fetchPortalProducerOrdersApi(),
+        fetchPortalProducerProfileApi(),
+        fetchPortalPublicConfigApi(),
+        fetchPortalPublicCatalogApi()
+      ]).then(([trips, txs, orders, prof, cfg, prods]) => {
+        if (!mounted) return;
+        if (trips) setProducerTrips(trips);
+        if (txs) setProducerTxs(txs);
+        if (orders) setProducerMobileOrders(orders);
+        if (prof) setLoggedSupplier(prof);
+        if (cfg && cfg.exchangeRate > 0) setPublicRate(cfg.exchangeRate);
+        if (prods && prods.length > 0) setCatalogProducts(prods);
+      });
+    };
+
+    refreshProducerData();
+
+    // Suscripción mediante señal reactiva: el socket avisa cambios y el portal consulta sus endpoints autorizados
+    const unsubSignals = onCollectionSignal(
+      ['cheeseTrips', 'transactions', 'suppliers', 'mobileOrders'],
+      () => {
+        refreshProducerData();
+      }
+    );
+
+    return () => {
+      mounted = false;
+      unsubSignals();
+    };
+  }, [loggedSupplier?.id]);
 
   useEffect(() => {
     const handleError = (e: ErrorEvent) => {

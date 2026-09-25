@@ -38,7 +38,9 @@ export class ErrorBoundary extends React.Component<Props, State> {
             <h1 className="text-2xl font-bold text-red-400 mb-4">React App Crash Detected</h1>
             <h2 className="text-xl mb-4 font-mono">{this.state.error && this.state.error.toString()}</h2>
             <details className="whitespace-pre-wrap font-mono text-sm bg-black p-4 rounded overflow-auto max-h-96" open>
-              <summary className="cursor-pointer text-gray-400 mb-2">Show component stack</summary>
+              <summary className="cursor-pointer text-gray-400 mb-2">Detalles del Error y Component Stack</summary>
+              <p className="text-xs text-zinc-500 mb-2">URL: {typeof window !== 'undefined' ? window.location.href : 'N/A'}</p>
+              <p className="text-xs text-red-300 mb-2">{this.state.error?.stack}</p>
               {this.state.errorInfo && this.state.errorInfo.componentStack}
             </details>
             <button

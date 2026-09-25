@@ -13,12 +13,66 @@ let socket: Socket | null = null;
 
 // Registry of active subscribers per collection: collectionName -> Set<(data: any[]) => void>
 const collectionSubscribers = new Map<string, Set<(data: any[]) => void>>();
+const collectionSignalSubscribers = new Map<string, Set<() => void>>();
 
 // In-memory cache map per collection: collectionName -> Map<string (id), doc>
 const collectionCache = new Map<string, Map<string, any>>();
 
 // In-flight fetch deduplication promises: collectionName -> Promise<any[]>
 const inFlightFetches = new Map<string, Promise<any[]>>();
+
+// Pending delta queue for cold caches or in-flight fetches: collectionName -> Array<payload>
+const pendingDeltaQueues = new Map<string, Array<{
+  action?: string;
+  collection?: string;
+  doc?: any;
+  docs?: any[];
+  id?: string | number;
+}>>();
+
+// Helper to notify signal-only listeners (e.g. portals) without fetching or caching global collections
+const notifySignalSubscribers = (colName: string) => {
+  const signalSubs = collectionSignalSubscribers.get(colName);
+  if (signalSubs && signalSubs.size > 0) {
+    signalSubs.forEach((cb) => {
+      try {
+        cb();
+      } catch (err) {
+        console.error(`[Realtime Signal] Error in subscriber for ${colName}:`, err);
+      }
+    });
+  }
+};
+
+// Helper to apply delta mutations deterministically to a cache map
+function applyDeltaToCacheMap(cacheMap: Map<string, any>, payload: {
+  action?: string;
+  collection?: string;
+  doc?: any;
+  docs?: any[];
+  id?: string | number;
+}) {
+  const action = payload.action;
+  const doc = payload.doc;
+  const docId = doc?.id !== undefined ? String(doc.id) : (payload.id !== undefined ? String(payload.id) : null);
+
+  if ((action === 'add' || action === 'update') && doc && docId) {
+    const existing = cacheMap.get(docId) || {};
+    cacheMap.set(docId, { ...existing, ...doc });
+  } else if (action === 'delete' && docId) {
+    cacheMap.delete(docId);
+  } else if (action === 'clear') {
+    cacheMap.clear();
+  } else if ((action === 'batchAdd' || action === 'batchUpdate') && Array.isArray(payload.docs) && payload.docs.length > 0) {
+    payload.docs.forEach((d) => {
+      if (d && d.id !== undefined) {
+        const idStr = String(d.id);
+        const existing = cacheMap.get(idStr) || {};
+        cacheMap.set(idStr, { ...existing, ...d });
+      }
+    });
+  }
+}
 
 // Notify all subscribers for a given collection
 const notifySubscribers = (collectionName: string) => {
@@ -35,7 +89,7 @@ const notifySubscribers = (collectionName: string) => {
   });
 };
 
-// Central fetch and update cache
+// Central fetch and update cache with in-flight deduplication and queue reconciliation
 export const refreshCollectionCache = async (collectionName: string): Promise<any[]> => {
   if (inFlightFetches.has(collectionName)) {
     return inFlightFetches.get(collectionName)!;
@@ -56,8 +110,21 @@ export const refreshCollectionCache = async (collectionName: string): Promise<an
           cacheMap!.set(String(item.id), item);
         }
       });
+
+      // Drain and reconcile any deltas queued while the fetch was in flight
+      const queue = pendingDeltaQueues.get(collectionName);
+      if (queue && queue.length > 0) {
+        while (queue.length > 0) {
+          const delta = queue.shift();
+          if (delta) {
+            applyDeltaToCacheMap(cacheMap, delta);
+          }
+        }
+      }
+      pendingDeltaQueues.delete(collectionName);
+
       notifySubscribers(collectionName);
-      return data;
+      return Array.from(cacheMap.values());
     } catch (err) {
       console.warn(`[Realtime Sync] Error fetching ${collectionName}:`, err);
       return [];
@@ -81,9 +148,26 @@ const handleSocketConnect = () => {
       );
     }
   }
+  // Notify active signal listeners (e.g. portals) on connect / reconnect exactly once per unique callback
+  const uniqueSignalCallbacks = new Set<() => void>();
+  for (const collectionName of collectionSignalSubscribers.keys()) {
+    const subs = collectionSignalSubscribers.get(collectionName);
+    if (subs && subs.size > 0) {
+      subs.forEach((cb) => uniqueSignalCallbacks.add(cb));
+    }
+  }
+  uniqueSignalCallbacks.forEach((cb) => {
+    try {
+      cb();
+    } catch (err) {
+      console.error('[Realtime Signal] Error in subscriber during reconnect:', err);
+    }
+  });
 };
 
 const handleCollectionUpdated = (updatedCollection: string) => {
+  notifySignalSubscribers(updatedCollection);
+
   if (collectionSubscribers.has(updatedCollection) && (collectionSubscribers.get(updatedCollection)?.size || 0) > 0) {
     refreshCollectionCache(updatedCollection).catch((e) =>
       console.warn(`[Realtime Sync] Error refetching ${updatedCollection}:`, e)
@@ -100,44 +184,32 @@ const handleCollectionDelta = (payload: {
 }) => {
   if (!payload || !payload.collection) return;
   const colName = payload.collection;
+
+  // Signal subscribers (e.g. portals) react to the event trigger without fetching global collections
+  notifySignalSubscribers(colName);
+
   const subs = collectionSubscribers.get(colName);
   if (!subs || subs.size === 0) return;
 
-  let cacheMap = collectionCache.get(colName);
-  if (!cacheMap) {
-    cacheMap = new Map<string, any>();
-    collectionCache.set(colName, cacheMap);
+  const isCacheReady = collectionCache.has(colName) && !inFlightFetches.has(colName);
+
+  if (!isCacheReady) {
+    // Cold cache or fetch in flight: queue delta to avoid partial intermediate states
+    if (!pendingDeltaQueues.has(colName)) {
+      pendingDeltaQueues.set(colName, []);
+    }
+    pendingDeltaQueues.get(colName)!.push(payload);
+
+    if (!inFlightFetches.has(colName)) {
+      refreshCollectionCache(colName).catch(() => {});
+    }
+    return;
   }
 
-  const action = payload.action;
-  const doc = payload.doc;
-  const docId = doc?.id !== undefined ? String(doc.id) : (payload.id !== undefined ? String(payload.id) : null);
-
-  if ((action === 'add' || action === 'update') && doc && docId) {
-    const existing = cacheMap.get(docId) || {};
-    cacheMap.set(docId, { ...existing, ...doc });
-    notifySubscribers(colName);
-  } else if (action === 'delete' && docId) {
-    cacheMap.delete(docId);
-    notifySubscribers(colName);
-  } else if (action === 'clear') {
-    cacheMap.clear();
-    notifySubscribers(colName);
-  } else if ((action === 'batchAdd' || action === 'batchUpdate') && Array.isArray(payload.docs) && payload.docs.length > 0) {
-    payload.docs.forEach((d) => {
-      if (d && d.id !== undefined) {
-        const idStr = String(d.id);
-        const existing = cacheMap!.get(idStr) || {};
-        cacheMap!.set(idStr, { ...existing, ...d });
-      }
-    });
-    notifySubscribers(colName);
-  } else {
-    // Fallback: for batch operations or unknown actions without direct docs payload, refetch fresh collection
-    refreshCollectionCache(colName).catch((e) =>
-      console.warn(`[Realtime Sync] Fallback refetch failed for ${colName}:`, e)
-    );
-  }
+  // Warm cache: apply synchronously and notify immediately
+  const cacheMap = collectionCache.get(colName)!;
+  applyDeltaToCacheMap(cacheMap, payload);
+  notifySubscribers(colName);
 };
 
 function attachSocketListeners(s: Socket) {
@@ -150,10 +222,18 @@ function attachSocketListeners(s: Socket) {
   s.on('collection_delta', handleCollectionDelta);
 }
 
-export const initSocket = () => {
+export const initSocket = (extraHeaders?: Record<string, string>) => {
   if (!socket) {
+    const headers: Record<string, string> = {};
+    if (typeof process !== 'undefined' && process.env?.KALU_TEST_SOCKET_COOKIE) {
+      headers['Cookie'] = process.env.KALU_TEST_SOCKET_COOKIE;
+    }
+    if (extraHeaders) {
+      Object.assign(headers, extraHeaders);
+    }
     socket = io(SOCKET_URL, {
-      withCredentials: true
+      withCredentials: true,
+      extraHeaders: Object.keys(headers).length > 0 ? headers : undefined
     });
     attachSocketListeners(socket);
   }
@@ -163,6 +243,9 @@ export const initSocket = () => {
 export const clearRealtimeCacheForAuthBoundary = () => {
   collectionCache.clear();
   inFlightFetches.clear();
+  pendingDeltaQueues.clear();
+  // Subscriptions (collectionSubscribers y collectionSignalSubscribers) se preservan
+  // para que los componentes React montados continúen recibiendo señales tras login/reconnect
 };
 
 export const disconnectSocket = () => {
@@ -175,10 +258,35 @@ export const disconnectSocket = () => {
   }
 };
 
-export const reconnectSocket = () => {
+export const reconnectSocket = (extraHeaders?: Record<string, string>) => {
   disconnectSocket();
-  const newSocket = initSocket();
+  const newSocket = initSocket(extraHeaders);
   return newSocket;
+};
+
+// Lightweight Signal-Only Listener: uses existing socket, executes callback on event, NO global collection fetch/cache
+export const onCollectionSignal = (collectionNames: string | string[], callback: () => void) => {
+  initSocket();
+
+  const names = Array.isArray(collectionNames) ? collectionNames : [collectionNames];
+  names.forEach((name) => {
+    if (!collectionSignalSubscribers.has(name)) {
+      collectionSignalSubscribers.set(name, new Set());
+    }
+    collectionSignalSubscribers.get(name)!.add(callback);
+  });
+
+  return () => {
+    names.forEach((name) => {
+      const subs = collectionSignalSubscribers.get(name);
+      if (subs) {
+        subs.delete(callback);
+        if (subs.size === 0) {
+          collectionSignalSubscribers.delete(name);
+        }
+      }
+    });
+  };
 };
 
 // Generic Collection Hook/Subscriber with Delta Updates and Persistent Registry
@@ -211,8 +319,13 @@ export const onCollectionSnapshot = (collectionName: string, callback: (data: an
 
 export const fetchCollection = async (collectionName: string) => {
   try {
+    const headers: Record<string, string> = {};
+    if (typeof process !== 'undefined' && process.env?.KALU_TEST_ADMIN_COOKIE) {
+      headers['Cookie'] = process.env.KALU_TEST_ADMIN_COOKIE;
+    }
     const res = await fetch(`${API_URL}/collections/${collectionName}`, {
-      credentials: 'include'
+      credentials: 'include',
+      headers
     });
     if (!res.ok) throw new Error('Failed to fetch collection');
     return await res.json();
@@ -225,17 +338,24 @@ export const fetchCollection = async (collectionName: string) => {
 export const addLocalDoc = async (collectionName: string, data: any) => {
   try {
     const csrf = await getCsrfToken();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    };
+    if (typeof process !== 'undefined' && process.env?.KALU_TEST_ADMIN_COOKIE) {
+      headers['Cookie'] = process.env.KALU_TEST_ADMIN_COOKIE;
+    }
     const res = await fetch(`${API_URL}/collections/${collectionName}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-csrf-token': csrf
-      },
+      headers,
       credentials: 'include',
       body: JSON.stringify(data)
     });
-    const result = await res.json();
-    return result.doc;
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(result.error || `Error ${res.status} al agregar documento a ${collectionName}`);
+    }
+    return result.doc || result;
   } catch (error) {
     console.error(`Error adding doc to ${collectionName}:`, error);
     throw error;
@@ -245,17 +365,24 @@ export const addLocalDoc = async (collectionName: string, data: any) => {
 export const updateLocalDoc = async (collectionName: string, id: string, data: any) => {
   try {
     const csrf = await getCsrfToken();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-csrf-token': csrf
+    };
+    if (typeof process !== 'undefined' && process.env?.KALU_TEST_ADMIN_COOKIE) {
+      headers['Cookie'] = process.env.KALU_TEST_ADMIN_COOKIE;
+    }
     const res = await fetch(`${API_URL}/collections/${collectionName}/${id}`, {
       method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-csrf-token': csrf
-      },
+      headers,
       credentials: 'include',
       body: JSON.stringify(data)
     });
-    const result = await res.json();
-    return result.doc;
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(result.error || `Error ${res.status} al actualizar documento en ${collectionName}`);
+    }
+    return result.doc || result;
   } catch (error) {
     console.error(`Error updating doc in ${collectionName}:`, error);
     throw error;
@@ -922,7 +1049,19 @@ export const fetchBootstrapDataApi = async () => {
     collectionNames.map(async (name) => {
       try {
         const data = await fetchCollection(name);
-        return [name, Array.isArray(data) ? data : (data ? [data] : [])];
+        const list = Array.isArray(data) ? data : (data ? [data] : []);
+        let cacheMap = collectionCache.get(name);
+        if (!cacheMap) {
+          cacheMap = new Map<string, any>();
+          collectionCache.set(name, cacheMap);
+        }
+        cacheMap.clear();
+        list.forEach((item) => {
+          if (item && item.id !== undefined && item.id !== null) {
+            cacheMap!.set(String(item.id), item);
+          }
+        });
+        return [name, list];
       } catch (err) {
         console.warn(`[Bootstrap] Error precargando colección ${name}:`, err);
         return [name, []];

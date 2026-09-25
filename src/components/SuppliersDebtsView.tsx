@@ -285,108 +285,82 @@ export default function SuppliersDebtsView({
     }
   };
 
+  // Sincronización y filtrado del Historial de Movimientos del Proveedor (reactivo y silencioso)
   useEffect(() => {
     if (activeModal === 'historial' && selectedSupplierId) {
       const s = suppliers.find(sup => sup.id === selectedSupplierId);
       if (!s) {
         setIsLoadingHistorial(false);
+        setLocalTransactions([]);
         return;
       }
 
-      setIsLoadingHistorial(true);
+      try {
+        const sourceTxs = transactions || [];
+        const supNameClean = (s.name || '').trim().toLowerCase();
+        const supplierTxs = sourceTxs.filter((d: any) => {
+          if (!d) return false;
+          const entityMatch = d.entity && String(d.entity).trim().toLowerCase() === supNameClean;
+          const supplierIdMatch = d.supplierId && String(d.supplierId) === String(s.id);
+          const entityIdMatch = d.entityId && String(d.entityId) === String(s.id);
+          return entityMatch || supplierIdMatch || entityIdMatch;
+        });
 
-      const processAndSetTransactions = (sourceTxs: Transaction[]) => {
-        try {
-          if (!Array.isArray(sourceTxs)) {
-            setLocalTransactions([]);
-            return;
-          }
+        let filtered = supplierTxs;
+        if (!showAllTime && historialStartDate && historialEndDate) {
+          const startMs = new Date(historialStartDate + 'T00:00:00').getTime();
+          const endMs = new Date(historialEndDate + 'T23:59:59.999').getTime();
 
-          const supNameClean = (s.name || '').trim().toLowerCase();
-          const supplierTxs = sourceTxs.filter((d: any) => {
-            if (!d) return false;
-            const entityMatch = d.entity && String(d.entity).trim().toLowerCase() === supNameClean;
-            const supplierIdMatch = d.supplierId && String(d.supplierId) === String(s.id);
-            const entityIdMatch = d.entityId && String(d.entityId) === String(s.id);
-            return entityMatch || supplierIdMatch || entityIdMatch;
-          });
-
-          let filtered = supplierTxs;
-          if (!showAllTime && historialStartDate && historialEndDate) {
-            const startMs = new Date(historialStartDate + 'T00:00:00').getTime();
-            const endMs = new Date(historialEndDate + 'T23:59:59.999').getTime();
-
-            filtered = supplierTxs.filter(tx => {
-              if (!tx) return false;
-              let txMs = 0;
-              if (tx.timestamp) {
-                if (typeof (tx.timestamp as any).toMillis === 'function') txMs = (tx.timestamp as any).toMillis();
-                else if (typeof tx.timestamp === 'number') txMs = tx.timestamp;
-              }
-              if (txMs === 0 && tx.id && typeof tx.id === 'string') {
-                const parts = tx.id.split('-');
-                for (const part of parts) {
-                  if (part.length >= 12 && !isNaN(Number(part))) {
-                    txMs = parseInt(part, 10);
-                    break;
-                  }
-                }
-              }
-              if (txMs > 0) {
-                return txMs >= startMs && txMs <= endMs;
-              }
-
-              const txTime = parseCustomDate(tx.date || '');
-              if (txTime === 0) return true; // Si no se puede parsear, no ocultar
-              return txTime >= startMs && txTime <= endMs;
-            });
-          }
-
-          const getTxTimeMs = (tx: any): number => {
-            if (!tx) return 0;
-            if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+          filtered = supplierTxs.filter(tx => {
+            if (!tx) return false;
+            let txMs = 0;
             if (tx.timestamp) {
-              if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
-              if (typeof tx.timestamp === 'number') return tx.timestamp;
+              if (typeof (tx.timestamp as any).toMillis === 'function') txMs = (tx.timestamp as any).toMillis();
+              else if (typeof tx.timestamp === 'number') txMs = tx.timestamp;
             }
-            if (tx.id && typeof tx.id === 'string') {
+            if (txMs === 0 && tx.id && typeof tx.id === 'string') {
               const parts = tx.id.split('-');
               for (const part of parts) {
-                if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+                if (part.length >= 12 && !isNaN(Number(part))) {
+                  txMs = parseInt(part, 10);
+                  break;
+                }
               }
             }
-            return parseCustomDate(tx.date || '') || 0;
-          };
+            if (txMs > 0) {
+              return txMs >= startMs && txMs <= endMs;
+            }
 
-          filtered.sort((a, b) => getTxTimeMs(b) - getTxTimeMs(a));
-
-          setLocalTransactions(filtered.slice(0, 100));
-        } catch (err) {
-          console.error('Error procesando transacciones de proveedor:', err);
-        } finally {
-          setIsLoadingHistorial(false);
+            const txTime = parseCustomDate(tx.date || '');
+            if (txTime === 0) return true;
+            return txTime >= startMs && txTime <= endMs;
+          });
         }
-      };
 
-      // 1. Usar transacciones pasadas por props inmediatamente para eliminar cualquier tiempo de congelado
-      if (transactions && transactions.length > 0) {
-        processAndSetTransactions(transactions);
+        const getTxTimeMs = (tx: any): number => {
+          if (!tx) return 0;
+          if (typeof tx.createdAt === 'number' && tx.createdAt > 0) return tx.createdAt;
+          if (tx.timestamp) {
+            if (typeof (tx.timestamp as any).toMillis === 'function') return (tx.timestamp as any).toMillis();
+            if (typeof tx.timestamp === 'number') return tx.timestamp;
+          }
+          if (tx.id && typeof tx.id === 'string') {
+            const parts = tx.id.split('-');
+            for (const part of parts) {
+              if (part.length >= 12 && !isNaN(Number(part))) return parseInt(part, 10);
+            }
+          }
+          return parseCustomDate(tx.date || '') || 0;
+        };
+
+        filtered.sort((a, b) => getTxTimeMs(b) - getTxTimeMs(a));
+
+        setLocalTransactions(filtered.slice(0, 100));
+      } catch (err) {
+        console.error('Error procesando transacciones de proveedor:', err);
+      } finally {
+        setIsLoadingHistorial(false);
       }
-
-      // 2. Suscripción a eventos locales en tiempo real
-      const unsub = onCollectionSnapshot('transactions', (data) => {
-        if (data && data.length > 0) {
-          processAndSetTransactions(data as Transaction[]);
-        } else if (transactions && transactions.length > 0) {
-          processAndSetTransactions(transactions);
-        } else {
-          setIsLoadingHistorial(false);
-        }
-      });
-
-      return () => {
-        if (typeof unsub === 'function') unsub();
-      };
     }
   }, [activeModal, selectedSupplierId, suppliers, showAllTime, historialStartDate, historialEndDate, transactions]);
 
@@ -1463,10 +1437,7 @@ export default function SuppliersDebtsView({
 
                   const sortedTxs = [...producerTxs].sort((a, b) => getTxTime(b) - getTxTime(a));
                   const lastDelivery = sortedTxs.find(tx => {
-                    const isPurchase = tx.category === 'compras';
-                    const isReceipt = tx.isIncome || (tx.paymentMethod && tx.paymentMethod.includes('Libreta')) || (tx.notes && (tx.notes.toLowerCase().includes('recibid') || tx.notes.toLowerCase().includes('compra') || tx.notes.toLowerCase().includes('arrime')));
-                    const notPayment = !tx.notes?.toLowerCase().includes('pago') && !tx.notes?.toLowerCase().includes('adelanto') && !tx.notes?.toLowerCase().includes('liquidaci');
-                    return (isPurchase && notPayment) || (tx.isIncome && Number(tx.amount) > 0);
+                    return tx && tx.category === 'compras' && tx.isIncome === true && Number(tx.amount) > 0;
                   });
 
                   if (lastDelivery && Number(lastDelivery.amount) > 0) {

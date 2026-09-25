@@ -535,13 +535,10 @@ export default function CheesePOSView({
       return isNaN(direct) ? 0 : direct;
     };
 
-    // Buscar la última entrega de queso (recepción/compra con isIncome true o items de queso o categoría compras)
+    // Buscar la última entrega de queso (exclusivamente category: 'compras', isIncome: true y amount > 0)
     const sortedTxs = [...producerTxs].sort((a, b) => getTxTime(b) - getTxTime(a));
     const lastDelivery = sortedTxs.find(tx => {
-      const isPurchase = tx.category === 'compras';
-      const isReceipt = tx.isIncome || (tx.paymentMethod && tx.paymentMethod.includes('Libreta')) || (tx.notes && (tx.notes.toLowerCase().includes('recibid') || tx.notes.toLowerCase().includes('compra') || tx.notes.toLowerCase().includes('arrime')));
-      const notPayment = !tx.notes?.toLowerCase().includes('pago') && !tx.notes?.toLowerCase().includes('adelanto') && !tx.notes?.toLowerCase().includes('liquidaci');
-      return (isPurchase && notPayment) || (tx.isIncome && Number(tx.amount) > 0);
+      return tx && tx.category === 'compras' && tx.isIncome === true && Number(tx.amount) > 0;
     });
 
     if (lastDelivery && Number(lastDelivery.amount) > 0) {
@@ -610,9 +607,12 @@ export default function CheesePOSView({
         note: 'Venta congelada desde POS'
       };
 
-      await addLocalDoc('daily_drafts', draftDoc);
+      const savedDoc = await addLocalDoc('daily_drafts', draftDoc);
+      if (!savedDoc || typeof savedDoc.id !== 'string' || !savedDoc.id.trim()) {
+        throw new Error('El servidor no retornó confirmación con ID válido del borrador guardado.');
+      }
 
-      // Limpiar estado activo del carrito y cobro
+      // Limpiar estado activo del carrito y cobro SOLO tras confirmación exitosa con ID persistido
       setCart([]);
       setSelectedClientId('');
       setSelectedSupplierId('');
@@ -623,9 +623,9 @@ export default function CheesePOSView({
       setIsPaymentModalOpen(false);
 
       onAddNotification('✅ Venta congelada y guardada en Ventas en Espera.', 'success');
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error al congelar venta en daily_drafts:', err);
-      onAddNotification('Error al congelar la venta en la base de datos.', 'warning');
+      onAddNotification(err?.message || 'Error al congelar la venta en la base de datos.', 'warning');
     }
   };
 

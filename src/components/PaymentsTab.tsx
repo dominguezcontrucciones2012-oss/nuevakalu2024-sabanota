@@ -281,9 +281,10 @@ export default function PaymentsTab({
     try {
       await submitPortalClientPaymentApi(pwaPayload);
 
-      if (onAddNotification) onAddNotification('Comprobante enviado exitosamente a Caja para verificación.', 'success');
       setShowPaymentModal(false);
+      setSelectedDebt(null);
       setSelectedOpenDebtSale(null);
+      if (onAddNotification) onAddNotification('Comprobante enviado exitosamente a Caja para verificación.', 'success');
       if (onPaymentReported) {
         onPaymentReported();
       }
@@ -877,10 +878,12 @@ export default function PaymentsTab({
                 onClick={handleSubmitPayment}
                 className={`w-full py-3.5 sm:py-4 ${theme.btnPrimary} font-black uppercase rounded-2xl text-sm tracking-widest transition-all ${theme.glow} disabled:shadow-none flex items-center justify-center gap-2 cursor-pointer min-h-[48px]`}
               >
-                {isSubmitting ? 'Enviando...' : (
-                  <>
+                {isSubmitting ? (
+                  <span>Enviando...</span>
+                ) : (
+                  <span className="flex items-center justify-center gap-2">
                     Enviar Comprobante a Caja <ArrowRight className="w-4 h-4" />
-                  </>
+                  </span>
                 )}
               </button>
             </div>

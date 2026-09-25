@@ -124,6 +124,10 @@ describe('SUITE DE VALIDACIÓN: SCRIPT DE RESET OPERATIVO LOCAL', () => {
     // Sembrar comprobantes sintéticos en pwa_captures y captures
     fs.writeFileSync(path.join(tempMediaDir, 'captures', 'dummy_capture_1.png'), 'DUMMY_CAPTURE_BYTES_1');
     fs.writeFileSync(path.join(tempMediaDir, 'pwa_captures', 'dummy_pwa_1.png'), 'DUMMY_PWA_BYTES_1');
+
+    // Sembrar registros operacionales sintéticos para aislar la prueba de la limpieza del dataset base
+    fs.writeFileSync(path.join(tempSandboxDir, 'transactions_db.json'), JSON.stringify([{ id: 'tx-test-sandbox-1', total: 100 }], null, 2), 'utf8');
+    fs.writeFileSync(path.join(tempSandboxDir, 'daily_drafts_db.json'), JSON.stringify([{ id: 'draft-test-sandbox-1', items: [] }], null, 2), 'utf8');
   });
 
   after(async () => {

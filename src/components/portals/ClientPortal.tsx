@@ -8,7 +8,8 @@ import {
   fetchPortalClientFinancesApi,
   fetchPortalClientTransactionsApi,
   fetchPortalClientPaymentsApi,
-  submitPortalClientOrderApi
+  submitPortalClientOrderApi,
+  onCollectionSignal
 } from '../../services/localApi';
 import React, { useState } from 'react';
 import { getUnitLabel } from '../../utils';
@@ -372,9 +373,9 @@ export default function ClientPortal({
     }
   }, [loggedClient?.id]);
 
-  // Carga de datos scoped del cliente autenticado (finanzas, cuotas, transacciones y pagos)
+  // Carga y sincronización reactiva en tiempo real del cliente autenticado (finanzas, cuotas, transacciones y pagos)
   React.useEffect(() => {
-    if (!loggedClient) {
+    if (!loggedClient?.id) {
        setActiveInstallments([]);
        setPaymentHistory([]);
        setClientMovements([]);
@@ -383,6 +384,18 @@ export default function ClientPortal({
     }
 
     refreshClientPaymentData();
+
+    // Suscripción mediante señal reactiva: el socket avisa cambios y el portal consulta sus endpoints autorizados
+    const unsubSignals = onCollectionSignal(
+      ['transactions', 'installments', 'pwa_payments', 'clients', 'mobileOrders'],
+      () => {
+        refreshClientPaymentData();
+      }
+    );
+
+    return () => {
+      unsubSignals();
+    };
   }, [loggedClient?.id, refreshClientPaymentData]);
 
   React.useEffect(() => {
