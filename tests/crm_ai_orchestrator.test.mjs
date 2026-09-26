@@ -436,7 +436,7 @@ async function runSuite() {
       assert.strictEqual(classifyGeminiError({ status: 413 }).isTransient, false);
     });
 
-    await runTest('5.2 [Caso A] 3.7 responde normalmente -> No ejecuta fallback y recibe signal/timeout', async () => {
+    await runTest('5.2 [Caso A] 3.8 responde normalmente -> No ejecuta fallback y recibe signal/timeout', async () => {
       const calls = [];
       let receivedConfig = null;
       setGeminiClientForTest({
@@ -444,25 +444,25 @@ async function runSuite() {
           generateContent: async ({ model, config }) => {
             calls.push(model);
             receivedConfig = config;
-            return { text: 'Respuesta normal de 3.7' };
+            return { text: 'Respuesta normal de 3.8' };
           }
         }
       });
 
       const text = await generateGeminiContentServer({ prompt: 'test A', operation: 'test_A' });
-      assert.strictEqual(text, 'Respuesta normal de 3.7');
-      assert.deepStrictEqual(calls, ['gemini-3.7-flash']);
+      assert.strictEqual(text, 'Respuesta normal de 3.8');
+      assert.deepStrictEqual(calls, ['gemini-3.8-flash']);
       assert.ok(receivedConfig?.abortSignal instanceof AbortSignal, 'Debe recibir abortSignal');
-      assert.strictEqual(receivedConfig?.httpOptions?.timeout, 12000, 'Debe recibir timeout de 12s');
+      assert.strictEqual(receivedConfig?.httpOptions?.timeout, 15000, 'Debe recibir timeout de 15s');
     });
 
-    await runTest('5.3 [Caso B] 3.7 devuelve 503 -> 3.6 responde inmediatamente con éxito', async () => {
+    await runTest('5.3 [Caso B] 3.8 devuelve 503 -> 3.6 responde inmediatamente con éxito', async () => {
       const calls = [];
       setGeminiClientForTest({
         models: {
           generateContent: async ({ model }) => {
             calls.push(model);
-            if (model === 'gemini-3.7-flash') {
+            if (model === 'gemini-3.8-flash') {
               const err = new Error('503 Service Unavailable');
               err.status = 503;
               throw err;
@@ -477,20 +477,20 @@ async function runSuite() {
 
       const text = await generateGeminiContentServer({ prompt: 'test B', operation: 'test_B' });
       assert.strictEqual(text, 'Respuesta exitosa de 3.6');
-      assert.deepStrictEqual(calls, ['gemini-3.7-flash', 'gemini-3.6-flash']);
+      assert.deepStrictEqual(calls, ['gemini-3.8-flash', 'gemini-3.6-flash']);
     });
 
-    await runTest('5.4 [Caso C] 3.7 excede timeout por intento -> abortSignal se dispara y 3.6 responde', async () => {
+    await runTest('5.4 [Caso C] 3.8 excede timeout por intento -> abortSignal se dispara y 3.6 responde', async () => {
       const calls = [];
-      let model37Aborted = false;
+      let model38Aborted = false;
       setGeminiClientForTest({
         models: {
           generateContent: async ({ model, config }) => {
             calls.push(model);
-            if (model === 'gemini-3.7-flash') {
+            if (model === 'gemini-3.8-flash') {
               return new Promise((resolve, reject) => {
                 config.abortSignal.addEventListener('abort', () => {
-                  model37Aborted = true;
+                  model38Aborted = true;
                   const abortErr = new Error('This operation was aborted');
                   abortErr.name = 'AbortError';
                   reject(abortErr);
@@ -514,38 +514,38 @@ async function runSuite() {
       const elapsed = Date.now() - t0;
 
       assert.strictEqual(text, 'Respuesta rápida de 3.6 tras abort');
-      assert.strictEqual(model37Aborted, true, 'El AbortSignal del intento 3.7 debe haber sido abortado');
+      assert.strictEqual(model38Aborted, true, 'El AbortSignal del intento 3.8 debe haber sido abortado');
       assert.ok(elapsed < 400, `Debe resolver rápido (tardó ${elapsed}ms)`);
-      assert.deepStrictEqual(calls, ['gemini-3.7-flash', 'gemini-3.6-flash']);
+      assert.deepStrictEqual(calls, ['gemini-3.8-flash', 'gemini-3.6-flash']);
     });
 
-    await runTest('5.5 [Caso D] 3.7 y 3.6 fallan transitoriamente -> flash-latest responde', async () => {
+    await runTest('5.5 [Caso D] 3.8 y 3.6 fallan transitoriamente -> 3.7 responde', async () => {
       const calls = [];
       setGeminiClientForTest({
         models: {
           generateContent: async ({ model }) => {
             calls.push(model);
-            if (model === 'gemini-3.7-flash' || model === 'gemini-3.6-flash') {
+            if (model === 'gemini-3.8-flash' || model === 'gemini-3.6-flash') {
               const err = new Error('503 High Demand');
               err.status = 503;
               throw err;
             }
-            return { text: 'Respuesta de flash-latest' };
+            return { text: 'Respuesta de 3.7' };
           }
         }
       });
 
       const text = await generateGeminiContentServer({ prompt: 'test D', operation: 'test_D' });
-      assert.strictEqual(text, 'Respuesta de flash-latest');
-      assert.deepStrictEqual(calls, ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-flash-latest']);
+      assert.strictEqual(text, 'Respuesta de 3.7');
+      assert.deepStrictEqual(calls, ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.7-flash']);
     });
 
-    await runTest('5.6 [Caso E] Presupuesto global restante < 12s -> Último intento recibe effectiveTimeout = remainingBudget', async () => {
+    await runTest('5.6 [Caso E] Presupuesto global restante < 15s -> Último intento recibe effectiveTimeout = remainingBudget', async () => {
       let latestTimeoutReceived = null;
       setGeminiClientForTest({
         models: {
           generateContent: async ({ model, config }) => {
-            if (model === 'gemini-3.7-flash') {
+            if (model === 'gemini-3.8-flash') {
               // Consumir 250ms de un presupuesto total de 350ms
               await new Promise(r => setTimeout(r, 250));
               const err = new Error('503 Unavailable');
@@ -556,7 +556,7 @@ async function runSuite() {
               latestTimeoutReceived = config?.httpOptions?.timeout;
               return { text: '3.6 completó dentro del remanente' };
             }
-            throw new Error('No debe llegar a latest');
+            throw new Error('No debe llegar a 3.7');
           }
         }
       });
@@ -564,7 +564,7 @@ async function runSuite() {
       const text = await generateGeminiContentServer({
         prompt: 'test E budget',
         operation: 'test_E_budget',
-        attemptTimeoutMs: 12000,
+        attemptTimeoutMs: 15000,
         totalBudgetMs: 350
       });
 
@@ -590,7 +590,7 @@ async function runSuite() {
         await generateGeminiContentServer({
           prompt: 'test F budget exhaust',
           operation: 'test_F_budget',
-          attemptTimeoutMs: 12000,
+          attemptTimeoutMs: 15000,
           totalBudgetMs: 150 // Presupuesto menor que el tiempo que tarda el primer modelo
         });
         assert.fail('Debió lanzar error por presupuesto');
@@ -620,7 +620,7 @@ async function runSuite() {
       } catch (err) {
         assert.ok(err.message.includes('401'));
       }
-      assert.deepStrictEqual(calls, ['gemini-3.7-flash'], 'No debe recorrer 3.6 ni latest ante 401');
+      assert.deepStrictEqual(calls, ['gemini-3.8-flash'], 'No debe recorrer 3.6 ni 3.7 ante 401');
     });
 
     await runTest('5.9 [Caso H] Error no recuperable (400 Invalid Request) -> Sin fallback', async () => {
@@ -642,7 +642,7 @@ async function runSuite() {
       } catch (err) {
         assert.ok(err.message.includes('400'));
       }
-      assert.deepStrictEqual(calls, ['gemini-3.7-flash']);
+      assert.deepStrictEqual(calls, ['gemini-3.8-flash']);
     });
 
     await runTest('5.10 [Caso J] OCR endpoint ante 503 de todos los modelos -> Devuelve HTTP 503 con AI_TEMPORARILY_UNAVAILABLE', async () => {
@@ -711,7 +711,7 @@ async function runSuite() {
         models: {
           generateContent: async ({ model }) => {
             calls.push(model);
-            if (model === 'gemini-3.7-flash') {
+            if (model === 'gemini-3.8-flash') {
               // Simular un error del SDK donde 'message' es solo getter (read-only)
               const readonlyErr = new Error();
               Object.defineProperty(readonlyErr, 'message', {
@@ -731,7 +731,7 @@ async function runSuite() {
         operation: 'test_readonly'
       });
       assert.ok(resText.includes('gemini-3.6-flash'));
-      assert.deepStrictEqual(calls, ['gemini-3.7-flash', 'gemini-3.6-flash']);
+      assert.deepStrictEqual(calls, ['gemini-3.8-flash', 'gemini-3.6-flash']);
     });
 
     console.log('\n============================================================');

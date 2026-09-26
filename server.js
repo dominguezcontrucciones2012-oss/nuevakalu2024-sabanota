@@ -4149,13 +4149,13 @@ const adminResetLimiter = rateLimit({
   }
 });
 
-// Cadena de modelos Gemini activos (Prioridad: 3.7-flash -> 3.6-flash -> flash-latest)
+// Cadena de modelos Gemini activos (Prioridad: 3.8-flash -> 3.6-flash -> 3.7-flash)
 // Modelos deprecados/removidos por Google (2.5-flash, 2.0-flash, 1.5-flash) excluidos
-const GEMINI_FALLBACK_MODELS = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-flash-latest'];
+const GEMINI_FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.7-flash'];
 
 // Configuración de límites temporales para fallback rápido y seguro
-const PER_ATTEMPT_TIMEOUT_MS = 12000; // 12 segundos por defecto para operaciones de texto ligero
-const TOTAL_OPERATION_BUDGET_MS = 30000; // 30 segundos de presupuesto total general
+const PER_ATTEMPT_TIMEOUT_MS = 15000; // 15 segundos por intento para texto estándar (evita cortes prematuros en picos de red)
+const TOTAL_OPERATION_BUDGET_MS = 35000; // 35 segundos de presupuesto total general
 const OCR_ATTEMPT_TIMEOUT_MS = 25000; // 25 segundos por intento para OCR de facturas densas/multimodales
 const OCR_TOTAL_BUDGET_MS = 60000; // 60 segundos de presupuesto total para OCR multimodal
 
