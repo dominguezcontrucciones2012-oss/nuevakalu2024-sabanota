@@ -59,6 +59,7 @@ import KaluLoader from '../KaluLoader';
 import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
 import { getVIPLevelInfo, VIP_LEVELS_MATRIX, VIPLevelConfig } from '../../config/vipMatrix';
 import { getVipTheme } from '../../config/vipTheme';
+import { buildClientPurchaseHistory, ClientPurchaseRecord } from '../../utils/clientPurchases';
 import PWAInstallButton from '../PWAInstallButton';
 
 interface MobilePortalsViewProps {
@@ -264,6 +265,7 @@ export default function ClientPortal({
   const [showBenefitsModal, setShowBenefitsModal] = useState(false);
   const [showProgressModal, setShowProgressModal] = useState(false);
   const [showCreditLineModal, setShowCreditLineModal] = useState(false);
+  const [selectedPurchaseDetail, setSelectedPurchaseDetail] = useState<ClientPurchaseRecord | null>(null);
 
   // Swipe Navigation for Client Mobile Tabs (Inicio <-> Tienda <-> QR <-> Pagos <-> Perfil)
   const clientSwipeHandlers = useSwipeNavigation({
@@ -943,8 +945,9 @@ export default function ClientPortal({
                       {...clientSwipeHandlers}
                       className="flex-1 flex flex-col min-h-0 relative pb-16 touch-pan-y"
                     >
+                      {/* PESTAÑA: INICIO */}
                       {clientActiveTab === 'inicio' && (
-                        <div className="p-4 space-y-6 flex-1 overflow-y-auto animate-fade-in pb-24">
+                        <div className="p-4 space-y-6 pb-24 overflow-y-auto">
                           {/* Banner no invasivo para activar huella tras login */}
                           <PasskeyRegisterPrompt
                             actorType="client"
@@ -988,33 +991,109 @@ export default function ClientPortal({
                             </div>
                             <div className="border-t border-neutral-800 my-5"></div>
                             <div>
-                              <p className="text-[10px] font-bold text-zinc-300 uppercase mb-3">Últimos Movimientos</p>
-                              <div className="space-y-3">
-                                {clientMovements.length === 0 ? (
-                                  <p className="text-center text-[10px] text-zinc-400 py-3 font-mono">Sin movimientos registrados</p>
-                                ) : (
-                                  clientMovements.map((mov: any) => (
-                                    <div key={mov.id} className="flex justify-between items-center">
-                                      <div className="flex items-center gap-3">
-                                        <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center">
-                                          {mov.isPayment ? (
-                                            <CreditCard className="w-4 h-4 text-emerald-500" />
-                                          ) : (
-                                            <ShoppingBag className={`w-4 h-4 ${theme.textAccent}`} />
-                                          )}
-                                        </div>
-                                        <div>
-                                          <p className="text-xs font-bold text-zinc-200">{mov.title}</p>
-                                          <p className="text-[9px] text-zinc-500">{mov.date}</p>
-                                        </div>
-                                      </div>
-                                      <span className={`text-xs font-black ${mov.isPayment ? 'text-emerald-400' : 'text-white'}`}>
-                                        {mov.isPayment ? '-' : ''}${mov.amount.toFixed(2)}
-                                      </span>
+                              {(() => {
+                                const purchaseHistory = buildClientPurchaseHistory({
+                                  transactions: clientAllTxs,
+                                  installments: activeInstallments,
+                                  payments: paymentHistory
+                                });
+                                const recentPurchases = purchaseHistory.allPurchases.slice(0, 5);
+
+                                return (
+                                  <>
+                                    <div className="flex items-center justify-between mb-3 px-0.5">
+                                      <p className="text-[10px] font-bold text-zinc-300 uppercase">Compras Recientes</p>
+                                      {purchaseHistory.allPurchases.length > 0 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setClientActiveTab('perfil')}
+                                          className={`text-[10px] font-bold ${theme.textAccent} ${theme.textAccentHover} uppercase tracking-wider flex items-center gap-0.5 transition-colors`}
+                                        >
+                                          Ver historial <ChevronRight className="w-3 h-3" />
+                                        </button>
+                                      )}
                                     </div>
-                                  ))
-                                )}
-                              </div>
+                                    <div className="space-y-2.5">
+                                      {recentPurchases.length === 0 ? (
+                                        <p className="text-center text-[10px] text-zinc-400 py-3 font-mono">Sin compras registradas</p>
+                                      ) : (
+                                        recentPurchases.map((purchase: ClientPurchaseRecord) => {
+                                          const primaryItemName = purchase.items && purchase.items.length > 0
+                                            ? purchase.items[0].name
+                                            : purchase.invoiceNumber;
+                                          const extraCount = purchase.items && purchase.items.length > 1
+                                            ? purchase.items.length - 1
+                                            : 0;
+
+                                          let statusBadge = (
+                                            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20 whitespace-nowrap">
+                                              Pagada
+                                            </span>
+                                          );
+                                          if (purchase.status === 'cancelled') {
+                                            statusBadge = (
+                                              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-rose-500/10 text-rose-400 font-bold border border-rose-500/20 whitespace-nowrap">
+                                              Cancelada
+                                            </span>
+                                            );
+                                          } else if (purchase.status === 'in_review') {
+                                            statusBadge = (
+                                              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20 whitespace-nowrap">
+                                              En revisión
+                                            </span>
+                                            );
+                                          } else if (purchase.status === 'overdue') {
+                                            statusBadge = (
+                                              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-rose-500/10 text-rose-400 font-bold border border-rose-500/20 whitespace-nowrap">
+                                              Vencida
+                                            </span>
+                                            );
+                                          } else if (purchase.remainingAmount > 0) {
+                                            statusBadge = (
+                                              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20 whitespace-nowrap">
+                                              Pendiente
+                                            </span>
+                                            );
+                                          }
+
+                                          return (
+                                            <div
+                                              key={purchase.purchaseId}
+                                              onClick={() => setSelectedPurchaseDetail(purchase)}
+                                              className="flex justify-between items-center bg-neutral-950/60 hover:bg-neutral-800/60 border border-neutral-800/80 rounded-2xl p-2.5 transition-colors cursor-pointer select-none"
+                                            >
+                                              <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                                                <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center shrink-0">
+                                                  <ShoppingBag className={`w-3.5 h-3.5 ${theme.textAccent}`} />
+                                                </div>
+                                                <div className="min-w-0">
+                                                  <div className="flex items-center gap-1.5">
+                                                    <p className="text-xs font-bold text-zinc-200 truncate">{primaryItemName}</p>
+                                                    {extraCount > 0 && (
+                                                      <span className="text-[9px] text-zinc-500 shrink-0 font-medium">+{extraCount}</span>
+                                                    )}
+                                                  </div>
+                                                  <div className="flex items-center gap-1.5 text-[9px] text-zinc-400">
+                                                    <span>{purchase.purchaseDate}</span>
+                                                    <span>•</span>
+                                                    <span>{purchase.invoiceNumber}</span>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                              <div className="text-right shrink-0 flex flex-col items-end gap-0.5">
+                                                <span className="text-xs font-black text-white">
+                                                  ${purchase.saleTotal.toFixed(2)}
+                                                </span>
+                                                {statusBadge}
+                                              </div>
+                                            </div>
+                                          );
+                                        })
+                                      )}
+                                    </div>
+                                  </>
+                                );
+                              })()}
                             </div>
                           </div>
 
@@ -1105,11 +1184,75 @@ export default function ClientPortal({
                         </div>
                       )}
 
+                      {/* 2. PESTAÑA: TIENDA */}
+                      {clientActiveTab === 'tienda' && (
+                        <StoreTab
+                          products={portalProducts}
+                          isLoading={portalProductsLoading}
+                          errorMessage={portalProductsError}
+                          vipCode={displayVip.code}
+                          onNavigateTab={setClientActiveTab}
+                        />
+                      )}
+
+                      {/* 3. PESTAÑA: QR */}
+                      {clientActiveTab === 'qr' && (
+                        <QrScannerTab
+                          loggedClient={loggedClient}
+                          onNavigateTab={setClientActiveTab}
+                          getClientLevelInfo={getClientLevelInfo}
+                          onAddNotification={onAddNotification}
+                          vipCode={displayVip.code}
+                        />
+                      )}
+
+                      {/* 4. PESTAÑA: PAGOS */}
+                      {clientActiveTab === 'pagos' && (
+                        <PaymentsTab
+                          bcvRate={pwaBcvRate || 36.50} // Fallback to 36.50 if not loaded
+                          clientData={loggedClient}
+                          activeInstallments={activeInstallments}
+                          paymentHistory={paymentHistory}
+                          allTransactions={clientAllTxs}
+                          onNavigateTab={setClientActiveTab}
+                          onAddNotification={onAddNotification}
+                          onPaymentReported={refreshClientPaymentData}
+                          vipCode={displayVip.code}
+                        />
+                      )}
+
+                      {/* 5. PESTAÑA: PERFIL */}
+                      {clientActiveTab === 'perfil' && (
+                        <ProfileTab
+                          clientData={loggedClient}
+                          clubLevel={Number((loggedClient as any)?.level || 1)}
+                          kaluPoints={Number((loggedClient as any)?.loyaltyPoints || 0)}
+                          activeInstallments={activeInstallments}
+                          allTransactions={clientAllTxs}
+                          paymentHistory={paymentHistory}
+                          vipCode={displayVip.code}
+                          onLogout={async () => {
+                            try {
+                              await portalLogoutApi();
+                            } catch (e) {
+                              console.warn('Error closing portal session', e);
+                            }
+                            setLoggedClient(null);
+                            setClientActiveTab('inicio');
+                          }}
+                          onNavigateSubView={(view) => {
+                            console.log('Navigating to', view);
+                          }}
+                          onNavigateTab={(tab) => setClientActiveTab(tab)}
+                        />
+                      )}
+
+                      {/* Modal de Nivel Overlay si se selecciona */}
                       {clientActiveTab === 'nivel' && (() => {
                         const levelInfo = displayVip;
                         const levelTheme = theme;
                         return (
-                          <div className="flex-1 flex flex-col bg-neutral-950 animate-fade-in text-white pb-24 overflow-y-auto">
+                          <div className="absolute inset-0 z-30 flex flex-col bg-neutral-950 animate-fade-in text-white pb-24 overflow-y-auto">
                             {/* Cabecera Superior */}
                             <div className="flex items-center justify-between p-4 border-b border-neutral-900">
                               <button onClick={() => setClientActiveTab('inicio')} className="w-8 h-8 flex items-center justify-center rounded-full bg-neutral-900 text-zinc-300 hover:text-white transition-colors shadow-sm">
@@ -1246,71 +1389,6 @@ export default function ClientPortal({
                           </div>
                         );
                       })()}
-
-                      {clientActiveTab === 'tienda' && (
-                        <StoreTab
-                          products={portalProducts}
-                          isLoading={portalProductsLoading}
-                          errorMessage={portalProductsError}
-                          vipCode={displayVip.code}
-                          onNavigateTab={setClientActiveTab}
-                        />
-                      )}
-
-                      {clientActiveTab === 'qr' && (
-                        <QrScannerTab
-                          loggedClient={loggedClient}
-                          onNavigateTab={setClientActiveTab}
-                          getClientLevelInfo={getClientLevelInfo}
-                          onAddNotification={onAddNotification}
-                          vipCode={displayVip.code}
-                        />
-                      )}
-
-                      {clientActiveTab === 'pagos' && (
-                        <PaymentsTab
-                          bcvRate={pwaBcvRate || 36.50} // Fallback to 36.50 if not loaded
-                          clientData={loggedClient}
-                          activeInstallments={activeInstallments}
-                          paymentHistory={paymentHistory}
-                          allTransactions={clientAllTxs}
-                          onNavigateTab={setClientActiveTab}
-                          onAddNotification={onAddNotification}
-                          onPaymentReported={refreshClientPaymentData}
-                          vipCode={displayVip.code}
-                        />
-                      )}
-
-                      {clientActiveTab === 'perfil' && (
-                        <ProfileTab
-                          clientData={loggedClient}
-                          clubLevel={Number((loggedClient as any)?.level || 1)}
-                          kaluPoints={Number((loggedClient as any)?.loyaltyPoints || 0)}
-                          activeInstallments={activeInstallments}
-                          allTransactions={clientAllTxs}
-                          paymentHistory={paymentHistory}
-                          vipCode={displayVip.code}
-                          onLogout={async () => {
-                            try {
-                              await portalLogoutApi();
-                            } catch (e) {
-                              console.warn('Error closing portal session', e);
-                            }
-                            setLoggedClient(null);
-                            setClientActiveTab('inicio');
-                          }}
-                          onNavigateSubView={(view) => {
-                            console.log('Navigating to', view);
-                          }}
-                          onNavigateTab={(tab) => setClientActiveTab(tab)}
-                        />
-                      )}
-
-                      {clientActiveTab !== 'inicio' && clientActiveTab !== 'tienda' && clientActiveTab !== 'qr' && clientActiveTab !== 'pagos' && clientActiveTab !== 'nivel' && clientActiveTab !== 'perfil' && (
-                        <div className="flex-1 flex items-center justify-center">
-                          <p className="text-zinc-500 text-xs">Sección en construcción</p>
-                        </div>
-                      )}
 
                       {/* BOTTOM NAVIGATION BAR: Franja continua con identidad de nivel, inactivos blancos/neutros, activo destacado */}
                       <div className={`absolute bottom-0 left-0 right-0 h-16 ${theme.navBar} flex justify-around items-center px-2 z-40 rounded-b-[30px] md:rounded-b-none`}>
@@ -1550,6 +1628,231 @@ export default function ClientPortal({
                               >
                                 Ir a la Tienda
                               </button>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* MODAL: Detalle de Compra Seleccionada */}
+                      {selectedPurchaseDetail && (() => {
+                        const purchase = selectedPurchaseDetail;
+                        const modalTheme = theme;
+
+                        let statusBadge = (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20">
+                            Pagada
+                          </span>
+                        );
+                        if (purchase.status === 'cancelled') {
+                          statusBadge = (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 font-bold border border-rose-500/20">
+                              Cancelada
+                            </span>
+                          );
+                        } else if (purchase.status === 'in_review') {
+                          statusBadge = (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20">
+                              Pago en revisión
+                            </span>
+                          );
+                        } else if (purchase.status === 'overdue') {
+                          statusBadge = (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 font-bold border border-rose-500/20">
+                              Vencida
+                            </span>
+                          );
+                        } else if (purchase.remainingAmount > 0) {
+                          statusBadge = (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20">
+                              Pendiente
+                            </span>
+                          );
+                        }
+
+                        return (
+                          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end md:items-center justify-center animate-fade-in p-0 md:p-4">
+                            <div className={`w-full max-w-md bg-neutral-950 border-t md:border ${modalTheme.cardModalBorder} rounded-t-3xl md:rounded-3xl p-5 text-white max-h-[85vh] overflow-y-auto animate-slide-up space-y-4`}>
+                              {/* Encabezado */}
+                              <div className="flex justify-between items-start border-b border-neutral-800 pb-3">
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <h3 className="text-base font-black text-white">{purchase.invoiceNumber}</h3>
+                                    {statusBadge}
+                                  </div>
+                                  <p className="text-[11px] text-zinc-400 mt-0.5">
+                                    {purchase.purchaseDate} • {purchase.paymentMethod}
+                                  </p>
+                                </div>
+                                <button
+                                  onClick={() => setSelectedPurchaseDetail(null)}
+                                  className="w-8 h-8 rounded-full bg-neutral-900 flex items-center justify-center text-zinc-400 hover:text-white"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+
+                              {/* Resumen Financiero */}
+                              <div className="grid grid-cols-2 gap-2 bg-neutral-900/80 border border-neutral-800 rounded-2xl p-3">
+                                <div>
+                                  <span className="text-[10px] text-zinc-500 block uppercase font-bold">Total Venta</span>
+                                  <span className="text-base font-black text-zinc-100">${purchase.saleTotal.toFixed(2)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-[10px] text-zinc-500 block uppercase font-bold">Abonado</span>
+                                  <span className="text-base font-black text-emerald-400">${purchase.paidAmount.toFixed(2)}</span>
+                                </div>
+                                {purchase.financedAmount > 0 && (
+                                  <div>
+                                    <span className="text-[10px] text-zinc-500 block uppercase font-bold">Financiado</span>
+                                    <span className="text-sm font-bold text-zinc-300">${purchase.financedAmount.toFixed(2)}</span>
+                                  </div>
+                                )}
+                                <div>
+                                  <span className="text-[10px] text-zinc-500 block uppercase font-bold">Saldo Pendiente</span>
+                                  <span className={`text-base font-black ${purchase.remainingAmount > 0 ? modalTheme.textAccent : 'text-zinc-400'}`}>
+                                    ${purchase.remainingAmount.toFixed(2)}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Productos / Items */}
+                              {purchase.items.length > 0 && (
+                                <div className="space-y-1.5">
+                                  <h5 className="font-bold text-zinc-300 flex items-center gap-1.5 text-xs">
+                                    <Package className={`w-3.5 h-3.5 ${modalTheme.textAccent}`} />
+                                    Productos ({purchase.items.length})
+                                  </h5>
+                                  <div className="bg-neutral-900/60 border border-neutral-800/60 rounded-xl divide-y divide-neutral-800/50">
+                                    {purchase.items.map((item, iIdx) => (
+                                      <div key={iIdx} className="p-2.5 flex justify-between items-center text-xs">
+                                        <div className="pr-2">
+                                          <span className="font-semibold text-zinc-200 block">{item.name}</span>
+                                          <span className="text-[10px] text-zinc-400">
+                                            Cant: {item.quantity} {item.unitPrice != null ? `× $${item.unitPrice.toFixed(2)}` : ''}
+                                          </span>
+                                        </div>
+                                        <span className="font-bold text-zinc-300 whitespace-nowrap">
+                                          ${item.subtotal.toFixed(2)}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Plan de Cuotas */}
+                              {purchase.installments.length > 0 && (
+                                <div className="space-y-1.5">
+                                  <h5 className="font-bold text-zinc-300 flex items-center gap-1.5 text-xs">
+                                    <CreditCard className={`w-3.5 h-3.5 ${modalTheme.textAccent}`} />
+                                    Cuotas ({purchase.installments.length})
+                                  </h5>
+                                  <div className="space-y-1.5">
+                                    {purchase.installments.map((inst: any, idx: number) => {
+                                      const instNum = inst.installmentNumber || (idx + 1);
+                                      const totalInsts = inst.totalInstallments || purchase.installments.length;
+                                      const instAmount = Number(inst.amountUSD || inst.amount || 0);
+                                      const instPaid = Number(inst.paidAmount || 0);
+                                      const instRemaining = Math.max(0, Math.round((instAmount - instPaid) * 100) / 100);
+                                      const dueStr = inst.dueDate ? String(inst.dueDate).split('T')[0] : 'Próximamente';
+
+                                      let instBadge = (
+                                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20">
+                                          Pagada
+                                        </span>
+                                      );
+                                      if (inst.status === 'in_review') {
+                                        instBadge = (
+                                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20">
+                                            En revisión
+                                          </span>
+                                        );
+                                      } else if (instRemaining > 0 && inst.status === 'overdue') {
+                                        instBadge = (
+                                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 font-bold border border-rose-500/20">
+                                            Vencida
+                                          </span>
+                                        );
+                                      } else if (instRemaining > 0) {
+                                        instBadge = (
+                                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-bold border border-amber-500/20">
+                                            Pendiente
+                                          </span>
+                                        );
+                                      }
+
+                                      return (
+                                        <div key={inst.id || idx} className="bg-neutral-900/60 border border-neutral-800/60 rounded-xl p-2.5 flex items-center justify-between text-xs">
+                                          <div>
+                                            <div className="flex items-center gap-2">
+                                              <span className="font-bold text-zinc-200">Cuota {instNum}/{totalInsts}</span>
+                                              {instBadge}
+                                            </div>
+                                            <span className="text-[10px] text-zinc-400">Vence: {dueStr}</span>
+                                          </div>
+                                          <div className="text-right">
+                                            <span className="font-bold text-zinc-200 block">${instAmount.toFixed(2)}</span>
+                                            {instRemaining > 0 && (
+                                              <span className={`text-[10px] font-bold ${modalTheme.textAccent}`}>
+                                                Resta ${instRemaining.toFixed(2)}
+                                              </span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Historial de Pagos */}
+                              {purchase.payments.length > 0 && (
+                                <div className="space-y-1.5">
+                                  <h5 className="font-bold text-zinc-300 flex items-center gap-1.5 text-xs">
+                                    <FileText className={`w-3.5 h-3.5 ${modalTheme.textAccent}`} />
+                                    Pagos Registrados ({purchase.payments.length})
+                                  </h5>
+                                  <div className="bg-neutral-900/60 border border-neutral-800/60 rounded-xl divide-y divide-neutral-800/50">
+                                    {purchase.payments.map((p: any, pIdx: number) => {
+                                      const pAmount = Number(p.amount || p.amountUSD || 0);
+                                      const pDate = p.date ? String(p.date).split('T')[0] : 'Reciente';
+                                      const pMethod = p.paymentMethod || p.method || 'Pago';
+                                      return (
+                                        <div key={p.id || pIdx} className="p-2.5 flex justify-between items-center text-xs">
+                                          <div>
+                                            <span className="font-semibold text-zinc-200 block">${pAmount.toFixed(2)}</span>
+                                            <span className="text-[10px] text-zinc-400">{pDate} • {pMethod}</span>
+                                          </div>
+                                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20">
+                                            {p.status === 'in_review' ? 'En revisión' : 'Registrado'}
+                                          </span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Botones de Acción */}
+                              <div className="space-y-2 pt-2">
+                                {purchase.remainingAmount > 0 && purchase.status !== 'cancelled' && (
+                                  <button
+                                    onClick={() => {
+                                      setSelectedPurchaseDetail(null);
+                                      setClientActiveTab('pagos');
+                                    }}
+                                    className={`w-full py-3 ${modalTheme.btnPrimary} font-black uppercase text-xs tracking-wider rounded-xl transition-colors shadow-md`}
+                                  >
+                                    Ir a Pagar esta Compra
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => setSelectedPurchaseDetail(null)}
+                                  className="w-full py-2.5 bg-neutral-900 hover:bg-neutral-800 text-zinc-300 hover:text-white font-bold uppercase text-xs tracking-wider rounded-xl transition-colors border border-neutral-800"
+                                >
+                                  Cerrar
+                                </button>
+                              </div>
                             </div>
                           </div>
                         );
