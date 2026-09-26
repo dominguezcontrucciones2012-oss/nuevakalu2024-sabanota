@@ -128,16 +128,94 @@ export function buildClientPurchaseHistory({
   const purchaseMap = new Map<string, {
     transactionId: string | null;
     purchaseTx: Transaction | null;
+    creditTx: Transaction | null;
     instList: DebtInstallment[];
   }>();
 
-  // 1. Indexar ventas reales desde transacciones
+  // 1. Separar transacciones de venta POS y de crédito
+  const saleTxs: Transaction[] = [];
+  const creditTxs: Transaction[] = [];
+  const otherTxs: Transaction[] = [];
+
   for (const tx of transactions) {
     if (!isRealSaleTransaction(tx)) continue;
-    const txId = tx.id ? String(tx.id) : `TX-TEMP-${Math.random()}`;
-    purchaseMap.set(txId, {
-      transactionId: tx.id ? String(tx.id) : null,
-      purchaseTx: tx,
+    if (tx.category === 'credito') {
+      creditTxs.push(tx);
+    } else if (tx.category === 'ventas' || (Array.isArray(tx.items) && tx.items.length > 0)) {
+      saleTxs.push(tx);
+    } else {
+      otherTxs.push(tx);
+    }
+  }
+
+  // Mapa auxiliar para asociar transacciones de crédito a transacciones de venta POS
+  const linkedCreditTxIds = new Set<string>();
+
+  // Indexar ventas POS
+  for (const saleTx of saleTxs) {
+    const saleId = saleTx.id ? String(saleTx.id) : `TX-TEMP-${Math.random()}`;
+    
+    // Buscar si esta venta POS está vinculada a alguna transacción de crédito (por addedPayments.reference o IDs)
+    let matchingCreditTx: Transaction | null = null;
+    if (Array.isArray(saleTx.addedPayments)) {
+      for (const p of saleTx.addedPayments) {
+        if (!p || !p.reference) continue;
+        const ref = String(p.reference).trim();
+        const found = creditTxs.find(c =>
+          String(c.id).trim() === ref ||
+          String(c.invoiceNumber).trim() === ref ||
+          (c.id && ref.includes(String(c.id))) ||
+          (c.invoiceNumber && ref.includes(String(c.invoiceNumber)))
+        );
+        if (found) {
+          matchingCreditTx = found;
+          linkedCreditTxIds.add(String(found.id));
+          break;
+        }
+      }
+    }
+
+    // Si no se encontró por addedPayments, buscar por coincidencia de invoiceNumber o id directo
+    if (!matchingCreditTx) {
+      const found = creditTxs.find(c =>
+        (saleTx.invoiceNumber && c.invoiceNumber && String(saleTx.invoiceNumber) === String(c.invoiceNumber)) ||
+        (saleTx.id && c.id && String(saleTx.id) === String(c.id))
+      );
+      if (found) {
+        matchingCreditTx = found;
+        linkedCreditTxIds.add(String(found.id));
+      }
+    }
+
+    purchaseMap.set(saleId, {
+      transactionId: saleTx.id ? String(saleTx.id) : null,
+      purchaseTx: saleTx,
+      creditTx: matchingCreditTx,
+      instList: []
+    });
+  }
+
+  // Indexar transacciones de crédito no vinculadas (ej. ventas directas a crédito sin factura POS separada)
+  for (const creditTx of creditTxs) {
+    const creditId = creditTx.id ? String(creditTx.id) : `TX-TEMP-${Math.random()}`;
+    if (linkedCreditTxIds.has(creditId)) continue;
+
+    purchaseMap.set(creditId, {
+      transactionId: creditTx.id ? String(creditTx.id) : null,
+      purchaseTx: creditTx,
+      creditTx: creditTx,
+      instList: []
+    });
+  }
+
+  // Indexar otras transacciones de venta
+  for (const otherTx of otherTxs) {
+    const otherId = otherTx.id ? String(otherTx.id) : `TX-TEMP-${Math.random()}`;
+    if (purchaseMap.has(otherId)) continue;
+    purchaseMap.set(otherId, {
+      transactionId: otherTx.id ? String(otherTx.id) : null,
+      purchaseTx: otherTx,
+      creditTx: null,
       instList: []
     });
   }
@@ -146,26 +224,47 @@ export function buildClientPurchaseHistory({
   for (const inst of installments) {
     if (!inst) continue;
     const txId = inst.transactionId ? String(inst.transactionId) : null;
-    if (txId && purchaseMap.has(txId)) {
-      purchaseMap.get(txId)!.instList.push(inst);
-    } else if (txId) {
+    if (!txId) continue;
+
+    // Buscar si coincide con purchaseMap directo (saleId o creditId)
+    let foundEntry = purchaseMap.get(txId);
+    if (!foundEntry) {
+      // Buscar en entradas donde creditTx.id coincida con txId o creditTx.invoiceNumber coincida
+      for (const entry of purchaseMap.values()) {
+        if (
+          (entry.creditTx && String(entry.creditTx.id) === txId) ||
+          (entry.creditTx?.invoiceNumber && String(entry.creditTx.invoiceNumber) === txId) ||
+          (entry.purchaseTx && String(entry.purchaseTx.id) === txId) ||
+          (entry.purchaseTx?.invoiceNumber && String(entry.purchaseTx.invoiceNumber) === txId)
+        ) {
+          foundEntry = entry;
+          break;
+        }
+      }
+    }
+
+    if (foundEntry) {
+      foundEntry.instList.push(inst);
+    } else {
       // Venta a crédito que tiene transactionId pero no vino en transactions_db
       purchaseMap.set(txId, {
         transactionId: txId,
         purchaseTx: null,
+        creditTx: null,
         instList: [inst]
       });
     }
-    // NOTA: Si inst no tiene transactionId (saldo anterior / deuda abierta legacy), NO es una compra y no se indexa aquí.
   }
 
   const allPurchases: ClientPurchaseRecord[] = [];
 
   for (const [key, entry] of purchaseMap.entries()) {
-    const { transactionId, purchaseTx, instList } = entry;
+    const { transactionId, purchaseTx, creditTx, instList } = entry;
 
-    // Normalizar items
-    const rawItems: any[] = purchaseTx?.items && Array.isArray(purchaseTx.items) ? purchaseTx.items : [];
+    // Normalizar items (preferir purchaseTx, luego creditTx)
+    const rawItems: any[] = (purchaseTx?.items && Array.isArray(purchaseTx.items) && purchaseTx.items.length > 0)
+      ? purchaseTx.items
+      : (creditTx?.items && Array.isArray(creditTx.items) ? creditTx.items : []);
     const items: ClientPurchaseItem[] = rawItems.map(it => ({
       name: it.name || it.productName || it.nombre || it.productId || 'Producto',
       quantity: Number(it.quantity || it.quantityKg || it.cantidad || 1),
@@ -238,13 +337,34 @@ export function buildClientPurchaseHistory({
       // Si tenemos la transacción de venta, el saleTotal es el monto total de la venta
       // (que puede incluir inicial + financiado). Si no, es al menos el financiado.
       if (purchaseTx) {
-        saleTotal = Number(purchaseTx.totalUSD ?? purchaseTx.amount ?? financedAmount);
-        const downPayment = Number(purchaseTx.downPayment ?? purchaseTx.kaluCreditData?.inicial ?? 0);
+        saleTotal = Number(purchaseTx.totalUSD ?? purchaseTx.amount ?? (creditTx ? (creditTx.totalUSD ?? creditTx.amount) : financedAmount));
+        let downPayment = Number(
+          purchaseTx.downPayment ??
+          purchaseTx.kaluCreditData?.inicial ??
+          creditTx?.downPayment ??
+          creditTx?.kaluCreditData?.inicial ??
+          0
+        );
+
+        // Si downPayment no vino explícito pero tenemos addedPayments físicos en la venta POS
+        if (downPayment <= 0 && Array.isArray(purchaseTx.addedPayments)) {
+          const physicalAbono = purchaseTx.addedPayments
+            .filter((p: any) => p && p.method !== 'Mundo Kalu')
+            .reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0);
+          if (physicalAbono > 0) {
+            downPayment = physicalAbono;
+          }
+        }
+
         if (downPayment > 0) {
           paidAmount = Math.round((paidAmount + downPayment) * 100) / 100;
         }
       } else {
-        saleTotal = financedAmount;
+        saleTotal = creditTx ? Number(creditTx.totalUSD ?? creditTx.amount ?? financedAmount) : financedAmount;
+        const downPayment = Number(creditTx?.downPayment ?? creditTx?.kaluCreditData?.inicial ?? 0);
+        if (downPayment > 0) {
+          paidAmount = Math.round((paidAmount + downPayment) * 100) / 100;
+        }
       }
     } else {
       // Venta al contado sin cuotas
