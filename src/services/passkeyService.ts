@@ -8,6 +8,7 @@ import { API_URL, getCsrfToken } from './localApi';
 export type PasskeyActorType = 'admin' | 'client' | 'producer';
 
 const HINT_KEY_PREFIX = 'kalu_passkey_enabled_';
+const CREDENTIAL_KEY_PREFIX = 'kalu_passkey_credential_';
 
 /**
  * Comprueba si el navegador actual soporta WebAuthn / Passkeys nativas.
@@ -17,6 +18,42 @@ export function browserSupportsPasskeys(): boolean {
     return typeof window !== 'undefined' && browserSupportsWebAuthn();
   } catch (e) {
     return false;
+  }
+}
+
+/**
+ * Consulta la credencial biométrica preferida guardada localmente para una puerta.
+ */
+export function getLocalPreferredCredentialId(actorType: PasskeyActorType): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return localStorage.getItem(`${CREDENTIAL_KEY_PREFIX}${actorType}`) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Guarda la credencial biométrica preferida en localStorage tras un registro o login exitoso.
+ */
+export function setLocalPreferredCredentialId(actorType: PasskeyActorType, credentialId: string): void {
+  if (typeof window === 'undefined' || !credentialId) return;
+  try {
+    localStorage.setItem(`${CREDENTIAL_KEY_PREFIX}${actorType}`, credentialId);
+  } catch (e) {
+    console.warn('[Passkey] Error saving preferred credential id:', e);
+  }
+}
+
+/**
+ * Limpia la credencial biométrica preferida de localStorage si falla o se invalida.
+ */
+export function clearLocalPreferredCredentialId(actorType: PasskeyActorType): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(`${CREDENTIAL_KEY_PREFIX}${actorType}`);
+  } catch (e) {
+    console.warn('[Passkey] Error clearing preferred credential id:', e);
   }
 }
 
@@ -52,6 +89,7 @@ export function clearLocalPasskeyHint(actorType: PasskeyActorType): void {
   if (typeof window === 'undefined') return;
   try {
     localStorage.removeItem(`${HINT_KEY_PREFIX}${actorType}`);
+    clearLocalPreferredCredentialId(actorType);
   } catch (e) {
     console.warn('[Passkey] Error clearing local passkey hint:', e);
   }
@@ -112,8 +150,11 @@ export async function registerPasskey(actorType: PasskeyActorType): Promise<{ su
     throw new Error(verifyData.error || 'No se pudo verificar la credencial biométrica en el servidor.');
   }
 
-  // Guardar hint local tras registro exitoso
+  // Guardar hint local y credentialId tras registro exitoso
   setLocalPasskeyHint(actorType);
+  if (verifyData.credentialId) {
+    setLocalPreferredCredentialId(actorType, verifyData.credentialId);
+  }
 
   return {
     success: true,
@@ -123,7 +164,8 @@ export async function registerPasskey(actorType: PasskeyActorType): Promise<{ su
 
 /**
  * Autentica al usuario mediante Passkey / Biometría (Discoverable Credential / Passwordless).
- * No requiere que el usuario ingrese correo, cédula ni PIN de antemano.
+ * Si el dispositivo tiene una credencial preferida para este portal, la solicita específicamente
+ * para evitar el selector general de cuentas en Google/Android.
  */
 export async function authenticateWithPasskey(actorType: PasskeyActorType): Promise<{
   success: boolean;
@@ -136,6 +178,8 @@ export async function authenticateWithPasskey(actorType: PasskeyActorType): Prom
     throw new Error('Tu dispositivo no soporta autenticación biométrica.');
   }
 
+  const preferredCredentialId = getLocalPreferredCredentialId(actorType);
+
   // 1. Obtener opciones de autenticación
   const optionsRes = await fetch(`${API_URL}/auth/passkey/authentication-options`, {
     method: 'POST',
@@ -143,7 +187,10 @@ export async function authenticateWithPasskey(actorType: PasskeyActorType): Prom
       'Content-Type': 'application/json'
     },
     credentials: 'include',
-    body: JSON.stringify({ portalType: actorType })
+    body: JSON.stringify({
+      portalType: actorType,
+      preferredCredentialId: preferredCredentialId || undefined
+    })
   });
 
   if (!optionsRes.ok) {
@@ -187,8 +234,11 @@ export async function authenticateWithPasskey(actorType: PasskeyActorType): Prom
     throw new Error(verifyData.error || 'Fallo de autenticación biométrica.');
   }
 
-  // Actualizar hint local por seguridad
+  // Actualizar hint local y recordar la credencial usada con éxito
   setLocalPasskeyHint(actorType);
+  if (authResponse.id) {
+    setLocalPreferredCredentialId(actorType, authResponse.id);
+  }
 
   return verifyData;
 }

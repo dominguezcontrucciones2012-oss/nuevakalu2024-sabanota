@@ -1686,6 +1686,35 @@ function getClientInitialPin(client) {
   return initialPin;
 }
 
+/**
+ * Función centralizada y reutilizable para extraer los dígitos del documento legal del productor.
+ * Exclusivamente: rif, cedula, rfc, ci, idNumber. El teléfono es dato de contacto y NO forma parte de su identidad legal.
+ */
+function getProducerLegalDocumentDigits(producer) {
+  if (!producer || typeof producer !== 'object') return '';
+  const rawDoc = producer.rif || producer.cedula || producer.rfc || producer.ci || producer.idNumber || '';
+  return String(rawDoc).replace(/\D/g, '');
+}
+
+/**
+ * Función centralizada y reutilizable para generar la contraseña inicial del productor.
+ * Contrato obligatorio: ÚLTIMOS 4 DÍGITOS DEL DOCUMENTO LEGAL + "00" (Exactamente 6 dígitos numéricos).
+ * Si el documento legal no contiene al menos 4 dígitos numéricos, devuelve null (FAIL CLOSED).
+ * NO usa teléfono, email, id ni ningún otro dato que no sea su documento legal.
+ */
+function getProducerInitialPin(producer) {
+  const digits = getProducerLegalDocumentDigits(producer);
+  if (digits.length < 4) {
+    return null; // Fail closed: no inventar PIN
+  }
+  const last4 = digits.slice(-4);
+  const initialPin = `${last4}00`;
+  if (!/^\d{6}$/.test(initialPin)) {
+    return null;
+  }
+  return initialPin;
+}
+
 // 1. Login de portal para cliente o productor (Protegido por IP + Identificador de Cuenta)
 app.post('/api/portal/auth/login', portalLoginLimiter, portalAccountLoginLimiter, (req, res) => {
   try {
@@ -1781,13 +1810,11 @@ app.post('/api/portal/auth/login', portalLoginLimiter, portalAccountLoginLimiter
       } else if (matchedEntity.pin) {
         pinValid = verifyCredential(inputPin, matchedEntity.pin) || String(matchedEntity.pin) === inputPin;
       } else {
-        const base = matchedEntity.rif || matchedEntity.cedula || matchedEntity.ci || matchedEntity.phone || '';
-        const baseDigits = String(base).replace(/\D/g, '');
-        if (baseDigits.length >= 4) {
-          const expectedPin = `${baseDigits.slice(-4)}00`;
+        const expectedPin = getProducerInitialPin(matchedEntity);
+        if (expectedPin) {
           pinValid = (inputPin === expectedPin);
         } else {
-          pinValid = false;
+          pinValid = false; // Fail closed si el documento legal no tiene al menos 4 dígitos
         }
       }
 
@@ -1944,8 +1971,7 @@ app.post('/api/portal/auth/change-pin', requirePortalAuth, verifyCsrf, async (re
       } else if (currentEntity.pin) {
         isCurrentPinValid = verifyCredential(currentPinStr, currentEntity.pin) || String(currentEntity.pin) === currentPinStr;
       } else {
-        const baseDigits = String(currentEntity.rif || currentEntity.cedula || currentEntity.ci || currentEntity.phone || '').replace(/\D/g, '');
-        const expectedPin = baseDigits.length >= 4 ? `${baseDigits.slice(-4)}00` : null;
+        const expectedPin = getProducerInitialPin(currentEntity);
         isCurrentPinValid = Boolean(expectedPin && expectedPin === currentPinStr);
       }
     }
@@ -5872,5 +5898,7 @@ export {
   withCollectionLock,
   recordAuditLog,
   getClientInitialPin,
+  getProducerInitialPin,
+  getProducerLegalDocumentDigits,
   server
 };

@@ -368,7 +368,7 @@ export default function SuppliersDebtsView({
   const openEditModal = (s: SupplierProfile) => {
     setEditingSupplier(s);
     setEditName(s.name || '');
-    setEditCedula(s.cedula || s.rfc || '');
+    setEditCedula(s.cedula || s.rif || s.rfc || (s as any).ci || s.idNumber || '');
     setEditPhone(s.phone || '');
     setEditContactName(s.contactName || '');
     setEditAddress(s.address || '');
@@ -382,9 +382,8 @@ export default function SuppliersDebtsView({
     e.preventDefault();
     if (!editingSupplier || !onUpdateSupplier) return;
     
-    const ced4 = editCedula.length >= 4 ? editCedula.slice(-4) : '';
-    const ph = editingSupplier.phone ? editingSupplier.phone.replace(/\D/g, '') : '';
-    const ph4 = ph.length >= 4 ? ph.slice(-4) : '0000';
+    const docClean = (editCedula || '').replace(/\D/g, '');
+    const initialPin = docClean.length >= 4 ? `${docClean.slice(-4)}00` : '';
     
     onUpdateSupplier(editingSupplier.id, {
       name: editName,
@@ -394,7 +393,7 @@ export default function SuppliersDebtsView({
       contactName: editContactName,
       address: editAddress,
       birthday: editBirthday,
-      pin: editPin || (editCedula ? ced4 : ph4),
+      pin: editPin || initialPin || editingSupplier.pin || undefined,
       isCheeseProducer: editIsCheeseProducer,
       isEmployee: editIsEmployee
     });
@@ -405,9 +404,8 @@ export default function SuppliersDebtsView({
     e.preventDefault();
     if (!name) return;
     
-    const ced4 = rfc.length >= 4 ? rfc.slice(-4) : '';
-    const ph = phone ? phone.replace(/\D/g, '') : '';
-    const ph4 = ph.length >= 4 ? ph.slice(-4) : '0000';
+    const docClean = (rfc || '').replace(/\D/g, '');
+    const initialPin = docClean.length >= 4 ? `${docClean.slice(-4)}00` : '';
     
     onAddSupplier({
       name,
@@ -421,7 +419,7 @@ export default function SuppliersDebtsView({
       isCheeseProducer,
       isEmployee,
       birthday,
-      pin: pin || (rfc ? ced4 : ph4)
+      pin: pin || initialPin || undefined
     });
     onAddNotification(`Proveedor ${name} registrado con éxito.`, 'success');
     setName('');
@@ -543,8 +541,8 @@ export default function SuppliersDebtsView({
             <input type="date" value={birthday} onChange={e => setBirthday(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
           </div>
           <div className="space-y-1.5 md:col-span-2">
-            <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN Acceso (4 dígitos)</label>
-            <input type="text" maxLength={4} value={pin} onChange={e => setPin(e.target.value)} placeholder="Autogenerado" className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary font-mono tracking-widest focus:outline-none" />
+            <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN Acceso (6 dígitos)</label>
+            <input type="text" maxLength={6} value={pin} onChange={e => setPin(e.target.value)} placeholder="Autogenerado (6 dígitos)" className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary font-mono tracking-widest focus:outline-none" />
           </div>
           <div className="md:col-span-3 pt-4 border-t border-editorial-border/40 flex justify-end">
             <button
@@ -715,10 +713,10 @@ export default function SuppliersDebtsView({
                       </p>
                     </div>
 
-                    {s.rfc && (
+                    {(s.cedula || s.rif || s.rfc || (s as any).ci || s.idNumber) && (
                       <div className="pt-2">
                         <span className="text-[9px] font-mono uppercase text-editorial-text-muted/60">RIF / Cédula:</span>
-                        <p className="text-xs font-mono text-editorial-text-primary mt-0.5">{s.rfc}</p>
+                        <p className="text-xs font-mono text-editorial-text-primary mt-0.5">{s.cedula || s.rif || s.rfc || (s as any).ci || s.idNumber}</p>
                       </div>
                     )}
                     {(s.phone || s.birthday) && (
@@ -1817,8 +1815,8 @@ export default function SuppliersDebtsView({
                 <input type="text" value={editAddress} onChange={e => setEditAddress(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
               </div>
               <div className="space-y-1.5 md:col-span-2">
-                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN Acceso</label>
-                <input type="text" maxLength={4} value={editPin} onChange={e => setEditPin(e.target.value)} placeholder="4 dígitos" className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none font-mono tracking-widest" />
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN Acceso (6 dígitos)</label>
+                <input type="text" maxLength={6} value={editPin} onChange={e => setEditPin(e.target.value)} placeholder="6 dígitos (ej: 123400)" className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none font-mono tracking-widest" />
               </div>
               <div className="space-y-2 pt-1 flex flex-col justify-center">
                 <label className="flex items-center gap-2 cursor-pointer text-xs text-editorial-text-primary">

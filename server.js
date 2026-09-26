@@ -1724,6 +1724,35 @@ function getClientInitialPin(client) {
 }
 
 /**
+ * Función centralizada y reutilizable para extraer los dígitos del documento legal del productor.
+ * Exclusivamente: rif, cedula, rfc, ci, idNumber. El teléfono es dato de contacto y NO forma parte de su identidad legal.
+ */
+function getProducerLegalDocumentDigits(producer) {
+  if (!producer || typeof producer !== 'object') return '';
+  const rawDoc = producer.rif || producer.cedula || producer.rfc || producer.ci || producer.idNumber || '';
+  return String(rawDoc).replace(/\D/g, '');
+}
+
+/**
+ * Función centralizada y reutilizable para generar la contraseña inicial del productor.
+ * Contrato obligatorio: ÚLTIMOS 4 DÍGITOS DEL DOCUMENTO LEGAL + "00" (Exactamente 6 dígitos numéricos).
+ * Si el documento legal no contiene al menos 4 dígitos numéricos, devuelve null (FAIL CLOSED).
+ * NO usa teléfono, email, id ni ningún otro dato que no sea su documento legal.
+ */
+function getProducerInitialPin(producer) {
+  const digits = getProducerLegalDocumentDigits(producer);
+  if (digits.length < 4) {
+    return null; // Fail closed: no inventar PIN
+  }
+  const last4 = digits.slice(-4);
+  const initialPin = `${last4}00`;
+  if (!/^\d{6}$/.test(initialPin)) {
+    return null;
+  }
+  return initialPin;
+}
+
+/**
  * Resuelve autoritativamente el estado canónico de deuda de un cliente (Fase 2F).
  * Detecta inconsistencias entre outstandingDebt y currentDebtUsd legacy.
  */
@@ -1841,13 +1870,11 @@ app.post('/api/portal/auth/login', portalLoginLimiter, portalAccountLoginLimiter
       } else if (matchedEntity.pin) {
         pinValid = verifyCredential(inputPin, matchedEntity.pin) || String(matchedEntity.pin) === inputPin;
       } else {
-        const base = matchedEntity.rif || matchedEntity.cedula || matchedEntity.ci || matchedEntity.phone || '';
-        const baseDigits = String(base).replace(/\D/g, '');
-        if (baseDigits.length >= 4) {
-          const expectedPin = `${baseDigits.slice(-4)}00`;
+        const expectedPin = getProducerInitialPin(matchedEntity);
+        if (expectedPin) {
           pinValid = (inputPin === expectedPin);
         } else {
-          pinValid = false;
+          pinValid = false; // Fail closed si el documento legal no tiene al menos 4 dígitos
         }
       }
 
@@ -2004,8 +2031,7 @@ app.post('/api/portal/auth/change-pin', requirePortalAuth, verifyCsrf, async (re
       } else if (currentEntity.pin) {
         isCurrentPinValid = verifyCredential(currentPinStr, currentEntity.pin) || String(currentEntity.pin) === currentPinStr;
       } else {
-        const baseDigits = String(currentEntity.rif || currentEntity.cedula || currentEntity.ci || currentEntity.phone || '').replace(/\D/g, '');
-        const expectedPin = baseDigits.length >= 4 ? `${baseDigits.slice(-4)}00` : null;
+        const expectedPin = getProducerInitialPin(currentEntity);
         isCurrentPinValid = Boolean(expectedPin && expectedPin === currentPinStr);
       }
     }
@@ -2712,17 +2738,35 @@ app.post('/api/auth/passkey/registration-verify', verifyCsrf, async (req, res) =
  */
 app.post('/api/auth/passkey/authentication-options', async (req, res) => {
   try {
-    const { portalType = 'admin' } = req.body || {};
+    const { portalType = 'admin', preferredCredentialId } = req.body || {};
     const normalizedActorType = ['client', 'producer', 'admin'].includes(portalType) ? portalType : 'admin';
 
     const rpID = getExpectedWebAuthnRPID(req);
 
-    // Discoverable passkey: allowCredentials no se incluye para permitir que el autenticador
-    // identifique la cuenta automáticamente por residentKey en el dispositivo.
-    const options = await generateAuthenticationOptions({
+    // Si el cliente envía un preferredCredentialId guardado en este dispositivo,
+    // validar en webauthn_credentials que la credencial existe y pertenece exactamente a este actorType.
+    let allowCredentials = undefined;
+    if (preferredCredentialId && typeof preferredCredentialId === 'string' && preferredCredentialId.trim().length > 0) {
+      const allCredentials = readCollection('webauthn_credentials') || [];
+      const matched = allCredentials.find(c => c.id === preferredCredentialId.trim() && c.actorType === normalizedActorType);
+      if (matched) {
+        allowCredentials = [{
+          id: matched.id,
+          transports: matched.transports || ['internal']
+        }];
+      }
+    }
+
+    // Generar opciones con allowCredentials específico (si coincide) o vacío/discoverable como fallback
+    const authOptionsConfig = {
       rpID,
       userVerification: 'required'
-    });
+    };
+    if (allowCredentials && allowCredentials.length > 0) {
+      authOptionsConfig.allowCredentials = allowCredentials;
+    }
+
+    const options = await generateAuthenticationOptions(authOptionsConfig);
 
     const challengePayload = {
       challenge: options.challenge,
@@ -9128,6 +9172,8 @@ export {
   downloadMetaMediaAsBase64,
   recordAuditLog,
   getClientInitialPin,
+  getProducerInitialPin,
+  getProducerLegalDocumentDigits,
   BUSINESS_TIMEZONE,
   getCaracasDateParts,
   getCaracasStartOfDayMs,

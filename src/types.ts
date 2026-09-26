@@ -207,6 +207,8 @@ export interface SupplierProfile {
   name: string;
   idNumber?: string;
   cedula?: string;
+  rif?: string;
+  ci?: string;
   contact: string;
   phone: string;
   email: string;

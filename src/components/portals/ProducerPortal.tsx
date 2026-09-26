@@ -102,7 +102,7 @@ export default function ProducerPortal({
       } as unknown as SupplierProfile);
 
       setLoggedSupplier(supplier);
-      setSupplierPhoneInput('');
+      setSupplierIdentifierInput('');
       setSupplierPinInput('');
       setLoginAttempts(0);
       setLockoutUntil(0);
@@ -194,7 +194,7 @@ export default function ProducerPortal({
     return () => window.removeEventListener('error', handleError);
   }, []);
 
-  const [supplierPhoneInput, setSupplierPhoneInput] = useState('');
+  const [supplierIdentifierInput, setSupplierIdentifierInput] = useState('');
   const [supplierPinInput, setSupplierPinInput] = useState('');
 
   // Lockout States
@@ -393,9 +393,9 @@ export default function ProducerPortal({
     e.preventDefault();
     if (lockoutUntil > Date.now()) return;
 
-    const cleanInput = supplierPhoneInput.trim();
+    const cleanInput = supplierIdentifierInput.trim();
     if (!cleanInput || !supplierPinInput) {
-      setLoginError('Por favor ingrese su identificador y PIN.');
+      setLoginError('Por favor ingrese su Cédula / Documento Legal y PIN.');
       return;
     }
 
@@ -407,13 +407,21 @@ export default function ProducerPortal({
       });
 
       if (res.portalUser) {
-        const supplier = suppliers.find(s => String(s.id) === String(res.portalUser.id)) || ({
+        let producerProfile: SupplierProfile | null = null;
+        try {
+          producerProfile = await fetchPortalProducerProfileApi();
+        } catch (profileErr) {
+          console.warn('[Portal Login] Error fetching authoritative producer profile:', profileErr);
+        }
+
+        const supplier = producerProfile || suppliers.find(s => String(s.id) === String(res.portalUser.id)) || ({
           id: res.portalUser.id,
           name: res.portalUser.name,
           contact: '',
-          phone: cleanInput,
+          phone: '',
           email: '',
-          rif: '',
+          rif: cleanInput,
+          cedula: cleanInput,
           type: 'producer',
           balanceUsd: 0,
           balanceOwed: 0,
@@ -421,7 +429,7 @@ export default function ProducerPortal({
         } as unknown as SupplierProfile);
 
         setLoggedSupplier(supplier);
-        setSupplierPhoneInput('');
+        setSupplierIdentifierInput('');
         setSupplierPinInput('');
         setLoginAttempts(0);
         setLockoutUntil(0);
@@ -699,8 +707,8 @@ export default function ProducerPortal({
                       </div>
                     )}
                     <div className="space-y-1.5">
-                      <label className="text-[9px] font-bold uppercase tracking-widest text-slate-500 ml-1">Cédula o Teléfono</label>
-                      <input disabled={lockoutUntil > Date.now()} type="tel" placeholder="04141234567" value={supplierPhoneInput} onChange={e => setSupplierPhoneInput(e.target.value)} className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" />
+                      <label className="text-[9px] font-bold uppercase tracking-widest text-slate-500 ml-1">Cédula / Documento Legal</label>
+                      <input disabled={lockoutUntil > Date.now()} type="text" placeholder="Ej: 15712801 o J-12345678-9" value={supplierIdentifierInput} onChange={e => setSupplierIdentifierInput(e.target.value)} className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-mono" />
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-[9px] font-bold uppercase tracking-widest text-slate-500 ml-1">PIN de Seguridad (6 DÍGITOS)</label>
