@@ -41,6 +41,7 @@ import Header from './components/Header';
 import LoginView from './components/LoginView';
 import DestinationSelectorView from './components/DestinationSelectorView';
 import DashboardView from './components/DashboardView';
+import { PasskeyRegisterPrompt } from './components/BiometricLoginPanel';
 import { fetchCurrentUserApi, logoutApi } from './services/localApi';
 
 // New specialized ERP Views
@@ -1969,6 +1970,12 @@ export default function App() {
 
         {/* Scrollable Main View Stage */}
         <main className={`flex-1 p-6 sm:p-10 mx-auto w-full overflow-y-auto ${currentView === 'inventory' ? 'max-w-full' : 'max-w-7xl'}`}>
+          {/* Banner no invasivo para invitar al registro de passkey admin */}
+          <PasskeyRegisterPrompt
+            actorType="admin"
+            onRegistered={() => addNotification('¡Acceso biométrico configurado correctamente para tu cuenta!', 'success')}
+          />
+
           {currentView === 'portal-dashboard' && (
             <DashboardView
               transactions={transactions}

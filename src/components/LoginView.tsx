@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
-import { Mail, Lock, ArrowRight, Users } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Mail, Lock, ArrowRight, Users, Fingerprint } from 'lucide-react';
 import { UserIdentity } from '../types';
 import { loginApi } from '../services/localApi';
 import PWAInstallButton from './PWAInstallButton';
+import BiometricLoginPanel, { PasskeyInfoModal } from './BiometricLoginPanel';
+import { hasLocalPasskeyHint, browserSupportsPasskeys } from '../services/passkeyService';
 
 interface LoginViewProps {
   users?: UserIdentity[];
@@ -12,6 +14,15 @@ interface LoginViewProps {
 
 export default function LoginView({ users, onLoginSuccess, onAddNotification }: LoginViewProps) {
   const [loginMode, setLoginMode] = useState<'admin' | 'cajero'>('admin');
+  
+  // Passkey / Biometric states
+  const [showBiometricScreen, setShowBiometricScreen] = useState<boolean>(() => hasLocalPasskeyHint('admin'));
+  const [showPasskeyInfoModal, setShowPasskeyInfoModal] = useState(false);
+  const [supportsWebAuthn, setSupportsWebAuthn] = useState(false);
+
+  useEffect(() => {
+    setSupportsWebAuthn(browserSupportsPasskeys());
+  }, []);
   
   // Admin Credentials
   const [email, setEmail] = useState('');
@@ -23,6 +34,19 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
   
   const [rememberMe, setRememberMe] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
+
+  const handleBiometricSuccess = (data: any) => {
+    const user = data.user;
+    if (user) {
+      if (user.role === 'cajero') {
+        onLoginSuccess(user, 'pos-terminal');
+        onAddNotification(`¡Bienvenido ${user.name}! Acceso con huella correcto.`, 'success');
+      } else {
+        onLoginSuccess(user);
+        onAddNotification(`¡Acceso biométrico concedido para ${user.name}!`, 'success');
+      }
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,6 +81,14 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
       {/* Background Editorial Accents */}
       <div className="absolute top-[-10%] left-[-10%] w-[45%] h-[45%] bg-brand-accent/[0.03] rounded-full blur-[120px] pointer-events-none" />
       <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-brand-accent/[0.02] rounded-full blur-[120px] pointer-events-none" />
+
+      <PasskeyInfoModal
+        isOpen={showPasskeyInfoModal}
+        onClose={() => setShowPasskeyInfoModal(false)}
+        actorType="admin"
+        onAuthSuccess={handleBiometricSuccess}
+        onAddNotification={onAddNotification}
+      />
 
       {/* Main Container */}
       <div className="w-full max-w-[1100px] grid grid-cols-1 lg:grid-cols-12 gap-12 items-center relative z-10">
@@ -97,16 +129,44 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
           </div>
         </div>
 
-        {/* Right Hand: Dual-Design Toggle Login Card */}
+        {/* Right Hand: Dual-Design Toggle Login Card / Biometric Panel */}
         <div className="lg:col-span-6 flex justify-center lg:justify-end">
-          <div className="w-full max-w-[450px] bg-editorial-card border border-editorial-border rounded p-8 sm:p-10 shadow-2xl flex flex-col gap-6 relative">
-            
+          {showBiometricScreen ? (
+            <BiometricLoginPanel
+              actorType="admin"
+              onSuccess={handleBiometricSuccess}
+              onFallbackToNormal={() => setShowBiometricScreen(false)}
+              onErrorNotification={(msg) => onAddNotification(msg, 'warning')}
+            />
+          ) : (
+            <div className="w-full max-w-[450px] bg-editorial-card border border-editorial-border rounded p-8 sm:p-10 shadow-2xl flex flex-col gap-6 relative">
               <>
                 {/* Section Header Text */}
                 <div className="space-y-1">
-                  <h2 className="font-serif text-3xl font-bold tracking-tight text-editorial-text-primary">
-                    {loginMode === 'admin' ? 'Administración' : 'Acceso Cajero'}
-                  </h2>
+                  <div className="flex items-center justify-between">
+                    <h2 className="font-serif text-3xl font-bold tracking-tight text-editorial-text-primary">
+                      {loginMode === 'admin' ? 'Administración' : 'Acceso Cajero'}
+                    </h2>
+                    
+                    {/* Botón de Huellita Biométrica */}
+                    {supportsWebAuthn && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (hasLocalPasskeyHint('admin')) {
+                            setShowBiometricScreen(true);
+                          } else {
+                            setShowPasskeyInfoModal(true);
+                          }
+                        }}
+                        className="p-2 rounded-xl bg-brand-accent/10 border border-brand-accent/20 text-brand-accent hover:bg-brand-accent/20 hover:scale-105 active:scale-95 transition-all cursor-pointer"
+                        title="Acceso biométrico con huella"
+                        aria-label="Acceso biométrico con huella"
+                      >
+                        <Fingerprint size={20} />
+                      </button>
+                    )}
+                  </div>
                   <p className="text-xs text-editorial-text-muted leading-relaxed">
                     {loginMode === 'admin' 
                       ? 'Ingrese sus credenciales de administrador para obtener acceso completo.'
@@ -239,7 +299,8 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
                   <PWAInstallButton portalType="admin" className="w-full py-3 text-xs" />
                 </div>
               </>
-          </div>
+            </div>
+          )}
         </div>
 
       </div>

@@ -14,6 +14,13 @@ import bcrypt from 'bcryptjs';
 import session from 'express-session';
 import rateLimit, { MemoryStore } from 'express-rate-limit';
 import zlib from 'zlib';
+import {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse
+} from '@simplewebauthn/server';
+import { isoBase64URL, isoUint8Array } from '@simplewebauthn/server/helpers';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2374,6 +2381,615 @@ app.post('/api/portal/auth/recovery/reset-pin', recoveryResetPinLimiter, async (
   } catch (error) {
     console.error('[Recovery Reset-PIN Exception]:', error);
     res.status(500).json({ error: 'Error procesando el restablecimiento del PIN' });
+  }
+});
+
+// ============================================================
+// WEBAUTHN / PASSKEY BIOMETRIC AUTHENTICATION MODULE
+// ============================================================
+
+const WEBAUTHN_CHALLENGE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+
+// Registro central server-side de challenges activos para garantizar indivisibilidad (check + claim atómico)
+const activeWebAuthnChallenges = new Map();
+
+/**
+ * Registra un nuevo challenge en el almacén server-side central.
+ */
+function registerWebAuthnChallenge({ challenge, sessionId, purpose, actorType, userId, expiresAt }) {
+  if (!challenge) return;
+  const now = Date.now();
+  // Limpieza oportunista de challenges expirados
+  for (const [k, v] of activeWebAuthnChallenges.entries()) {
+    if (v.expiresAt <= now) {
+      activeWebAuthnChallenges.delete(k);
+    }
+  }
+  activeWebAuthnChallenges.set(challenge, {
+    challenge,
+    sessionId: sessionId || null,
+    purpose,
+    actorType,
+    userId: userId || null,
+    expiresAt: expiresAt || (now + WEBAUTHN_CHALLENGE_TTL_MS),
+    createdAt: now
+  });
+}
+
+/**
+ * Intenta reclamar (check + consume) un challenge de forma atómica y sincrónica.
+ * Devuelve el challengeContext si fue exitoso, o null si ya fue consumido, no existe o expiró.
+ */
+function claimWebAuthnChallenge({ challenge, sessionId, purpose }) {
+  if (!challenge) return null;
+  const entry = activeWebAuthnChallenges.get(challenge);
+  if (!entry) return null;
+
+  // Si ya expiró, eliminarlo y denegar
+  if (Date.now() > entry.expiresAt) {
+    activeWebAuthnChallenges.delete(challenge);
+    return null;
+  }
+
+  // Validar correspondencia de sesión si existe
+  if (sessionId && entry.sessionId && entry.sessionId !== sessionId) {
+    return null;
+  }
+
+  // Validar propósito
+  if (purpose && entry.purpose !== purpose) {
+    return null;
+  }
+
+  // Operación atómica sincrónica en el mismo tick de Node.js: eliminar inmediatamente del registro
+  activeWebAuthnChallenges.delete(challenge);
+  return entry;
+}
+
+function getExpectedWebAuthnRPID(req) {
+  if (isProd) {
+    return process.env.WEBAUTHN_RP_ID || 'sistemakalu.com';
+  }
+  const clientOrigin = req.get('origin') || req.get('referer');
+  if (clientOrigin) {
+    try {
+      const parsed = new URL(clientOrigin);
+      const normalized = `${parsed.protocol}//${parsed.host}`;
+      if (isOriginAllowed(normalized)) {
+        return parsed.hostname;
+      }
+    } catch (e) {}
+  }
+  const reqHost = req.get('host');
+  if (reqHost) {
+    try {
+      const parsedHost = reqHost.split(':')[0];
+      const testOriginHttp = `http://${reqHost}`;
+      if (isOriginAllowed(testOriginHttp) || parsedHost === 'localhost' || parsedHost === '127.0.0.1') {
+        return parsedHost;
+      }
+    } catch (e) {}
+  }
+  return 'localhost';
+}
+
+function getExpectedWebAuthnOrigin(req) {
+  if (isProd) {
+    return process.env.WEBAUTHN_ORIGIN || 'https://sistemakalu.com';
+  }
+  const clientOrigin = req.get('origin') || req.get('referer');
+  if (clientOrigin) {
+    try {
+      const parsed = new URL(clientOrigin);
+      const normalized = `${parsed.protocol}//${parsed.host}`;
+      if (isOriginAllowed(normalized)) {
+        return normalized;
+      }
+    } catch (e) {}
+  }
+  return 'http://localhost:3000';
+}
+
+/**
+ * 1. Opciones de Registro de Passkey (Requiere sesión autenticada real + CSRF)
+ * POST /api/auth/passkey/registration-options
+ * Requiere: Sesión activa de Admin (req.session.userId) o Portal (req.session.portalUser) + verifyCsrf
+ */
+app.post('/api/auth/passkey/registration-options', verifyCsrf, async (req, res) => {
+  try {
+    let resolvedActorType = null;
+    let resolvedUserId = null;
+    let resolvedUserName = 'Usuario Kalu';
+
+    if (req.session?.userId) {
+      const users = readCollection('users');
+      const user = users.find(u => String(u.id) === String(req.session.userId));
+      if (user && user.active) {
+        resolvedActorType = 'admin';
+        resolvedUserId = String(user.id);
+        resolvedUserName = user.name || user.email || 'Admin';
+      }
+    } else if (req.session?.portalUser?.id) {
+      const portalType = req.session.portalUser.type;
+      if (portalType === 'client') {
+        const clients = readCollection('clients');
+        const client = clients.find(c => String(c.id) === String(req.session.portalUser.id));
+        if (client && (!client.status || client.status === 'active')) {
+          resolvedActorType = 'client';
+          resolvedUserId = String(client.id);
+          resolvedUserName = client.name || 'Cliente Kalu';
+        }
+      } else if (portalType === 'producer' || portalType === 'supplier') {
+        const suppliers = readCollection('suppliers');
+        const supplier = suppliers.find(s => String(s.id) === String(req.session.portalUser.id));
+        if (supplier && (!supplier.status || supplier.status === 'active')) {
+          resolvedActorType = 'producer';
+          resolvedUserId = String(supplier.id);
+          resolvedUserName = supplier.name || 'Productor Kalu';
+        }
+      }
+    }
+
+    if (!resolvedActorType || !resolvedUserId) {
+      return res.status(401).json({ error: 'Debe iniciar sesión previamente para registrar una passkey' });
+    }
+
+    const allCredentials = readCollection('webauthn_credentials') || [];
+    const userCredentials = allCredentials.filter(c => c.actorType === resolvedActorType && String(c.userId) === resolvedUserId);
+
+    const rpID = getExpectedWebAuthnRPID(req);
+    const rpName = 'Kalu Sistema Operativo';
+
+    // Generar opciones con residentKey requerido y userVerification requerido
+    const options = await generateRegistrationOptions({
+      rpName,
+      rpID,
+      userID: isoUint8Array.fromUTF8String(`${resolvedActorType}:${resolvedUserId}`),
+      userName: resolvedUserName,
+      userDisplayName: resolvedUserName,
+      attestationType: 'none',
+      excludeCredentials: userCredentials.map(cred => ({
+        id: cred.id,
+        transports: cred.transports || ['internal']
+      })),
+      authenticatorSelection: {
+        residentKey: 'required',
+        userVerification: 'required',
+        authenticatorAttachment: 'platform'
+      }
+    });
+
+    // Guardar challenge temporal en sesión (5 min TTL) y registrarlo en el registro atómico central
+    const challengePayload = {
+      challenge: options.challenge,
+      purpose: 'registration',
+      actorType: resolvedActorType,
+      userId: resolvedUserId,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + WEBAUTHN_CHALLENGE_TTL_MS
+    };
+
+    req.session.passkeyChallenge = challengePayload;
+    registerWebAuthnChallenge({
+      ...challengePayload,
+      sessionId: req.sessionID
+    });
+
+    req.session.save((err) => {
+      if (err) {
+        console.error('[WebAuthn Error] Error guardando challenge de registro en sesión:', err);
+        return res.status(500).json({ error: 'Error inicializando registro biométrico' });
+      }
+      res.json(options);
+    });
+  } catch (error) {
+    console.error('[WebAuthn Registration Options Exception]:', error);
+    res.status(500).json({ error: 'Error generando opciones de registro biométrico' });
+  }
+});
+
+/**
+ * 2. Verificar Registro de Passkey (Requiere CSRF)
+ * POST /api/auth/passkey/registration-verify
+ * Requiere: Challenge activo de registro en sesión + verifyCsrf
+ */
+app.post('/api/auth/passkey/registration-verify', verifyCsrf, async (req, res) => {
+  const sessionChallenge = req.session?.passkeyChallenge;
+  delete req.session?.passkeyChallenge; // One-shot: limpiar de sesión inmediatamente
+
+  // Reclamar de forma atómica e indivisible en el registro central server-side
+  const candidateChallenge = sessionChallenge?.challenge;
+  const challengeContext = claimWebAuthnChallenge({
+    challenge: candidateChallenge,
+    sessionId: req.sessionID,
+    purpose: 'registration'
+  });
+
+  // Persistir inmediatamente el borrado del challenge con manejo estricto de error
+  if (req.session?.save) {
+    try {
+      await new Promise((resolve, reject) => {
+        req.session.save((err) => {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+    } catch (saveErr) {
+      console.error('[WebAuthn Error] Error persistiendo consumo de challenge en sesión:', saveErr);
+      return res.status(500).json({ error: 'Error procesando sesión de registro biométrico' });
+    }
+  }
+
+  try {
+    if (!challengeContext || challengeContext.purpose !== 'registration') {
+      return res.status(400).json({ error: 'Desafío de registro WebAuthn no encontrado o ya utilizado' });
+    }
+
+    if (Date.now() > challengeContext.expiresAt) {
+      return res.status(400).json({ error: 'El desafío de registro WebAuthn ha expirado' });
+    }
+
+    const { actorType, userId } = challengeContext;
+    const registrationResponse = req.body;
+
+    if (!registrationResponse || !registrationResponse.id || !registrationResponse.response) {
+      return res.status(400).json({ error: 'Respuesta de registro WebAuthn inválida' });
+    }
+
+    const expectedRPID = getExpectedWebAuthnRPID(req);
+    const expectedOrigin = getExpectedWebAuthnOrigin(req);
+
+    const verification = await verifyRegistrationResponse({
+      response: registrationResponse,
+      expectedChallenge: challengeContext.challenge,
+      expectedOrigin,
+      expectedRPID,
+      requireUserVerification: true
+    });
+
+    if (!verification.verified || !verification.registrationInfo) {
+      recordAuditLog({
+        req,
+        actorType,
+        actorId: userId,
+        action: 'webauthn.register',
+        resourceType: 'auth_passkey',
+        result: 'denied',
+        metadata: { reason: 'verification_failed' }
+      });
+      return res.status(400).json({ error: 'Fallo al verificar el registro de la passkey' });
+    }
+
+    const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+
+    const newCredential = {
+      id: credential.id, // Base64URL
+      actorType,
+      userId: String(userId),
+      publicKey: isoBase64URL.fromBuffer(credential.publicKey),
+      counter: credential.counter,
+      transports: registrationResponse.response.transports || ['internal'],
+      deviceType: credentialDeviceType,
+      backedUp: credentialBackedUp,
+      createdAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString()
+    };
+
+    await withCollectionLock('webauthn_credentials', async () => {
+      const credentials = readCollection('webauthn_credentials') || [];
+      // Reemplazar credencial si ya existía con el mismo id
+      const filtered = credentials.filter(c => c.id !== newCredential.id);
+      filtered.push(newCredential);
+      writeCollection('webauthn_credentials', filtered);
+    });
+
+    recordAuditLog({
+      req,
+      actorType,
+      actorId: userId,
+      action: 'webauthn.register',
+      resourceType: 'auth_passkey',
+      resourceId: newCredential.id,
+      result: 'success',
+      metadata: { actorType, deviceType: credentialDeviceType }
+    });
+
+    res.json({
+      success: true,
+      verified: true,
+      credentialId: newCredential.id
+    });
+  } catch (error) {
+    console.error('[WebAuthn Registration Verify Exception]:', error);
+    res.status(500).json({ error: error.message || 'Error verificando registro biométrico' });
+  }
+});
+
+/**
+ * 3. Opciones de Autenticación de Passkey (Passwordless / Discoverable)
+ * POST /api/auth/passkey/authentication-options
+ * Body: { portalType?: 'admin' | 'client' | 'producer' }
+ */
+app.post('/api/auth/passkey/authentication-options', async (req, res) => {
+  try {
+    const { portalType = 'admin' } = req.body || {};
+    const normalizedActorType = ['client', 'producer', 'admin'].includes(portalType) ? portalType : 'admin';
+
+    const rpID = getExpectedWebAuthnRPID(req);
+
+    // Discoverable passkey: allowCredentials no se incluye para permitir que el autenticador
+    // identifique la cuenta automáticamente por residentKey en el dispositivo.
+    const options = await generateAuthenticationOptions({
+      rpID,
+      userVerification: 'required'
+    });
+
+    const challengePayload = {
+      challenge: options.challenge,
+      purpose: 'authentication',
+      actorType: normalizedActorType,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + WEBAUTHN_CHALLENGE_TTL_MS
+    };
+
+    req.session.passkeyChallenge = challengePayload;
+    registerWebAuthnChallenge({
+      ...challengePayload,
+      sessionId: req.sessionID
+    });
+
+    req.session.save((err) => {
+      if (err) {
+        console.error('[WebAuthn Error] Error guardando challenge de autenticación en sesión:', err);
+        return res.status(500).json({ error: 'Error inicializando autenticación biométrica' });
+      }
+      res.json(options);
+    });
+  } catch (error) {
+    console.error('[WebAuthn Auth Options Exception]:', error);
+    res.status(500).json({ error: 'Error generando opciones de autenticación biométrica' });
+  }
+});
+
+/**
+ * 4. Verificar Autenticación de Passkey y Crear Sesión Legítima
+ * POST /api/auth/passkey/authentication-verify
+ * Body: WebAuthn AuthenticationResponse
+ */
+app.post('/api/auth/passkey/authentication-verify', async (req, res) => {
+  const sessionChallenge = req.session?.passkeyChallenge;
+  delete req.session?.passkeyChallenge; // One-shot: limpiar de sesión inmediatamente
+
+  // Reclamar de forma atómica e indivisible en el registro central server-side
+  const candidateChallenge = sessionChallenge?.challenge;
+  const challengeContext = claimWebAuthnChallenge({
+    challenge: candidateChallenge,
+    sessionId: req.sessionID,
+    purpose: 'authentication'
+  });
+
+  // Persistir inmediatamente el borrado del challenge con manejo estricto de error
+  if (req.session?.save) {
+    try {
+      await new Promise((resolve, reject) => {
+        req.session.save((err) => {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+    } catch (saveErr) {
+      console.error('[WebAuthn Error] Error persistiendo consumo de challenge en sesión:', saveErr);
+      return res.status(500).json({ error: 'Error procesando sesión de autenticación biométrica' });
+    }
+  }
+
+  try {
+    if (!challengeContext || challengeContext.purpose !== 'authentication') {
+      return res.status(400).json({ error: 'Desafío de autenticación WebAuthn no encontrado o ya utilizado' });
+    }
+
+    if (Date.now() > challengeContext.expiresAt) {
+      return res.status(400).json({ error: 'El desafío de autenticación WebAuthn ha expirado' });
+    }
+
+    const { actorType: targetPortalType } = challengeContext;
+    const authResponse = req.body;
+
+    if (!authResponse || !authResponse.id || !authResponse.response) {
+      return res.status(400).json({ error: 'Respuesta de autenticación WebAuthn incompleta' });
+    }
+
+    const allCredentials = readCollection('webauthn_credentials') || [];
+    const matchedCred = allCredentials.find(c => c.id === authResponse.id);
+
+    if (!matchedCred) {
+      recordAuditLog({
+        req,
+        actorType: targetPortalType,
+        action: 'webauthn.login',
+        resourceType: 'auth_passkey',
+        result: 'denied',
+        metadata: { reason: 'credential_not_found', targetPortalType }
+      });
+      return res.status(401).json({ error: 'Credencial biométrica no encontrada o no registrada en este sistema' });
+    }
+
+    // Aislamiento estricto de roles: la credencial DEBE coincidir con el actorType del portal solicitado
+    if (matchedCred.actorType !== targetPortalType) {
+      recordAuditLog({
+        req,
+        actorType: targetPortalType,
+        action: 'webauthn.login',
+        resourceType: 'auth_passkey',
+        result: 'denied',
+        metadata: {
+          reason: 'role_isolation_mismatch',
+          credActorType: matchedCred.actorType,
+          targetPortalType
+        }
+      });
+      return res.status(403).json({ error: 'Esta credencial biométrica no pertenece a esta puerta de acceso' });
+    }
+
+    // Cargar entidad real y validar su estado activo
+    let userEntity = null;
+    let safeUser = null;
+    let safePortalUser = null;
+
+    if (matchedCred.actorType === 'admin') {
+      const users = readCollection('users');
+      userEntity = users.find(u => String(u.id) === String(matchedCred.userId));
+      if (!userEntity || !userEntity.active) {
+        return res.status(401).json({ error: 'Usuario administrador no autorizado o inactivo' });
+      }
+      safeUser = {
+        id: userEntity.id,
+        name: userEntity.name,
+        role: userEntity.role,
+        cedula: userEntity.cedula,
+        initials: userEntity.initials || (userEntity.name ? userEntity.name.slice(0, 2).toUpperCase() : 'US')
+      };
+    } else if (matchedCred.actorType === 'client') {
+      const clients = readCollection('clients');
+      userEntity = clients.find(c => String(c.id) === String(matchedCred.userId));
+      if (!userEntity || (userEntity.status && userEntity.status !== 'active')) {
+        return res.status(401).json({ error: 'Cuenta de cliente inactiva o no encontrada' });
+      }
+      safePortalUser = {
+        type: 'client',
+        id: userEntity.id,
+        name: userEntity.name
+      };
+    } else if (matchedCred.actorType === 'producer') {
+      const suppliers = readCollection('suppliers');
+      userEntity = suppliers.find(s => String(s.id) === String(matchedCred.userId));
+      if (!userEntity || (userEntity.status && userEntity.status !== 'active')) {
+        return res.status(401).json({ error: 'Cuenta de productor inactiva o no encontrada' });
+      }
+      safePortalUser = {
+        type: 'producer',
+        id: userEntity.id,
+        name: userEntity.name
+      };
+    }
+
+    const expectedRPID = getExpectedWebAuthnRPID(req);
+    const expectedOrigin = getExpectedWebAuthnOrigin(req);
+
+    // Convertir publicKey almacenada de vuelta a Buffer/Uint8Array
+    const publicKeyBuffer = isoBase64URL.toBuffer(matchedCred.publicKey);
+
+    const verification = await verifyAuthenticationResponse({
+      response: authResponse,
+      expectedChallenge: challengeContext.challenge,
+      expectedOrigin,
+      expectedRPID,
+      credential: {
+        id: matchedCred.id,
+        publicKey: publicKeyBuffer,
+        counter: matchedCred.counter || 0,
+        transports: matchedCred.transports
+      },
+      requireUserVerification: true
+    });
+
+    if (!verification.verified || !verification.authenticationInfo) {
+      recordAuditLog({
+        req,
+        actorType: targetPortalType,
+        actorId: matchedCred.userId,
+        action: 'webauthn.login',
+        resourceType: 'auth_passkey',
+        result: 'denied',
+        metadata: { reason: 'verification_failed', targetPortalType }
+      });
+      return res.status(401).json({ error: 'Fallo de verificación biométrica con el dispositivo' });
+    }
+
+    const { newCounter } = verification.authenticationInfo;
+
+    // Actualizar counter y lastUsedAt de la credencial
+    await withCollectionLock('webauthn_credentials', async () => {
+      const credentials = readCollection('webauthn_credentials') || [];
+      const cred = credentials.find(c => c.id === matchedCred.id);
+      if (cred) {
+        cred.counter = newCounter;
+        cred.lastUsedAt = new Date().toISOString();
+        writeCollection('webauthn_credentials', credentials);
+      }
+    });
+
+    // Establecer la sesión real según el actorType
+    req.session.regenerate((err) => {
+      if (err) {
+        console.error('[WebAuthn Auth Error] Error regenerando sesión:', err);
+        return res.status(500).json({ error: 'Error interno de sesión' });
+      }
+
+      req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+
+      if (matchedCred.actorType === 'admin') {
+        req.session.userId = userEntity.id;
+        req.session.userRole = userEntity.role;
+
+        recordAuditLog({
+          req,
+          actorType: 'crm',
+          actorId: userEntity.id,
+          actorRole: userEntity.role,
+          action: 'auth.login.passkey',
+          resourceType: 'auth',
+          resourceId: userEntity.id,
+          result: 'success',
+          metadata: { loginMethod: 'passkey', role: userEntity.role }
+        });
+
+        req.session.save((saveErr) => {
+          if (saveErr) {
+            console.error('[WebAuthn Session Save Error]:', saveErr);
+            return res.status(500).json({ error: 'Error guardando sesión' });
+          }
+          res.json({
+            success: true,
+            authenticated: true,
+            actorType: 'admin',
+            user: safeUser,
+            csrfToken: req.session.csrfToken
+          });
+        });
+      } else {
+        req.session.portalUser = safePortalUser;
+
+        recordAuditLog({
+          req,
+          actorType: 'portal',
+          actorId: userEntity.id,
+          actorRole: matchedCred.actorType,
+          action: 'portal.login.passkey',
+          resourceType: 'portal_auth',
+          resourceId: userEntity.id,
+          result: 'success',
+          metadata: { loginMethod: 'passkey', portalType: matchedCred.actorType }
+        });
+
+        req.session.save((saveErr) => {
+          if (saveErr) {
+            console.error('[WebAuthn Session Save Error]:', saveErr);
+            return res.status(500).json({ error: 'Error guardando sesión' });
+          }
+          res.json({
+            success: true,
+            authenticated: true,
+            actorType: matchedCred.actorType,
+            portalUser: safePortalUser,
+            csrfToken: req.session.csrfToken
+          });
+        });
+      }
+    });
+  } catch (error) {
+    console.error('[WebAuthn Authentication Verify Exception]:', error);
+    res.status(500).json({ error: error.message || 'Error procesando autenticación biométrica' });
   }
 });
 

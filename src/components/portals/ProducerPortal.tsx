@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Store, Home, Package, Truck, Wallet, LogOut, Search, Shield, ChevronRight, LogIn, User,
   ShoppingCart, X, Trash2, Copy, Image as ImageIcon, Banknote, Check,
-  Key, ArrowLeft, Gift, MapPin, Mail, MessageCircle, Info, Star
+  Key, ArrowLeft, Gift, MapPin, Mail, MessageCircle, Info, Star, Fingerprint
 } from 'lucide-react';
 import { MobilePortalsViewProps } from '../MobilePortalsView';
 import { SupplierProfile, Transaction, CheeseProduct, MobileOrder } from '../../types';
@@ -25,6 +25,8 @@ import {
 import KaluLoader from '../KaluLoader';
 import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
 import PWAInstallButton from '../PWAInstallButton';
+import BiometricLoginPanel, { PasskeyInfoModal, PasskeyRegisterPrompt } from '../BiometricLoginPanel';
+import { hasLocalPasskeyHint, browserSupportsPasskeys } from '../../services/passkeyService';
 
 const parseCustomDate = (dateStr: string): number => {
   if (!dateStr) return 0;
@@ -67,6 +69,47 @@ export default function ProducerPortal({
 
   const [loggedSupplier, setLoggedSupplier] = useState<SupplierProfile | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+
+  // Biometric / Passkey state for Producer
+  const [producerShowBiometric, setProducerShowBiometric] = useState<boolean>(() => hasLocalPasskeyHint('producer'));
+  const [producerShowPasskeyInfo, setProducerShowPasskeyInfo] = useState(false);
+  const [supportsWebAuthn, setSupportsWebAuthn] = useState(false);
+
+  useEffect(() => {
+    setSupportsWebAuthn(browserSupportsPasskeys());
+  }, []);
+
+  const handleProducerBiometricSuccess = async (data: any) => {
+    if (data.portalUser) {
+      let producerProfile: SupplierProfile | null = null;
+      try {
+        producerProfile = await fetchPortalProducerProfileApi();
+      } catch (profileErr) {
+        console.warn('[Portal Login] Error fetching authoritative producer profile:', profileErr);
+      }
+
+      const supplier = producerProfile || suppliers.find(s => String(s.id) === String(data.portalUser.id)) || ({
+        id: data.portalUser.id,
+        name: data.portalUser.name,
+        contact: '',
+        phone: '',
+        email: '',
+        rif: '',
+        type: 'producer',
+        balanceUsd: 0,
+        balanceOwed: 0,
+        status: 'active'
+      } as unknown as SupplierProfile);
+
+      setLoggedSupplier(supplier);
+      setSupplierPhoneInput('');
+      setSupplierPinInput('');
+      setLoginAttempts(0);
+      setLockoutUntil(0);
+      setLoginError(null);
+      onAddNotification(`¡Bienvenido, ${data.portalUser.name}! Acceso biométrico correcto.`, 'success');
+    }
+  };
 
   const [producerTrips, setProducerTrips] = useState<any[]>([]);
   const [producerTxs, setProducerTxs] = useState<any[]>([]);
@@ -601,41 +644,80 @@ export default function ProducerPortal({
           {isInitializing ? (
             <KaluLoader message="Mundo Kalu" subMessage="CARGANDO SESIÓN..." />
           ) : !loggedSupplier ? (
-            <div className="flex-1 flex flex-col justify-center px-8 relative z-10 animate-fade-in">
-              <div className="mb-8 text-center space-y-2">
-                <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/20">
-                  <Package className="w-10 h-10 text-emerald-400" />
-                </div>
-                <h2 className="text-2xl font-bold tracking-tight text-white">Portal de <br/><span className="text-emerald-400">Productores</span></h2>
-                <p className="text-[11px] text-slate-400 font-mono tracking-wider">GESTIÓN DE ARRIME Y LIBRETA</p>
+            producerShowBiometric ? (
+              <div className="flex-1 flex flex-col justify-center px-4 relative z-10 animate-fade-in">
+                <BiometricLoginPanel
+                  actorType="producer"
+                  onSuccess={handleProducerBiometricSuccess}
+                  onFallbackToNormal={() => setProducerShowBiometric(false)}
+                  onErrorNotification={(msg) => onAddNotification(msg, 'warning')}
+                />
               </div>
+            ) : (
+              <div className="flex-1 flex flex-col justify-center px-8 relative z-10 animate-fade-in">
+                <PasskeyInfoModal
+                  isOpen={producerShowPasskeyInfo}
+                  onClose={() => setProducerShowPasskeyInfo(false)}
+                  actorType="producer"
+                  onAuthSuccess={handleProducerBiometricSuccess}
+                  onAddNotification={onAddNotification}
+                />
 
-              <form className="bg-slate-900/50 backdrop-blur-md p-5 rounded-3xl border border-slate-800/50 shadow-xl relative overflow-hidden">
-                <div className="space-y-4 relative z-10">
-                  {loginError && (
-                    <div className="bg-red-500/10 border border-red-500/50 text-red-500 p-3 rounded-xl text-xs text-center animate-pulse font-bold">
-                      {loginError}
+                <div className="mb-8 text-center space-y-2">
+                  <div className="relative inline-block mx-auto mb-4">
+                    <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto border border-emerald-500/20">
+                      <Package className="w-10 h-10 text-emerald-400" />
                     </div>
-                  )}
-                  <div className="space-y-1.5">
-                    <label className="text-[9px] font-bold uppercase tracking-widest text-slate-500 ml-1">Cédula o Teléfono</label>
-                    <input disabled={lockoutUntil > Date.now()} type="tel" placeholder="04141234567" value={supplierPhoneInput} onChange={e => setSupplierPhoneInput(e.target.value)} className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" />
+                    {/* Botón de Huella Flotante / Acceso Biométrico */}
+                    {supportsWebAuthn && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (hasLocalPasskeyHint('producer')) {
+                            setProducerShowBiometric(true);
+                          } else {
+                            setProducerShowPasskeyInfo(true);
+                          }
+                        }}
+                        className="absolute -bottom-1 -right-1 p-2 rounded-xl bg-slate-900 border border-emerald-500/40 text-emerald-400 hover:bg-emerald-500 hover:text-slate-950 transition-all shadow-md cursor-pointer"
+                        title="Acceso biométrico con huella"
+                        aria-label="Acceso biométrico con huella"
+                      >
+                        <Fingerprint size={16} />
+                      </button>
+                    )}
                   </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[9px] font-bold uppercase tracking-widest text-slate-500 ml-1">PIN de Seguridad (6 DÍGITOS)</label>
-                    <input disabled={lockoutUntil > Date.now()} type="password" placeholder="••••••" value={supplierPinInput} onChange={e => setSupplierPinInput(e.target.value.replace(/\D/g, ''))} maxLength={6} className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl px-4 py-3 text-sm text-white text-center tracking-[0.5em] focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" />
-                  </div>
-                  <button disabled={lockoutUntil > Date.now()} type="button" onClick={(e) => { e.preventDefault(); handleSupplierLogin(e); }} className={`w-full mt-2 py-3.5 font-black uppercase rounded-2xl text-xs tracking-wider transition-all flex items-center justify-center gap-2 ${lockoutUntil > Date.now() ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'}`}>
-                    <LogIn className="w-4 h-4" /> {lockoutUntil === Infinity ? 'BLOQUEADO' : lockoutUntil > Date.now() ? `BLOQUEADO (${Math.floor(countdown / 60).toString().padStart(2, '0')}:${(countdown % 60).toString().padStart(2, '0')})` : 'Entrar al Portal'}
-                  </button>
-
-                  {/* Botón de Instalación PWA Productor */}
-                  <div className="pt-2 border-t border-slate-800/80 flex justify-center">
-                    <PWAInstallButton portalType="productor" className="w-full py-3" />
-                  </div>
+                  <h2 className="text-2xl font-bold tracking-tight text-white">Portal de <br/><span className="text-emerald-400">Productores</span></h2>
+                  <p className="text-[11px] text-slate-400 font-mono tracking-wider">GESTIÓN DE ARRIME Y LIBRETA</p>
                 </div>
-              </form>
-            </div>
+
+                <form className="bg-slate-900/50 backdrop-blur-md p-5 rounded-3xl border border-slate-800/50 shadow-xl relative overflow-hidden">
+                  <div className="space-y-4 relative z-10">
+                    {loginError && (
+                      <div className="bg-red-500/10 border border-red-500/50 text-red-500 p-3 rounded-xl text-xs text-center animate-pulse font-bold">
+                        {loginError}
+                      </div>
+                    )}
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold uppercase tracking-widest text-slate-500 ml-1">Cédula o Teléfono</label>
+                      <input disabled={lockoutUntil > Date.now()} type="tel" placeholder="04141234567" value={supplierPhoneInput} onChange={e => setSupplierPhoneInput(e.target.value)} className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold uppercase tracking-widest text-slate-500 ml-1">PIN de Seguridad (6 DÍGITOS)</label>
+                      <input disabled={lockoutUntil > Date.now()} type="password" placeholder="••••••" value={supplierPinInput} onChange={e => setSupplierPinInput(e.target.value.replace(/\D/g, ''))} maxLength={6} className="w-full bg-slate-950/80 border border-slate-800 rounded-2xl px-4 py-3 text-sm text-white text-center tracking-[0.5em] focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" />
+                    </div>
+                    <button disabled={lockoutUntil > Date.now()} type="button" onClick={(e) => { e.preventDefault(); handleSupplierLogin(e); }} className={`w-full mt-2 py-3.5 font-black uppercase rounded-2xl text-xs tracking-wider transition-all flex items-center justify-center gap-2 ${lockoutUntil > Date.now() ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'}`}>
+                      <LogIn className="w-4 h-4" /> {lockoutUntil === Infinity ? 'BLOQUEADO' : lockoutUntil > Date.now() ? `BLOQUEADO (${Math.floor(countdown / 60).toString().padStart(2, '0')}:${(countdown % 60).toString().padStart(2, '0')})` : 'Entrar al Portal'}
+                    </button>
+
+                    {/* Botón de Instalación PWA Productor */}
+                    <div className="pt-2 border-t border-slate-800/80 flex justify-center">
+                      <PWAInstallButton portalType="productor" className="w-full py-3" />
+                    </div>
+                  </div>
+                </form>
+              </div>
+            )
           ) : (
             <div
               {...producerSwipeHandlers}
@@ -666,6 +748,12 @@ export default function ProducerPortal({
 
               {producerActiveTab === 'inicio' && (
                 <div className="px-4 flex-1 flex flex-col min-h-0 space-y-3 pb-2 pt-1">
+                  {/* Banner no invasivo para activar huella tras login */}
+                  <PasskeyRegisterPrompt
+                    actorType="producer"
+                    onRegistered={() => onAddNotification('¡Acceso biométrico configurado exitosamente!', 'success')}
+                  />
+
                   {/* Tarjeta de Balance Principal (Más Compacta) */}
                   <div className="bg-slate-900 border border-emerald-500/20 rounded-xl p-4 relative overflow-hidden shadow-sm shrink-0">
                     <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/10 rounded-full -mr-8 -mt-8 blur-xl" />

@@ -11,8 +11,10 @@ import {
   submitPortalClientOrderApi,
   onCollectionSignal
 } from '../../services/localApi';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { getUnitLabel } from '../../utils';
+import BiometricLoginPanel, { PasskeyInfoModal, PasskeyRegisterPrompt } from '../BiometricLoginPanel';
+import { hasLocalPasskeyHint, browserSupportsPasskeys } from '../../services/passkeyService';
 
 
 import {
@@ -44,7 +46,8 @@ import {
   Home,
   ArrowLeft,
   HelpCircle,
-  LogIn
+  LogIn,
+  Fingerprint
 } from 'lucide-react';
 import { CheeseProduct, ClientProfile, SupplierProfile, MobileOrder } from '../../types';
 import InvoiceUploadView from '../contador/InvoiceUploadView';
@@ -89,6 +92,48 @@ export default function ClientPortal({
   const [loggedClient, setLoggedClient] = useState<ClientProfile | null>(null);
   const [loggedSupplier, setLoggedSupplier] = useState<SupplierProfile | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+
+  // Biometric / Passkey state for Client
+  const [clientShowBiometric, setClientShowBiometric] = useState<boolean>(() => hasLocalPasskeyHint('client'));
+  const [clientShowPasskeyInfo, setClientShowPasskeyInfo] = useState(false);
+  const [supportsWebAuthn, setSupportsWebAuthn] = useState(false);
+
+  useEffect(() => {
+    setSupportsWebAuthn(browserSupportsPasskeys());
+  }, []);
+
+  const handleClientBiometricSuccess = async (data: any) => {
+    if (data.portalUser) {
+      let clientProfile: ClientProfile | null = null;
+      try {
+        clientProfile = await fetchPortalClientProfileApi();
+      } catch (profileErr) {
+        console.warn('[Portal Login] Error fetching authoritative profile:', profileErr);
+      }
+
+      const client = clientProfile || clients.find(c => String(c.id) === String(data.portalUser.id)) || ({
+        id: data.portalUser.id,
+        name: data.portalUser.name,
+        phone: '',
+        email: '',
+        cedula: '',
+        address: '',
+        creditLimitUsd: 0,
+        currentDebtUsd: 0,
+        points: 0,
+        loyaltyPoints: 0,
+        outstandingDebt: 0,
+        status: 'active'
+      } as unknown as ClientProfile);
+
+      setLoggedClient(client);
+      setClientCart([]);
+      setClientLoginAttempts(0);
+      setClientLockoutUntil(0);
+      setClientLoginError(null);
+      onAddNotification(`¡Bienvenido ${data.portalUser.name}! Acceso con huella exitoso.`, 'success');
+    }
+  };
 
   // Login inputs
   const [clientPhoneInput, setClientPhoneInput] = useState<string>('');
@@ -767,67 +812,106 @@ export default function ClientPortal({
                 <KaluLoader message="Mundo Kalu" subMessage="CARGANDO SESIÓN..." />
               ) : !loggedClient ? (
                 /* CLIENT PORTAL: LOCK / LOGIN SCREEN */
-                <div className="flex-1 flex flex-col justify-between py-6">
-                  <div className="text-center mt-6 space-y-2">
-                    <div className="w-20 h-20 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto mb-3">
-                      <ShoppingBag className="w-10 h-10 text-amber-500" />
-                    </div>
-                    <h4 className="font-serif text-2xl font-bold text-zinc-100">Mundo Kalu</h4>
-                    <p className="text-xs tracking-widest text-slate-400 font-semibold uppercase">TIENDA ONLINE DE CRÉDITO</p>
+                clientShowBiometric ? (
+                  <div className="flex-1 flex flex-col justify-center py-6">
+                    <BiometricLoginPanel
+                      actorType="client"
+                      onSuccess={handleClientBiometricSuccess}
+                      onFallbackToNormal={() => setClientShowBiometric(false)}
+                      onErrorNotification={(msg) => onAddNotification(msg, 'warning')}
+                    />
                   </div>
+                ) : (
+                  <div className="flex-1 flex flex-col justify-between py-6">
+                    <PasskeyInfoModal
+                      isOpen={clientShowPasskeyInfo}
+                      onClose={() => setClientShowPasskeyInfo(false)}
+                      actorType="client"
+                      onAuthSuccess={handleClientBiometricSuccess}
+                      onAddNotification={onAddNotification}
+                    />
 
-                  <form onSubmit={handleClientLoginSubmit} className="space-y-5 bg-slate-900/40 p-6 rounded-3xl border border-slate-800">
-                    {clientLoginError && (
-                      <div className="bg-red-500/10 border border-red-500/50 text-red-500 p-3 rounded-xl text-xs text-center animate-pulse font-bold">
-                        {clientLoginError}
+                    <div className="text-center mt-6 space-y-2">
+                      <div className="relative inline-block mx-auto mb-3">
+                        <div className="w-20 h-20 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto">
+                          <ShoppingBag className="w-10 h-10 text-amber-500" />
+                        </div>
+                        {/* Botón de Huella Flotante / Acceso Biométrico */}
+                        {supportsWebAuthn && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (hasLocalPasskeyHint('client')) {
+                                setClientShowBiometric(true);
+                              } else {
+                                setClientShowPasskeyInfo(true);
+                              }
+                            }}
+                            className="absolute -bottom-1 -right-1 p-2 rounded-xl bg-slate-900 border border-amber-500/40 text-amber-400 hover:bg-amber-500 hover:text-slate-950 transition-all shadow-md cursor-pointer"
+                            title="Acceso biométrico con huella"
+                            aria-label="Acceso biométrico con huella"
+                          >
+                            <Fingerprint size={16} />
+                          </button>
+                        )}
                       </div>
-                    )}
-                    <div className="space-y-1.5">
-                      <label className="text-[9px] font-mono uppercase text-slate-400 block ml-1">CÉDULA, CELULAR O NOMBRE</label>
-                      <input
-                        type="text"
-                        disabled={clientLockoutUntil > Date.now()}
-                        placeholder="Ingresa tu cédula, celular o nombre"
-                        value={clientPhoneInput}
-                        onChange={(e) => setClientPhoneInput(e.target.value)}
-                        className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/60 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[9px] font-mono uppercase text-slate-400 block ml-1">PIN DE ACCESO (6 DÍGITOS)</label>
-                      <input
-                        type="password"
-                        maxLength={6}
-                        disabled={clientLockoutUntil > Date.now()}
-                        placeholder="······"
-                        value={clientPinInput}
-                        onChange={(e) => setClientPinInput(e.target.value.replace(/\D/g, ''))}
-                        className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/60 font-mono tracking-[0.5em] text-center disabled:opacity-50 disabled:cursor-not-allowed"
-                      />
+                      <h4 className="font-serif text-2xl font-bold text-zinc-100">Mundo Kalu</h4>
+                      <p className="text-xs tracking-widest text-slate-400 font-semibold uppercase">TIENDA ONLINE DE CRÉDITO</p>
                     </div>
 
-                    <div className="pt-2">
-                      <button
-                        type="submit"
-                        disabled={clientLockoutUntil > Date.now()}
-                        className={`w-full font-bold py-3.5 rounded-2xl uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2 ${clientLockoutUntil > Date.now() ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' : 'bg-amber-500 hover:bg-amber-400 text-slate-950'}`}
-                      >
-                        <User className="w-4 h-4" />
-                        {clientLockoutUntil === Infinity ? 'BLOQUEADO' : clientLockoutUntil > Date.now() ? `BLOQUEADO (${Math.floor(clientCountdown / 60).toString().padStart(2, '0')}:${(clientCountdown % 60).toString().padStart(2, '0')})` : 'INGRESAR A MI CUENTA'}
-                      </button>
-                    </div>
+                    <form onSubmit={handleClientLoginSubmit} className="space-y-5 bg-slate-900/40 p-6 rounded-3xl border border-slate-800">
+                      {clientLoginError && (
+                        <div className="bg-red-500/10 border border-red-500/50 text-red-500 p-3 rounded-xl text-xs text-center animate-pulse font-bold">
+                          {clientLoginError}
+                        </div>
+                      )}
+                      <div className="space-y-1.5">
+                        <label className="text-[9px] font-mono uppercase text-slate-400 block ml-1">CÉDULA, CELULAR O NOMBRE</label>
+                        <input
+                          type="text"
+                          disabled={clientLockoutUntil > Date.now()}
+                          placeholder="Ingresa tu cédula, celular o nombre"
+                          value={clientPhoneInput}
+                          onChange={(e) => setClientPhoneInput(e.target.value)}
+                          className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/60 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[9px] font-mono uppercase text-slate-400 block ml-1">PIN DE ACCESO (6 DÍGITOS)</label>
+                        <input
+                          type="password"
+                          maxLength={6}
+                          disabled={clientLockoutUntil > Date.now()}
+                          placeholder="······"
+                          value={clientPinInput}
+                          onChange={(e) => setClientPinInput(e.target.value.replace(/\D/g, ''))}
+                          className="w-full bg-slate-950/70 border border-slate-800 rounded-2xl px-4 py-3.5 text-xs text-slate-100 focus:outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/60 font-mono tracking-[0.5em] text-center disabled:opacity-50 disabled:cursor-not-allowed"
+                        />
+                      </div>
 
-                    {/* Botón de Instalación PWA Cliente */}
-                    <div className="pt-2 border-t border-slate-800 flex justify-center">
-                      <PWAInstallButton portalType="cliente" className="w-full py-3" />
-                    </div>
-                  </form>
+                      <div className="pt-2">
+                        <button
+                          type="submit"
+                          disabled={clientLockoutUntil > Date.now()}
+                          className={`w-full font-bold py-3.5 rounded-2xl uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2 ${clientLockoutUntil > Date.now() ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' : 'bg-amber-500 hover:bg-amber-400 text-slate-950'}`}
+                        >
+                          <User className="w-4 h-4" />
+                          {clientLockoutUntil === Infinity ? 'BLOQUEADO' : clientLockoutUntil > Date.now() ? `BLOQUEADO (${Math.floor(clientCountdown / 60).toString().padStart(2, '0')}:${(clientCountdown % 60).toString().padStart(2, '0')})` : 'INGRESAR A MI CUENTA'}
+                        </button>
+                      </div>
 
-                  <div className="text-center text-[8px] text-zinc-500 space-y-1 mt-4">
-                    <p>🔒 Conexión Protegida y Encriptada</p>
-                    <p>Kalu CRM S.A. de C.V.</p>
+                      {/* Botón de Instalación PWA Cliente */}
+                      <div className="pt-2 border-t border-slate-800 flex justify-center">
+                        <PWAInstallButton portalType="cliente" className="w-full py-3" />
+                      </div>
+                    </form>
+
+                    <div className="text-center text-[8px] text-zinc-500 space-y-1 mt-4">
+                      <p>🔒 Conexión Protegida y Encriptada</p>
+                      <p>Kalu CRM S.A. de C.V.</p>
+                    </div>
                   </div>
-                </div>
+                )
               ) : (
                 /* CLIENT PORTAL: LOGGED IN STORE & ACCOUNT */
                 (() => {
@@ -861,6 +945,12 @@ export default function ClientPortal({
                     >
                       {clientActiveTab === 'inicio' && (
                         <div className="p-4 space-y-6 flex-1 overflow-y-auto animate-fade-in pb-24">
+                          {/* Banner no invasivo para activar huella tras login */}
+                          <PasskeyRegisterPrompt
+                            actorType="client"
+                            onRegistered={() => onAddNotification('¡Acceso biométrico configurado exitosamente!', 'success')}
+                          />
+
                           {/* Top Bar / Customer Level Pill */}
                           <div className="flex justify-start mb-2">
                             <button
