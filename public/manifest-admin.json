@@ -1,0 +1,23 @@
+{
+  "id": "/admin",
+  "name": "Kalu Administración",
+  "short_name": "Kalu Admin",
+  "description": "Panel Administrativo y Operativo de Quesería Kalu",
+  "start_url": "/admin",
+  "scope": "/admin",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#f59e0b",
+  "icons": [
+    {
+      "src": "/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

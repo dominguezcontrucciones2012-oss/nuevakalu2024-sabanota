@@ -24,6 +24,7 @@ import {
 } from '../../services/localApi';
 import KaluLoader from '../KaluLoader';
 import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
+import PWAInstallButton from '../PWAInstallButton';
 
 const parseCustomDate = (dateStr: string): number => {
   if (!dateStr) return 0;
@@ -627,6 +628,11 @@ export default function ProducerPortal({
                   <button disabled={lockoutUntil > Date.now()} type="button" onClick={(e) => { e.preventDefault(); handleSupplierLogin(e); }} className={`w-full mt-2 py-3.5 font-black uppercase rounded-2xl text-xs tracking-wider transition-all flex items-center justify-center gap-2 ${lockoutUntil > Date.now() ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'}`}>
                     <LogIn className="w-4 h-4" /> {lockoutUntil === Infinity ? 'BLOQUEADO' : lockoutUntil > Date.now() ? `BLOQUEADO (${Math.floor(countdown / 60).toString().padStart(2, '0')}:${(countdown % 60).toString().padStart(2, '0')})` : 'Entrar al Portal'}
                   </button>
+
+                  {/* Botón de Instalación PWA Productor */}
+                  <div className="pt-2 border-t border-slate-800/80 flex justify-center">
+                    <PWAInstallButton portalType="productor" className="w-full py-3" />
+                  </div>
                 </div>
               </form>
             </div>

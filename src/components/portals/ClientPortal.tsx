@@ -56,6 +56,7 @@ import KaluLoader from '../KaluLoader';
 import { useSwipeNavigation } from '../../hooks/useSwipeNavigation';
 import { getVIPLevelInfo, VIP_LEVELS_MATRIX, VIPLevelConfig } from '../../config/vipMatrix';
 import { getVipTheme } from '../../config/vipTheme';
+import PWAInstallButton from '../PWAInstallButton';
 
 interface MobilePortalsViewProps {
   products: CheeseProduct[];
@@ -814,6 +815,11 @@ export default function ClientPortal({
                         <User className="w-4 h-4" />
                         {clientLockoutUntil === Infinity ? 'BLOQUEADO' : clientLockoutUntil > Date.now() ? `BLOQUEADO (${Math.floor(clientCountdown / 60).toString().padStart(2, '0')}:${(clientCountdown % 60).toString().padStart(2, '0')})` : 'INGRESAR A MI CUENTA'}
                       </button>
+                    </div>
+
+                    {/* Botón de Instalación PWA Cliente */}
+                    <div className="pt-2 border-t border-slate-800 flex justify-center">
+                      <PWAInstallButton portalType="cliente" className="w-full py-3" />
                     </div>
                   </form>
 

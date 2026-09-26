@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Mail, Lock, ArrowRight, Users } from 'lucide-react';
 import { UserIdentity } from '../types';
 import { loginApi } from '../services/localApi';
+import PWAInstallButton from './PWAInstallButton';
 
 interface LoginViewProps {
   users?: UserIdentity[];
@@ -232,6 +233,11 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
                     {loginMode === 'admin' ? 'Ingresar como Cajero &rarr;' : 'Ingresar como Administrador &rarr;'}
                   </button>
                 </p>
+
+                {/* Botón de Instalación PWA Admin */}
+                <div className="pt-2 border-t border-editorial-border/60 flex justify-center">
+                  <PWAInstallButton portalType="admin" className="w-full py-3 text-xs" />
+                </div>
               </>
           </div>
         </div>

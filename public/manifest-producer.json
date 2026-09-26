@@ -1,0 +1,23 @@
+{
+  "id": "/productor",
+  "name": "Mundo Kalu - Productor",
+  "short_name": "Kalu Productor",
+  "description": "Portal Oficial y Libreta Digital para Productores Kalu",
+  "start_url": "/productor",
+  "scope": "/productor",
+  "display": "standalone",
+  "background_color": "#022c22",
+  "theme_color": "#10b981",
+  "icons": [
+    {
+      "src": "/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

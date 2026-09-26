@@ -10,8 +10,12 @@ interface ToastNotification {
   type: 'success' | 'info' | 'warning';
 }
 
-export default function PortalApp() {
-  const [portalType, setPortalType] = useState<'cliente' | 'productor' | 'contador' | 'proveedor'>('cliente');
+interface PortalAppProps {
+  initialPortalType?: 'cliente' | 'productor' | 'contador' | 'proveedor';
+}
+
+export default function PortalApp({ initialPortalType }: PortalAppProps = {}) {
+  const [portalType, setPortalType] = useState<'cliente' | 'productor' | 'contador' | 'proveedor'>(initialPortalType || 'cliente');
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
 
   // Hook centralizado con datos reales locales (reactivo por WebSockets / REST API / LocalStorage)
@@ -32,6 +36,12 @@ export default function PortalApp() {
   } = useSharedData();
 
   useEffect(() => {
+    // Si ya viene determinado por la ruta canónica (/cliente, /productor, etc.), respetarlo
+    if (initialPortalType) {
+      setPortalType(initialPortalType);
+      return;
+    }
+
     // Detectar qué portal debe mostrarse según la URL (ej: ?portal=productor, ?type=contador o portal.html#/contador)
     const params = new URLSearchParams(window.location.search);
     const portal = params.get('portal') || params.get('type');
@@ -42,7 +52,7 @@ export default function PortalApp() {
     } else if (hash === 'productor' || hash === 'contador' || hash === 'proveedor' || hash === 'cliente') {
       setPortalType(hash as any);
     }
-  }, []);
+  }, [initialPortalType]);
 
   const handleAddTransaction = (tx: Partial<any>) => {
     const nowMs = Date.now();
