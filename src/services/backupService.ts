@@ -30,7 +30,9 @@ export const OPERATIONAL_COLLECTIONS = [
   'voice_notes',
   'vehicle_trips',
   'purchases',
-  'pwa_payments'
+  'pwa_payments',
+  'webauthn_credentials',
+  'audit_logs'
 ];
 
 export interface BackupData {

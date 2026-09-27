@@ -2,6 +2,7 @@ import { NodeSSH } from 'node-ssh';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -30,10 +31,45 @@ const DIRS_TO_SYNC = [
   'public'
 ];
 
+/**
+ * Función central de verificación de guard previa a cualquier acción de red/SSH
+ */
+export function runPredeployGuard(guardScriptPath = path.join(__dirname, 'scripts', 'predeploy_guard.mjs')) {
+  if (!fs.existsSync(guardScriptPath)) {
+    console.error(`❌ [DEPLOY GUARD ERROR] Script de protección no encontrado en: ${guardScriptPath}`);
+    return { ok: false, code: 1, error: 'GUARD_SCRIPT_NOT_FOUND' };
+  }
+
+  console.log('🛡️ [0/3] Ejecutando Pre-Deploy Guard de Protección Contable...');
+  const res = spawnSync(process.execPath, [guardScriptPath], {
+    stdio: 'inherit',
+    cwd: __dirname
+  });
+
+  if (res.error) {
+    console.error('❌ [DEPLOY GUARD ERROR] Fallo al ejecutar el guard:', res.error.message);
+    return { ok: false, code: 1, error: res.error.message };
+  }
+
+  if (res.status !== 0) {
+    console.error(`❌ [DEPLOY GUARD BLOCKED] El guard finalizó con código de error ${res.status}. Despliegue abortado.`);
+    return { ok: false, code: res.status, error: `EXIT_CODE_${res.status}` };
+  }
+
+  return { ok: true, code: 0 };
+}
+
 async function deployDirectoVPS() {
+  // PRIMERA PRECONDICIÓN OBLIGATORIA (FAIL-CLOSED): Pre-Deploy Guard
+  const guardResult = runPredeployGuard();
+  if (!guardResult.ok) {
+    console.error('🚫 Despliegue cancelado automáticamente. Ningún comando ni archivo fue enviado al servidor.');
+    process.exit(guardResult.code || 1);
+  }
+
   try {
     const privateKeyPath = process.env.SSH_KEY_PATH || path.join(os.homedir(), '.ssh', 'kalu_contabo_ed25519');
-    console.log('📡 [1/3] Conectando por SSH al VPS Contabo (144.126.153.184) usando clave SSH...');
+    console.log('\n📡 [1/3] Conectando por SSH al VPS Contabo (144.126.153.184) usando clave SSH...');
     await ssh.connect({
       host: '144.126.153.184',
       username: 'root',
@@ -111,4 +147,7 @@ async function deployDirectoVPS() {
   }
 }
 
-deployDirectoVPS();
+// Solo ejecutar deploy si el script es invocado directamente desde CLI
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  deployDirectoVPS();
+}

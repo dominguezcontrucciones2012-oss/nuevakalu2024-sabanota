@@ -900,7 +900,8 @@ test('SUITE INTEGRAL: HISTORIAL DE VENTAS, CIERRE MANUAL, CONTINGENCIA Y FACTURA
       closedBy: 'Juan Noche',
       startingCashUsd: 0,
       actualCashUsd: 22.0,
-      isAuto: false
+      isAuto: false,
+      now: lateNightCaracas
     });
 
     assert.ok(result.closing);

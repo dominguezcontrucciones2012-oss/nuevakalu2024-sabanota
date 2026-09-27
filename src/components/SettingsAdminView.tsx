@@ -423,8 +423,8 @@ export default function SettingsAdminView({
           id: `BKP-${Date.now()}`,
           date: now.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
           timestamp: now.toISOString(),
-          file: `kalu_copia_seguridad_${dateStr}.json`,
-          size: 'Total (26 Colecciones)',
+          file: `kalu_respaldo_completo_${dateStr}.tar.gz`,
+          size: 'Total (28 Colecciones + Manifiesto)',
           status: 'Descargado Localmente'
         };
         setBackupsHistory(prev => {
@@ -434,7 +434,7 @@ export default function SettingsAdminView({
           } catch (e) {}
           return next;
         });
-        onAddNotification('Copia de seguridad local generada y descargada.', 'success');
+        onAddNotification('Copia de seguridad local generada y descargada exitosamente.', 'success');
       }, logs.length * 250 + 300);
     } catch (err: any) {
       setBackupStep('idle');

@@ -1368,6 +1368,99 @@ function sanitizeAuditMetadataValue(val, depth = 0) {
   return sanitized;
 }
 
+// ============================================================
+// SUBSISTEMA DE AUTORIZACIÓN DE ACCIONES DESTRUCTIVAS (FASE DE PROTECCIÓN PERMANENTE)
+// ============================================================
+
+const DESTRUCTIVE_ACTION_TTL_MS = 5 * 60 * 1000; // 5 minutos de vigencia
+const destructiveActionTokenStore = new Map();
+
+/**
+ * Limpieza oportunista de tokens destructivos expirados o consumidos
+ */
+function cleanupDestructiveTokenStore() {
+  const now = Date.now();
+  for (const [token, doc] of destructiveActionTokenStore.entries()) {
+    if (doc.expiresAt <= now || doc.consumed) {
+      destructiveActionTokenStore.delete(token);
+    }
+  }
+}
+
+/**
+ * Genera un token de autorización para operación destructiva/sensible (Single-Use, 5min TTL)
+ */
+function issueDestructiveActionToken({ userId, role, action, scope = null }) {
+  cleanupDestructiveTokenStore();
+  const rawToken = `dest-${Date.now()}-${crypto.randomBytes(24).toString('hex')}`;
+  const now = Date.now();
+  const expiresAt = now + DESTRUCTIVE_ACTION_TTL_MS;
+
+  const tokenDoc = {
+    token: rawToken,
+    userId: String(userId),
+    role: String(role).toLowerCase(),
+    action: String(action),
+    scope: scope ? String(scope) : null,
+    expiresAt,
+    consumed: false,
+    createdAt: now
+  };
+
+  destructiveActionTokenStore.set(rawToken, tokenDoc);
+  return {
+    token: rawToken,
+    expiresAt,
+    action,
+    scope
+  };
+}
+
+/**
+ * Valida y consume un token de autorización destructiva de forma atómica
+ */
+function consumeDestructiveActionToken({ token, userId, role, action, scope = null }) {
+  cleanupDestructiveTokenStore();
+
+  if (!token || typeof token !== 'string') {
+    return { success: false, error: 'Token de autorización destructiva requerido', code: 'MISSING_TOKEN' };
+  }
+
+  const tokenDoc = destructiveActionTokenStore.get(token);
+  if (!tokenDoc) {
+    return { success: false, error: 'Token de autorización no encontrado o expirado', code: 'TOKEN_NOT_FOUND' };
+  }
+
+  const now = Date.now();
+  if (now > tokenDoc.expiresAt) {
+    destructiveActionTokenStore.delete(token);
+    return { success: false, error: 'Token de autorización expirado', code: 'EXPIRED' };
+  }
+
+  if (tokenDoc.consumed) {
+    destructiveActionTokenStore.delete(token);
+    return { success: false, error: 'Token de autorización ya utilizado', code: 'ALREADY_CONSUMED' };
+  }
+
+  if (String(tokenDoc.userId) !== String(userId)) {
+    return { success: false, error: 'El token no pertenece al usuario autenticado', code: 'USER_MISMATCH' };
+  }
+
+  if (String(tokenDoc.action) !== String(action)) {
+    return { success: false, error: `El token no autoriza la acción '${action}' (emitido para '${tokenDoc.action}')`, code: 'ACTION_MISMATCH' };
+  }
+
+  if (scope && tokenDoc.scope && String(tokenDoc.scope) !== String(scope)) {
+    return { success: false, error: `El token no cubre el alcance '${scope}'`, code: 'SCOPE_MISMATCH' };
+  }
+
+  // Consumir inmediatamente (Single-Use garantizado)
+  tokenDoc.consumed = true;
+  destructiveActionTokenStore.delete(token);
+
+  return { success: true, tokenDoc };
+}
+
 /**
  * Helper centralizado para registrar eventos de auditoría (Fase 1I / 1K: Append-Only y Sanitización Profunda)
  * Identidad 100% server-side desde sesión. Nunca confía en headers/body para actorId o rol.
@@ -1378,6 +1471,7 @@ async function recordAuditLog({
   actorType = null,
   actorId = null,
   actorRole = null,
+  userName = null,
   action,
   resourceType,
   resourceId = null,
@@ -1392,16 +1486,25 @@ async function recordAuditLog({
     let resolvedActorType = actorType || 'system';
     let resolvedActorId = actorId || null;
     let resolvedActorRole = actorRole || null;
+    let resolvedUserName = userName || null;
 
     if (req) {
       if (req.session?.userId) {
         resolvedActorType = 'crm';
         resolvedActorId = req.session.userId;
         resolvedActorRole = req.user?.role || req.session.userRole || null;
+        if (!resolvedUserName && req.user?.name) {
+          resolvedUserName = req.user.name;
+        } else if (!resolvedUserName) {
+          const users = readCollection('users');
+          const u = users.find(usr => String(usr.id) === String(req.session.userId));
+          resolvedUserName = u ? u.name : 'Usuario CRM';
+        }
       } else if (req.session?.portalUser) {
         resolvedActorType = 'portal';
         resolvedActorId = req.session.portalUser.id;
         resolvedActorRole = req.session.portalUser.type || req.session.portalType || null;
+        resolvedUserName = req.session.portalUser.name || 'Usuario Portal';
       } else if (!actorType) {
         resolvedActorType = 'anonymous';
       }
@@ -1420,6 +1523,7 @@ async function recordAuditLog({
       actorType: resolvedActorType,
       actorId: resolvedActorId,
       actorRole: resolvedActorRole,
+      userName: resolvedUserName,
       action: String(action),
       resourceType: String(resourceType),
       resourceId: resourceId ? String(resourceId) : null,
@@ -1585,6 +1689,68 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
     user: req.user,
     csrfToken: req.session.csrfToken
   });
+});
+
+// 4. Solicitar Token de Autorización para Operación Destructiva (Reautenticación con Password/PIN requerida)
+app.post('/api/admin/request-destructive-auth', requireAuth, requireRole('admin'), verifyCsrf, async (req, res) => {
+  try {
+    const { password, pin, action, scope, reason } = req.body || {};
+
+    if (!action) {
+      return res.status(400).json({ error: 'Debe especificar la acción a autorizar.' });
+    }
+
+    const users = readCollection('users');
+    const user = users.find(u => String(u.id) === String(req.session.userId));
+    if (!user || !user.active) {
+      return res.status(401).json({ error: 'Usuario no encontrado o inactivo' });
+    }
+
+    // Validar reautenticación con contraseña o PIN
+    let isReauthenticated = false;
+    if (password && user.passwordHash) {
+      isReauthenticated = verifyCredential(password, user.passwordHash);
+    } else if (pin && user.pinHash) {
+      isReauthenticated = verifyCredential(pin, user.pinHash);
+    }
+
+    if (!isReauthenticated) {
+      recordAuditLog({
+        req,
+        action: 'admin.destructive_auth_request',
+        resourceType: 'security',
+        result: 'denied',
+        metadata: { actionRequested: action, reason: 'invalid_reauth_credential' }
+      });
+      return res.status(401).json({ error: 'Contraseña o PIN de confirmación incorrecto.' });
+    }
+
+    const tokenInfo = issueDestructiveActionToken({
+      userId: user.id,
+      role: user.role,
+      action: action,
+      scope: scope || null
+    });
+
+    recordAuditLog({
+      req,
+      action: 'admin.destructive_auth_request',
+      resourceType: 'security',
+      result: 'success',
+      metadata: { actionAuthorized: action, scope: scope || 'all', reason: reason || 'solicitud_administrativa' }
+    });
+
+    res.json({
+      success: true,
+      destructiveToken: tokenInfo.token,
+      expiresAt: tokenInfo.expiresAt,
+      action: tokenInfo.action,
+      scope: tokenInfo.scope
+    });
+  } catch (error) {
+    console.error('[Destructive Auth Request Error]:', error);
+    res.status(500).json({ error: 'Error procesando solicitud de autorización destructiva' });
+  }
 });
 
 // --- ENDPOINTS DE PRUEBA Y VALIDACIÓN RBAC (FASE 1B / 1K: DEV & TEST ONLY) ---
@@ -6660,15 +6826,16 @@ async function executeShiftClosing({
   actualCashUsd = null,
   actualCashBs = null,
   isAuto = false,
-  targetDateStr = null
+  targetDateStr = null,
+  now: overrideNow = null
 } = {}) {
   return await withTransaction(async (tx) => {
     const txsData = tx.read('transactions');
     const closingsData = tx.read('cashClosings');
     const settingsData = tx.read('settings');
 
-    const now = new Date();
-    const todayCaracas = getCaracasDateParts(now);
+    const now = overrideNow instanceof Date ? overrideNow : (overrideNow ? new Date(overrideNow) : new Date());
+    const todayCaracas = targetDateStr || getCaracasDateParts(now);
     const startOfTodayMs = getCaracasStartOfDayMs(todayCaracas);
     const endOfTodayMs = startOfTodayMs + 24 * 60 * 60 * 1000 - 1;
 
@@ -7722,10 +7889,32 @@ app.delete('/api/collections/:name/:id', requireAuth, requireRole('admin'), veri
   }
 });
 
-// 6. Endpoint Administrativo Oficial para Restablecimiento Contable (Fase 1C/1H)
-// Sustituye al peligroso DELETE /api/collections/:name de wipe genérico
+// 6. Endpoint Administrativo Oficial para Restablecimiento Contable (Protección con Token Destructivo Obligatorio)
+// Requiere Token emitido tras reautenticación explícita en /api/admin/request-destructive-auth
 app.post('/api/admin/reset-accounting', requireAuth, requireRole('admin'), verifyCsrf, adminResetLimiter, async (req, res) => {
   try {
+    const { destructiveToken } = req.body || {};
+
+    const tokenVerification = consumeDestructiveActionToken({
+      token: destructiveToken,
+      userId: req.session.userId,
+      role: req.user?.role || req.session.userRole,
+      action: 'admin.reset_accounting'
+    });
+
+    if (!tokenVerification.success) {
+      recordAuditLog({
+        req,
+        action: 'admin.reset_accounting',
+        resourceType: 'accounting',
+        result: 'denied',
+        metadata: { reason: tokenVerification.error, code: tokenVerification.code }
+      });
+      return res.status(403).json({
+        error: `Operación destructiva denegada: ${tokenVerification.error}. Debe autorizar la operación con su clave antes de proceder.`
+      });
+    }
+
     const ACCOUNTING_COLLECTIONS = [
       'transactions',
       'invoices',
@@ -7823,7 +8012,9 @@ const BACKUP_COLLECTIONS = [
   'voice_notes',
   'vehicle_trips',
   'purchases',
-  'pwa_payments'
+  'pwa_payments',
+  'webauthn_credentials',
+  'audit_logs'
 ];
 
 // --- HELPERS TAR / GZ NATIVOS PARA BACKUP ESCALABLE (FASE 3C.2) ---
@@ -7888,16 +8079,50 @@ app.get('/api/full-backup', requireAuth, requireRole('admin'), adminBackupLimite
   try {
     const requestedFormat = req.query.format || 'bundle';
 
+    const rawCollections = {};
+    const recordCounts = {};
+    const collectionHashes = {};
+
+    for (const colName of BACKUP_COLLECTIONS) {
+      let data = readCollection(colName);
+      if (Array.isArray(data)) {
+        // Sanitizar secretos operativos antes de exportar
+        if (colName === 'users' || colName === 'clients' || colName === 'suppliers') {
+          data = data.map(item => {
+            const copy = { ...item };
+            delete copy.passwordHash;
+            delete copy.pinHash;
+            return copy;
+          });
+        }
+        if (colName === 'settings') {
+          data = data.map(s => {
+            const copy = { ...s };
+            // Nunca exportar secretos de entorno o API keys
+            delete copy.geminiApiKey;
+            delete copy.whatsappToken;
+            delete copy.jwtSecret;
+            delete copy.sessionSecret;
+            delete copy.passwordHash;
+            delete copy.pinHash;
+            return copy;
+          });
+        }
+      }
+      rawCollections[colName] = data;
+      recordCounts[colName] = Array.isArray(data) ? data.length : (data ? 1 : 0);
+
+      const colJsonBuf = Buffer.from(JSON.stringify(data), 'utf8');
+      collectionHashes[colName] = crypto.createHash('sha256').update(colJsonBuf).digest('hex');
+    }
+
     const backupJson = {
       version: '3.0',
       timestamp: new Date().toISOString(),
       company: 'Mundo Kalu Sabanota',
-      collections: {}
+      recordCounts,
+      collections: rawCollections
     };
-
-    for (const colName of BACKUP_COLLECTIONS) {
-      backupJson.collections[colName] = readCollection(colName);
-    }
 
     // Si solicita formato JSON puro (legacy):
     if (requestedFormat === 'json') {
@@ -7906,15 +8131,15 @@ app.get('/api/full-backup', requireAuth, requireRole('admin'), adminBackupLimite
         action: 'admin.full_backup_download',
         resourceType: 'backup',
         result: 'success',
-        metadata: { format: 'json', collectionCount: BACKUP_COLLECTIONS.length }
+        metadata: { format: 'json', collectionCount: BACKUP_COLLECTIONS.length, recordCounts }
       });
       return res.json(backupJson);
     }
 
     // Formato Bundle escalable (TAR.GZ):
-    // 1. backup.json (Colecciones operacionales)
+    // 1. backup.json (Colecciones operacionales sanitizadas)
     // 2. captures/... (Archivos binarios puros)
-    // 3. manifest.json (filename, size, sha256, paymentId)
+    // 3. manifest.json (version, timestamp, company, recordCounts, collectionHashes, captures, sha256)
     const pwaPayments = backupJson.collections['pwa_payments'] || [];
     const paymentFileMap = new Map();
     for (const p of pwaPayments) {
@@ -7924,9 +8149,12 @@ app.get('/api/full-backup', requireAuth, requireRole('admin'), adminBackupLimite
     }
 
     const manifest = {
-      version: '3.0',
+      backupVersion: '3.0',
       timestamp: backupJson.timestamp,
       company: backupJson.company,
+      collections: BACKUP_COLLECTIONS,
+      recordCounts,
+      collectionHashes,
       filesCount: 0,
       captures: []
     };

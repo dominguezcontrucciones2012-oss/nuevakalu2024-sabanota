@@ -1,0 +1,92 @@
+{
+  "version": "1.0.0",
+  "description": "Manifiesto canónico de datos protegidos y políticas de persistencia de Kalu CRM Sabanota",
+  "dataMounts": {
+    "data": {
+      "hostPath": "/root/kalu-crm/data",
+      "containerPath": "/var/www/app/data",
+      "required": true,
+      "description": "Base de datos JSON transaccional y colecciones core"
+    },
+    "uploads": {
+      "hostPath": "/root/kalu-crm/uploads",
+      "containerPath": "/var/www/app/uploads",
+      "required": true,
+      "description": "Archivos multimedia y assets públicos subidos"
+    },
+    "protected_media": {
+      "hostPath": "/root/kalu-crm/protected_media",
+      "containerPath": "/var/www/app/protected_media",
+      "required": true,
+      "description": "Comprobantes de pago PWA y multimedia privada protegida"
+    }
+  },
+  "protectedCollections": [
+    "clients",
+    "suppliers",
+    "products",
+    "kardex",
+    "transactions",
+    "sales",
+    "purchases",
+    "expenses",
+    "payments",
+    "bills",
+    "installments",
+    "pwa_payments",
+    "cashClosings",
+    "adminLedger",
+    "business_debts",
+    "cheeseTrips",
+    "vehicle_trips",
+    "settings",
+    "users",
+    "webauthn_credentials",
+    "mobileOrders",
+    "invoices",
+    "shift_sessions",
+    "shift_transactions",
+    "audit_logs"
+  ],
+  "accountingCollections": [
+    "transactions",
+    "sales",
+    "purchases",
+    "expenses",
+    "payments",
+    "bills",
+    "installments",
+    "pwa_payments",
+    "cashClosings",
+    "adminLedger",
+    "business_debts",
+    "kardex",
+    "invoices",
+    "shift_transactions",
+    "shift_sessions"
+  ],
+  "ephemeralAllowedDeletions": [
+    "banners",
+    "daily_drafts",
+    "photo_album",
+    "voice_notes",
+    "mobileOrders",
+    "admin_voice_pending"
+  ],
+  "forbiddenDeployCommands": [
+    "docker compose down -v",
+    "docker compose down --volumes",
+    "docker-compose down -v",
+    "docker-compose down --volumes",
+    "docker volume prune",
+    "docker system prune --volumes",
+    "docker system prune -a --volumes",
+    "rm -rf /root/kalu-crm/data",
+    "rm -rf /var/www/app/data",
+    "rm -rf /root/kalu-crm/uploads",
+    "rm -rf /root/kalu-crm/protected_media",
+    "rsync --delete",
+    "--delete-after",
+    "--delete-during"
+  ]
+}
