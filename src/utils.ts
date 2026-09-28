@@ -81,3 +81,37 @@ export const formatQuantity = (qty: number, unit: string = 'Kg'): string => {
   const decimals = (unit.toLowerCase() === 'und' || unit.toLowerCase() === 'unidad') ? 0 : 3;
   return `${safe.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: decimals })} ${unit}`;
 };
+
+/**
+ * Función canónica para generar el PIN inicial de un cliente.
+ * Semántica idéntica al backend (server.js): ÚLTIMOS 4 DÍGITOS DE LA CÉDULA/DOCUMENTO + "00" (Exactamente 6 dígitos numéricos).
+ * Si la identificación no contiene al menos 4 dígitos válidos, devuelve null (FAIL CLOSED).
+ */
+export const getClientInitialPin = (clientOrCedula: any): string | null => {
+  if (!clientOrCedula) return null;
+  const rawId = typeof clientOrCedula === 'string'
+    ? clientOrCedula
+    : (clientOrCedula.cedula || clientOrCedula.ci || clientOrCedula.ciRif || clientOrCedula.idNumber || clientOrCedula.rfc || '');
+  const digits = String(rawId).replace(/\D/g, '');
+  if (digits.length < 4) return null;
+  const last4 = digits.slice(-4);
+  const pin = `${last4}00`;
+  return /^\d{6}$/.test(pin) ? pin : null;
+};
+
+/**
+ * Función canónica para generar el PIN inicial de un productor.
+ * Semántica idéntica al backend (server.js): ÚLTIMOS 4 DÍGITOS DEL DOCUMENTO LEGAL + "00" (Exactamente 6 dígitos numéricos).
+ */
+export const getProducerInitialPin = (producerOrDoc: any): string | null => {
+  if (!producerOrDoc) return null;
+  const rawDoc = typeof producerOrDoc === 'string'
+    ? producerOrDoc
+    : (producerOrDoc.rif || producerOrDoc.cedula || producerOrDoc.rfc || producerOrDoc.ci || producerOrDoc.idNumber || '');
+  const digits = String(rawDoc).replace(/\D/g, '');
+  if (digits.length < 4) return null;
+  const last4 = digits.slice(-4);
+  const pin = `${last4}00`;
+  return /^\d{6}$/.test(pin) ? pin : null;
+};
+

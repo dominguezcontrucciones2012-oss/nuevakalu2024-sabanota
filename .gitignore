@@ -29,3 +29,7 @@ data-dev-*/
 db/
 *.db
 *.db-journal
+backups/
+deploy_bundle_candidate/
+deploy_cashier_rbac_signature_*/
+deploy_manifest.txt

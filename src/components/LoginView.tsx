@@ -248,9 +248,10 @@ export default function LoginView({ users, onLoginSuccess, onAddNotification }: 
                           <input
                             type="password"
                             required
+                            maxLength={6}
                             value={pin}
-                            onChange={(e) => setPin(e.target.value)}
-                            placeholder="••••"
+                            onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+                            placeholder="••••••"
                             className="w-full h-12 bg-editorial-bg border border-editorial-border rounded pl-12 pr-4 text-xs text-editorial-text-primary focus:outline-none focus:border-brand-accent font-mono transition-all placeholder:text-editorial-text-muted/30"
                           />
                         </div>

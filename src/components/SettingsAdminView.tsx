@@ -25,17 +25,21 @@ import { Shift, ShiftItem, saveShift, loadShifts, deleteShift } from '../service
 interface SettingsAdminViewProps {
   settings: BusinessSettings;
   users: UserIdentity[];
+  currentUserId?: string;
   onUpdateSettings: (newSettings: Partial<BusinessSettings>) => void;
   onAddNotification: (msg: string, type: 'success' | 'info' | 'warning') => void;
   onResetAccounting?: () => Promise<void>;
+  onRequireReauth?: () => void;
 }
 
 export default function SettingsAdminView({
   settings,
   users,
+  currentUserId,
   onUpdateSettings,
   onAddNotification,
-  onResetAccounting
+  onResetAccounting,
+  onRequireReauth
 }: SettingsAdminViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<'config' | 'users' | 'backup' | 'maintenance'>('config');
   const [businessName, setBusinessName] = useState(settings.businessName);
@@ -344,20 +348,29 @@ export default function SettingsAdminView({
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newUserName || !newUserCedula || !newUserPin) return;
+    const cleanName = newUserName.trim();
+    const cleanCedula = newUserCedula.trim();
+    const cleanPin = newUserPin.trim();
+
+    if (!cleanName || !cleanCedula || !cleanPin) return;
+
+    if (!/^\d{4,6}$/.test(cleanPin)) {
+      onAddNotification('El PIN debe contener entre 4 y 6 dígitos numéricos.', 'warning');
+      return;
+    }
 
     try {
       const newId = `usr-${Date.now()}`;
       await addLocalDoc('users', {
         id: newId,
-        name: newUserName,
-        cedula: newUserCedula,
-        pin: newUserPin,
+        name: cleanName,
+        cedula: cleanCedula,
+        pin: cleanPin,
         role: newUserRole,
         active: true,
-        initials: newUserName.slice(0, 2).toUpperCase()
+        initials: cleanName.slice(0, 2).toUpperCase()
       });
-      onAddNotification(`Usuario ${newUserName} agregado como ${newUserRole}.`, 'success');
+      onAddNotification(`Usuario ${cleanName} agregado como ${newUserRole}.`, 'success');
       setNewUserName('');
       setNewUserCedula('');
       setNewUserPin('');
@@ -378,12 +391,26 @@ export default function SettingsAdminView({
   };
 
   const handleDeleteUser = async (id: string) => {
-    if (!window.confirm('¿Desea eliminar permanentemente este usuario?')) return;
+    if (currentUserId && String(id) === String(currentUserId)) {
+      return onAddNotification('No puede eliminar su propia cuenta de usuario en sesión activa.', 'warning');
+    }
+    const targetUser = users.find(u => String(u.id) === String(id));
+    const confirmMsg = targetUser 
+      ? `¿Desea eliminar permanentemente al usuario ${targetUser.name} (${targetUser.role})?`
+      : '¿Desea eliminar permanentemente este usuario?';
+    if (!window.confirm(confirmMsg)) return;
+
     try {
       await deleteLocalDoc('users', id);
       onAddNotification(`Usuario eliminado del sistema.`, 'info');
     } catch (err: any) {
-      onAddNotification('Error eliminando usuario: ' + err.message, 'warning');
+      const errMsg = String(err.message || '');
+      if (errMsg.includes('No autenticado') || errMsg.includes('401') || errMsg.includes('sesión') || errMsg.includes('session')) {
+        onAddNotification('Sesión expirada o no autenticada. Inicie sesión nuevamente como administrador.', 'warning');
+        if (onRequireReauth) onRequireReauth();
+      } else {
+        onAddNotification('Error eliminando usuario: ' + (err.message || 'Error del servidor'), 'warning');
+      }
     }
   };
 
@@ -761,10 +788,15 @@ export default function SettingsAdminView({
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN de Acceso</label>
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN de Acceso (4 a 6 dígitos)</label>
                 <input
-                  type="text" required value={newUserPin} onChange={e => setNewUserPin(e.target.value)} placeholder="Ej: 1234"
-                  className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none"
+                  type="password"
+                  required
+                  maxLength={6}
+                  value={newUserPin}
+                  onChange={e => setNewUserPin(e.target.value.replace(/\D/g, ''))}
+                  placeholder="4 a 6 dígitos numéricos"
+                  className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none font-mono"
                 />
               </div>
 

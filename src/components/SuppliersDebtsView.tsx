@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { fetchCollection, onCollectionSnapshot, addLocalDoc, updateLocalDoc } from '../services/localApi';
 import { SupplierProfile, AccountBill, Transaction, CheeseProduct } from '../types';
 import { Truck, Store, Phone, Plus, BadgeAlert, FileCheck, CheckCircle, ExternalLink, Calendar, Eye, Wallet, CreditCard, Inbox, X, Search, Trash2, Award, Trophy, Medal, Crown, Flame } from 'lucide-react';
-import { parseSafeDecimal } from '../utils';
+import { parseSafeDecimal, getProducerInitialPin } from '../utils';
 import KaluLoader from './KaluLoader';
 
 const parseCustomDate = (dateStr: string): number => {
@@ -43,7 +43,7 @@ const parseCustomDate = (dateStr: string): number => {
 export const calculateDynamicBalances = (s: SupplierProfile, txList: Transaction[]) => {
   const supNameClean = (s.name || '').trim().toLowerCase();
   const supTxs = (txList || []).filter((d: any) => {
-    if (!d) return false;
+    if (!d || d.isVoided) return false;
     const entityMatch = d.entity && String(d.entity).trim().toLowerCase() === supNameClean;
     const supplierIdMatch = d.supplierId && String(d.supplierId) === String(s.id);
     const entityIdMatch = d.entityId && String(d.entityId) === String(s.id);
@@ -156,6 +156,7 @@ interface SuppliersDebtsViewProps {
     isCredit: boolean;
     paymentMethod?: string;
   }) => Promise<void>;
+  onVoidTransaction?: (txId: string) => Promise<void>;
   onAddNotification: (msg: string, type: 'success' | 'info' | 'warning') => void;
   isSidebarOpen?: boolean;
 }
@@ -173,6 +174,7 @@ export default function SuppliersDebtsView({
   onNetSupplierBalances,
   onPaySupplierRemainingBalance,
   onLoadPurchase,
+  onVoidTransaction,
   onAddNotification,
   isSidebarOpen = true
 }: SuppliersDebtsViewProps) {
@@ -299,7 +301,7 @@ export default function SuppliersDebtsView({
         const sourceTxs = transactions || [];
         const supNameClean = (s.name || '').trim().toLowerCase();
         const supplierTxs = sourceTxs.filter((d: any) => {
-          if (!d) return false;
+          if (!d || d.isVoided) return false;
           const entityMatch = d.entity && String(d.entity).trim().toLowerCase() === supNameClean;
           const supplierIdMatch = d.supplierId && String(d.supplierId) === String(s.id);
           const entityIdMatch = d.entityId && String(d.entityId) === String(s.id);
@@ -382,8 +384,13 @@ export default function SuppliersDebtsView({
     e.preventDefault();
     if (!editingSupplier || !onUpdateSupplier) return;
     
-    const docClean = (editCedula || '').replace(/\D/g, '');
-    const initialPin = docClean.length >= 4 ? `${docClean.slice(-4)}00` : '';
+    const trimmedPin = editPin ? editPin.trim().replace(/\D/g, '') : '';
+    if (trimmedPin && !/^\d{6}$/.test(trimmedPin)) {
+      onAddNotification('El PIN debe contener exactamente 6 dígitos numéricos.', 'warning');
+      return;
+    }
+
+    const canonicalInitialPin = getProducerInitialPin(editCedula || editingSupplier.rif || editingSupplier.cedula || editingSupplier.rfc || editingSupplier.idNumber);
     
     onUpdateSupplier(editingSupplier.id, {
       name: editName,
@@ -393,7 +400,7 @@ export default function SuppliersDebtsView({
       contactName: editContactName,
       address: editAddress,
       birthday: editBirthday,
-      pin: editPin || initialPin || editingSupplier.pin || undefined,
+      pin: trimmedPin || canonicalInitialPin || editingSupplier.pin || undefined,
       isCheeseProducer: editIsCheeseProducer,
       isEmployee: editIsEmployee
     });
@@ -404,8 +411,13 @@ export default function SuppliersDebtsView({
     e.preventDefault();
     if (!name) return;
     
-    const docClean = (rfc || '').replace(/\D/g, '');
-    const initialPin = docClean.length >= 4 ? `${docClean.slice(-4)}00` : '';
+    const trimmedPin = pin ? pin.trim().replace(/\D/g, '') : '';
+    if (trimmedPin && !/^\d{6}$/.test(trimmedPin)) {
+      onAddNotification('El PIN debe contener exactamente 6 dígitos numéricos.', 'warning');
+      return;
+    }
+
+    const canonicalInitialPin = getProducerInitialPin(rfc);
     
     onAddSupplier({
       name,
@@ -419,7 +431,7 @@ export default function SuppliersDebtsView({
       isCheeseProducer,
       isEmployee,
       birthday,
-      pin: pin || initialPin || undefined
+      pin: trimmedPin || canonicalInitialPin || undefined
     });
     onAddNotification(`Proveedor ${name} registrado con éxito.`, 'success');
     setName('');
@@ -1075,6 +1087,11 @@ export default function SuppliersDebtsView({
                                      <div className="max-w-[250px] truncate" title={tx.notes || tx.paymentMethod || `Ref: ${tx.invoiceNumber}`}>
                                        {tx.notes || tx.paymentMethod || `Ref: ${tx.invoiceNumber}`}
                                      </div>
+                                     {(tx.cashierName || tx.userOrCashier) && (
+                                       <div className="text-[9px] font-mono text-amber-500/80">
+                                         Cajero: {tx.cashierName || tx.userOrCashier}
+                                       </div>
+                                     )}
                                    </td>
                                    <td className="py-3 px-4 text-right font-mono font-bold text-amber-500 whitespace-nowrap">
                                      {tx.sum > 0 ? `+${tx.sum.toLocaleString('es-MX', {minimumFractionDigits: 2})}` : '-'}
@@ -1086,7 +1103,27 @@ export default function SuppliersDebtsView({
                                      ${tx.runningBalance.toLocaleString('es-MX', {minimumFractionDigits: 2})}
                                    </td>
                                    <td className="py-3 px-4 text-center whitespace-nowrap">
-                                      <button title="Eliminar registro (Temporalmente Deshabilitado)" className="p-1.5 text-neutral-600 hover:text-rose-500 transition-colors rounded">
+                                      <button 
+                                        type="button"
+                                        title="Anular / Revertir Operación" 
+                                        onClick={async () => {
+                                          const desc = tx.notes || tx.paymentMethod || `Ref: ${tx.invoiceNumber || tx.id}`;
+                                          const confirmMsg = `¿Está seguro de que desea anular y revertir esta operación?\n\nDetalle: ${desc}\nMonto: $${(Number(tx.amount) || 0).toFixed(2)} USD\n\nEsta acción revertirá los efectos de saldo, inventario y ranking según corresponda.`;
+                                          if (!window.confirm(confirmMsg)) return;
+
+                                          try {
+                                            if (onVoidTransaction) {
+                                              await onVoidTransaction(tx.id);
+                                            } else {
+                                              await updateLocalDoc('transactions', tx.id, { isVoided: true });
+                                              onAddNotification(`Operación #${tx.invoiceNumber || tx.id} anulada exitosamente.`, 'success');
+                                            }
+                                          } catch (e: any) {
+                                            onAddNotification('Error al anular operación: ' + (e.message || 'Error del servidor'), 'warning');
+                                          }
+                                        }}
+                                        className="p-1.5 text-neutral-500 hover:text-rose-400 hover:bg-rose-950/30 transition-colors rounded cursor-pointer"
+                                      >
                                         <Trash2 className="w-3.5 h-3.5" />
                                       </button>
                                    </td>

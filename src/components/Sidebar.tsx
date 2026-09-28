@@ -151,8 +151,14 @@ export default function Sidebar({ currentView, onViewChange, onLogout, isAdmin, 
     }
   ];
 
+  const cashierAllowedViews: ViewType[] = [
+    'pos-terminal',
+    'inventory',
+    'clients',
+    'suppliers'
+  ];
   const menuItems = userRole === 'cajero' 
-    ? allMenuItems.filter(item => item.id === 'pos-terminal')
+    ? allMenuItems.filter(item => cashierAllowedViews.includes(item.id))
     : allMenuItems;
 
   return (

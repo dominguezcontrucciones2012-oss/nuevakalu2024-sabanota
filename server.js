@@ -1321,14 +1321,19 @@ function requireCollectionWrite(req, res, next) {
     }
   }
 
-  // Protección de saldos y deudas contra manipulación genérica no autorizada
+  // Protección estricta de inventario y clientes contra manipulación directa por rol cajero
   if (userRole === 'cajero') {
-    const updates = req.body || {};
-    if (collectionName === 'clients' && (updates.outstandingDebt !== undefined || updates.creditLimit !== undefined)) {
+    if (collectionName === 'products') {
       return res.status(403).json({
-        error: 'Acceso denegado: los cajeros no pueden alterar deudas ni límites de crédito directamente.'
+        error: 'Acceso denegado: el rol cajero tiene acceso de solo lectura al inventario y no puede modificar productos directamente.'
       });
     }
+    if (collectionName === 'clients') {
+      return res.status(403).json({
+        error: 'Acceso denegado: el rol cajero tiene acceso de solo lectura al directorio de clientes y no puede modificar perfiles directamente.'
+      });
+    }
+    const updates = req.body || {};
     if (collectionName === 'suppliers' && (updates.balanceOwed !== undefined || updates.storeDebt !== undefined)) {
       return res.status(403).json({
         error: 'Acceso denegado: los cajeros no pueden alterar saldos de proveedores directamente.'
@@ -1627,7 +1632,16 @@ app.post('/api/auth/login', loginLimiter, loginAccountLimiter, (req, res) => {
 
       matchedUser = users.find(u => String(u.cedula).trim() === inputCedula);
 
-      if (!matchedUser || !matchedUser.active || !verifyCredential(inputPin, matchedUser.pinHash)) {
+      let pinValid = false;
+      if (matchedUser && matchedUser.active) {
+        if (matchedUser.pinHash) {
+          pinValid = verifyCredential(inputPin, matchedUser.pinHash);
+        } else if (matchedUser.pin) {
+          pinValid = verifyCredential(inputPin, matchedUser.pin) || String(matchedUser.pin).trim() === inputPin;
+        }
+      }
+
+      if (!matchedUser || !matchedUser.active || !pinValid) {
         recordAuditLog({
           req,
           actorType: 'crm',
@@ -6390,6 +6404,11 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
     const debtAmount = Math.max(0, Math.round((saleTotal - amountPaid) * 100) / 100);
 
     // Transacción Multi-Colección con snapshot, rollback y atomic write
+    const authUser = req.user || {};
+    const cashierUserId = String(authUser.id || req.session?.userId || 'usr-system');
+    const cashierName = String(authUser.name || authUser.username || (authUser.role === 'admin' ? 'Administrador' : 'Cajero'));
+    const cashierRole = String(authUser.role || 'cajero').toLowerCase();
+
     const result = await withTransaction(async (tx) => {
       // 1. PRODUCTS & KARDEX
       const productsData = tx.read('products');
@@ -6420,7 +6439,12 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
             totalCost: Number(item.quantityKg || 0) * (p.wholesalePrice || p.pricePerKg || 0),
             totalValue: item.subtotal,
             referenceId: `POS-${Date.now()}`,
-            notes: 'Venta registrada desde el POS'
+            notes: 'Venta registrada desde el POS',
+            userOrCashier: cashierName,
+            cashierUserId,
+            cashierName,
+            cashierRole,
+            performedAt: Date.now()
           };
           kardexData.push(kardexMovement);
           // Encolar delta de kardex
@@ -6517,7 +6541,12 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
           amount: debtAmount,
           dueDate: new Date(nowMs + 15 * 24 * 60 * 60 * 1000).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
           status: 'Pendiente',
-          notes: `Consumo de tienda (${supplierId ? 'Libreta de Queso' : 'Crédito'})`
+          notes: `Consumo de tienda (${supplierId ? 'Libreta de Queso' : 'Crédito'})`,
+          userOrCashier: cashierName,
+          cashierUserId,
+          cashierName,
+          cashierRole,
+          performedAt: nowMs
         };
         billsData.push(newBill);
         tx.write('bills', billsData, { action: 'add', collection: 'bills', doc: newBill });
@@ -6588,7 +6617,12 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
               pointsEarned: Math.round(foodFinanced),
               pointsAwarded: false,
               createdAt: new Date(nowMs).toISOString(),
-              type: 'cotidiano'
+              type: 'cotidiano',
+              userOrCashier: cashierName,
+              cashierUserId,
+              cashierName,
+              cashierRole,
+              performedAt: nowMs
             };
             installmentsData.push(foodInstDoc);
             createdInstallments.push(foodInstDoc);
@@ -6620,7 +6654,12 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
                 pointsEarned: Math.round(cuotaVal),
                 pointsAwarded: false,
                 createdAt: new Date(nowMs).toISOString(),
-                type: 'repuestos'
+                type: 'repuestos',
+                userOrCashier: cashierName,
+                cashierUserId,
+                cashierName,
+                cashierRole,
+                performedAt: nowMs
               };
               installmentsData.push(otherInstDoc);
               createdInstallments.push(otherInstDoc);
@@ -6743,7 +6782,12 @@ app.post('/api/pos/process-sale', requireAuth, requireRole('admin', 'cajero'), v
         changeReference: changeReference || '',
         mixedChange: mixedChange || null,
         changeBs: changeBs || 0,
-        bcvRateAtSettlement: rate
+        bcvRateAtSettlement: rate,
+        userOrCashier: cashierName,
+        cashierUserId,
+        cashierName,
+        cashierRole,
+        performedAt: nowMs
       };
 
       txsData.push(newTx);
@@ -7729,9 +7773,10 @@ app.get('/api/sync-rate', syncRateLimiter, async (req, res) => {
 // 1. Leer colección genérica (Protegido con requireAuth y filtro por rol/colección)
 app.get('/api/collections/:name', requireAuth, requireCollectionRead, (req, res) => {
   try {
-    const data = readCollection(req.params.name);
+    const colName = req.params.name;
+    const data = readCollection(colName);
     // Sanitizar colección de usuarios para jamás exponer contraseñas, PINs ni hashes
-    if (req.params.name === 'users' && Array.isArray(data)) {
+    if (colName === 'users' && Array.isArray(data)) {
       const sanitized = data.map(u => {
         const { password, pin, passwordHash, pinHash, ...safe } = u;
         return safe;
@@ -7741,12 +7786,107 @@ app.get('/api/collections/:name', requireAuth, requireCollectionRead, (req, res)
 
     // AISLAMIENTO SERVER-SIDE DE daily_drafts POR ROL:
     // El rol cajero recibe exclusivamente ventas en espera del POS. Jamás borradores contables ajenos.
-    if (req.params.name === 'daily_drafts' && Array.isArray(data)) {
+    if (colName === 'daily_drafts' && Array.isArray(data)) {
       const userRole = String(req.user?.role || req.session?.userRole || '').toLowerCase();
       if (userRole === 'cajero') {
         const posDraftsOnly = data.filter(d => isPosHeldSale(d));
         return res.json(posDraftsOnly);
       }
+    }
+
+    // SOPORTE DE CONSULTA HISTÓRICA / RANGO DE FECHAS / PAGINACIÓN SERVER-SIDE
+    const { startDate, endDate, page, limit, search, type } = req.query;
+
+    if (Array.isArray(data) && (startDate || endDate || page || limit || search || type)) {
+      let filtered = [...data];
+
+      // 1. Filtro por rango de fechas (startDate / endDate en formato YYYY-MM-DD o ISO)
+      if (startDate || endDate) {
+        let startMs = 0;
+        let endMs = Infinity;
+
+        if (startDate) {
+          const sStr = String(startDate).trim();
+          const sDate = sStr.length === 10 ? new Date(`${sStr}T00:00:00.000`) : new Date(sStr);
+          if (!isNaN(sDate.getTime())) startMs = sDate.getTime();
+        }
+        if (endDate) {
+          const eStr = String(endDate).trim();
+          const eDate = eStr.length === 10 ? new Date(`${eStr}T23:59:59.999`) : new Date(eStr);
+          if (!isNaN(eDate.getTime())) endMs = eDate.getTime();
+        }
+
+        filtered = filtered.filter(item => {
+          if (!item) return false;
+          let itemDateStr = item.date || item.createdAt || item.fecha || '';
+          if (!itemDateStr && item.timestamp) {
+            if (typeof item.timestamp === 'number') return item.timestamp >= startMs && item.timestamp <= endMs;
+          }
+          const itemTime = new Date(itemDateStr).getTime();
+          if (isNaN(itemTime)) return true;
+          return itemTime >= startMs && itemTime <= endMs;
+        });
+      }
+
+      // 2. Filtro por tipo si se especifica
+      if (type && type !== 'ALL') {
+        const typeStr = String(type).trim().toUpperCase();
+        filtered = filtered.filter(item => {
+          const itemType = String(item.type || item.action || '').trim().toUpperCase();
+          return itemType === typeStr;
+        });
+      }
+
+      // 3. Filtro por término de búsqueda (search)
+      if (search && String(search).trim()) {
+        const q = String(search).trim().toLowerCase();
+        filtered = filtered.filter(item => {
+          const pName = String(item.productName || item.name || '').toLowerCase();
+          const ref = String(item.referenceId || item.id || '').toLowerCase();
+          const action = String(item.action || '').toLowerCase();
+          const notes = String(item.notes || '').toLowerCase();
+          return pName.includes(q) || ref.includes(q) || action.includes(q) || notes.includes(q);
+        });
+      }
+
+      // Ordenar por fecha descendente (más recientes primero)
+      filtered.sort((a, b) => {
+        const getMs = (it) => {
+          if (it.timestamp && typeof it.timestamp === 'number') return it.timestamp;
+          if (it.date) {
+            const ms = new Date(it.date).getTime();
+            if (!isNaN(ms)) return ms;
+          }
+          if (it.fecha) {
+            const ms = new Date(it.fecha).getTime();
+            if (!isNaN(ms)) return ms;
+          }
+          return 0;
+        };
+        return getMs(b) - getMs(a);
+      });
+
+      const total = filtered.length;
+
+      // 4. Paginación server-side si se especifica page y/o limit
+      if (page || limit) {
+        const p = Math.max(1, parseInt(page, 10) || 1);
+        const l = Math.max(1, Math.min(500, parseInt(limit, 10) || 50));
+        const totalPages = Math.ceil(total / l) || 1;
+        const startIndex = (p - 1) * l;
+        const items = filtered.slice(startIndex, startIndex + l);
+
+        return res.json({
+          success: true,
+          page: p,
+          limit: l,
+          total,
+          totalPages,
+          items
+        });
+      }
+
+      return res.json(filtered);
     }
 
     res.json(data);
@@ -7773,6 +7913,33 @@ app.post('/api/collections/:name', requireAuth, requireCollectionWrite, verifyCs
         }
       }
 
+      // Firma y Trazabilidad Server-Side Obligatoria de Operaciones Mutables (Cajero / Admin)
+      const AUDIT_TRANSACTIONAL_COLLECTIONS = new Set(['transactions', 'kardex', 'bills', 'payments', 'installments', 'shift_transactions']);
+      if (AUDIT_TRANSACTIONAL_COLLECTIONS.has(colName)) {
+        const authUser = req.user || {};
+        const cashierUserId = String(authUser.id || req.session?.userId || 'usr-system');
+        const cashierName = String(authUser.name || authUser.username || (authUser.role === 'admin' ? 'Administrador' : 'Cajero'));
+        const cashierRole = String(authUser.role || 'cajero').toLowerCase();
+
+        payload.cashierUserId = cashierUserId;
+        payload.cashierName = cashierName;
+        payload.cashierRole = cashierRole;
+        payload.performedAt = Date.now();
+        payload.userOrCashier = cashierName;
+      }
+
+      // Seguridad y Hashing de Usuarios: Hashing automático de pin y password a pinHash y passwordHash
+      if (colName === 'users') {
+        if (payload.pin && typeof payload.pin === 'string' && payload.pin.trim()) {
+          payload.pinHash = bcrypt.hashSync(payload.pin.trim(), 10);
+          delete payload.pin; // Eliminar PIN en texto plano para asegurar persistencia segura
+        }
+        if (payload.password && typeof payload.password === 'string' && payload.password.trim()) {
+          payload.passwordHash = bcrypt.hashSync(payload.password.trim(), 10);
+          delete payload.password; // Eliminar password en texto plano
+        }
+      }
+
       const doc = { id: req.body.id || Date.now().toString(), ...payload };
       const index = data.findIndex(d => String(d.id) === String(doc.id));
 
@@ -7782,6 +7949,11 @@ app.post('/api/collections/:name', requireAuth, requireCollectionWrite, verifyCs
         // Mantener authNonce existente si ya tenía uno para evitar que un POST sobrescriba el nonce
         if (colName === 'transactions' && previousDoc.authNonce) {
           doc.authNonce = previousDoc.authNonce;
+        }
+        // Preservar hashes existentes si no se suministraron nuevos
+        if (colName === 'users') {
+          if (!doc.pinHash && previousDoc.pinHash) doc.pinHash = previousDoc.pinHash;
+          if (!doc.passwordHash && previousDoc.passwordHash) doc.passwordHash = previousDoc.passwordHash;
         }
         data[index] = doc;
         writeCollection(colName, data, { action: 'update', collection: colName, doc }, previousDoc);
@@ -7813,8 +7985,32 @@ app.patch('/api/collections/:name/:id', requireAuth, requireCollectionWrite, ver
         delete updates.authNonce;
       }
 
+      // Seguridad y Hashing de Usuarios: Hashing automático de pin y password a pinHash y passwordHash
+      if (colName === 'users') {
+        if (updates.pin && typeof updates.pin === 'string' && updates.pin.trim()) {
+          updates.pinHash = bcrypt.hashSync(updates.pin.trim(), 10);
+          delete updates.pin;
+        }
+        if (updates.password && typeof updates.password === 'string' && updates.password.trim()) {
+          updates.passwordHash = bcrypt.hashSync(updates.password.trim(), 10);
+          delete updates.password;
+        }
+      }
+
       if (index !== -1) {
         const previousDoc = { ...data[index] };
+        // Si se está anulando la transacción, registrar autoritativamente el cajero/usuario que ejecutó la anulación
+        if (updates.isVoided === true) {
+          const authUser = req.user || {};
+          const cashierUserId = String(authUser.id || req.session?.userId || 'usr-system');
+          const cashierName = String(authUser.name || authUser.username || (authUser.role === 'admin' ? 'Administrador' : 'Cajero'));
+          const cashierRole = String(authUser.role || 'cajero').toLowerCase();
+
+          updates.voidedByUserId = cashierUserId;
+          updates.voidedByName = cashierName;
+          updates.voidedByRole = cashierRole;
+          updates.voidedAt = Date.now();
+        }
         data[index] = { ...data[index], ...updates };
         writeCollection(colName, data, { action: 'update', collection: colName, doc: data[index] }, previousDoc);
         return data[index];
@@ -7824,6 +8020,19 @@ app.patch('/api/collections/:name/:id', requireAuth, requireCollectionWrite, ver
           if (updates.status === 'pending_approval' || !updates.authNonce) {
             updates.authNonce = generateTransactionAuthNonce();
           }
+        }
+        const AUDIT_TRANSACTIONAL_COLLECTIONS = new Set(['transactions', 'kardex', 'bills', 'payments', 'installments', 'shift_transactions']);
+        if (AUDIT_TRANSACTIONAL_COLLECTIONS.has(colName)) {
+          const authUser = req.user || {};
+          const cashierUserId = String(authUser.id || req.session?.userId || 'usr-system');
+          const cashierName = String(authUser.name || authUser.username || (authUser.role === 'admin' ? 'Administrador' : 'Cajero'));
+          const cashierRole = String(authUser.role || 'cajero').toLowerCase();
+
+          updates.cashierUserId = cashierUserId;
+          updates.cashierName = cashierName;
+          updates.cashierRole = cashierRole;
+          updates.performedAt = Date.now();
+          updates.userOrCashier = cashierName;
         }
         const newDoc = { id: req.params.id, ...updates };
         data.push(newDoc);
@@ -7868,7 +8077,71 @@ app.post('/api/collections/:name/batchDelete', requireAuth, requireRole('admin')
 app.delete('/api/collections/:name/:id', requireAuth, requireRole('admin'), verifyCsrf, async (req, res) => {
   try {
     const collectionName = req.params.name;
-    // Validar allowlist de colecciones con borrado individual permitido
+    const targetId = String(req.params.id);
+
+    // Si es la colección de usuarios, aplicar reglas de seguridad y protección de admins
+    if (collectionName === 'users') {
+      const currentAuthUserId = String(req.session?.userId || req.user?.id || '');
+      if (currentAuthUserId && currentAuthUserId === targetId) {
+        return res.status(403).json({
+          error: 'Operación denegada: no puede eliminar su propia cuenta de usuario en sesión activa.'
+        });
+      }
+
+      let deletedUser = null;
+      await withCollectionLock('users', async () => {
+        const users = readCollection('users');
+        const userIndex = users.findIndex(u => String(u.id) === targetId);
+        if (userIndex === -1) {
+          const notFoundErr = new Error('USER_NOT_FOUND');
+          notFoundErr.statusCode = 404;
+          throw notFoundErr;
+        }
+
+        const targetUser = users[userIndex];
+        // Protección: Si es admin, no permitir eliminar si es el último admin activo
+        if (String(targetUser.role).toLowerCase() === 'admin') {
+          const activeAdmins = users.filter(u => String(u.role).toLowerCase() === 'admin' && u.active);
+          if (activeAdmins.length <= 1) {
+            const lastAdminErr = new Error('LAST_ADMIN_PROTECTED');
+            lastAdminErr.statusCode = 403;
+            throw lastAdminErr;
+          }
+        }
+
+        deletedUser = targetUser;
+        const filteredUsers = users.filter(u => String(u.id) !== targetId);
+        writeCollection('users', filteredUsers, { action: 'delete', collection: 'users', doc: { id: targetId } }, targetUser);
+      });
+
+      // Limpieza atómica de credenciales WebAuthn / Passkeys asociadas al usuario eliminado
+      try {
+        await withCollectionLock('webauthn_credentials', async () => {
+          const creds = readCollection('webauthn_credentials');
+          if (Array.isArray(creds) && creds.length > 0) {
+            const filteredCreds = creds.filter(c => String(c.userId) !== targetId);
+            if (filteredCreds.length !== creds.length) {
+              writeCollection('webauthn_credentials', filteredCreds);
+            }
+          }
+        });
+      } catch (credErr) {
+        console.warn(`[Passkey Cleanup] Error limpiando credenciales WebAuthn para usuario ${targetId}:`, credErr);
+      }
+
+      recordAuditLog({
+        req,
+        action: 'user.delete',
+        resourceType: 'users',
+        resourceId: targetId,
+        result: 'success',
+        metadata: { userName: deletedUser?.name, userRole: deletedUser?.role }
+      });
+
+      return res.json({ success: true, message: 'Usuario eliminado exitosamente' });
+    }
+
+    // Validar allowlist de colecciones con borrado individual permitido para otras colecciones
     if (SENSITIVE_CORE_COLLECTIONS.has(collectionName) && !ALLOWED_DELETION_COLLECTIONS.has(collectionName)) {
       return res.status(403).json({
         error: `Operación denegada: borrado individual prohibido en la colección protegida '${collectionName}'.`
@@ -7877,13 +8150,19 @@ app.delete('/api/collections/:name/:id', requireAuth, requireRole('admin'), veri
 
     await withCollectionLock(collectionName, async () => {
       const data = readCollection(collectionName);
-      const previousDoc = data.find(d => String(d.id) === String(req.params.id));
-      const filtered = data.filter(d => String(d.id) !== String(req.params.id));
-      writeCollection(collectionName, filtered, { action: 'delete', collection: collectionName, doc: { id: req.params.id } }, previousDoc);
+      const previousDoc = data.find(d => String(d.id) === targetId);
+      const filtered = data.filter(d => String(d.id) !== targetId);
+      writeCollection(collectionName, filtered, { action: 'delete', collection: collectionName, doc: { id: targetId } }, previousDoc);
     });
 
     res.json({ success: true });
   } catch (error) {
+    if (error.statusCode === 404 || error.message === 'USER_NOT_FOUND') {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+    if (error.statusCode === 403 || error.message === 'LAST_ADMIN_PROTECTED') {
+      return res.status(403).json({ error: 'Operación denegada: no se puede eliminar el único administrador activo del sistema.' });
+    }
     console.error(`Error deleting ${req.params.name}:`, error);
     res.status(500).json({ error: 'Error deleting document' });
   }

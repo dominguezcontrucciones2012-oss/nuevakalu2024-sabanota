@@ -51,7 +51,7 @@ import { PurchaseItem } from './components/StockPurchasesView';
 import KardexView from './components/KardexView';
 import CheeseTripsView from './components/CheeseTripsView';
 import ClientsCreditView from './components/ClientsCreditView';
-import SuppliersDebtsView from './components/SuppliersDebtsView';
+import SuppliersDebtsView, { calculateDynamicBalances } from './components/SuppliersDebtsView';
 import FinancesAnalysisView from './components/FinancesAnalysisView';
 import SettingsAdminView from './components/SettingsAdminView';
 import AccessControlView from './components/AccessControlView';
@@ -1778,6 +1778,157 @@ export default function App() {
     }
   };
 
+  const handleVoidSupplierTransaction = async (txId: string) => {
+    const tx = transactions.find(t => String(t.id) === String(txId));
+    if (!tx) {
+      addNotification("No se encontró la transacción a anular.", "warning");
+      return;
+    }
+    if (tx.isVoided) {
+      addNotification("Esta operación ya se encuentra anulada.", "info");
+      return;
+    }
+
+    const supplierId = tx.supplierId || (tx as any).entityId;
+    const selectedSup = suppliers.find(s => String(s.id) === String(supplierId));
+    const isEmployee = selectedSup?.isEmployee;
+
+    // 1. Marcar transacción como anulada (Optimistic + DB)
+    setTransactions(prev => prev.map(t => String(t.id) === String(txId) ? { ...t, isVoided: true } : t));
+    try {
+      await updateLocalDoc('transactions', txId, { isVoided: true });
+    } catch (err) {
+      console.error('Error al anular transacción en DB:', err);
+    }
+
+    // 2. Reversión de Stock e Inventario + Kardex si la transacción incluía ítems
+    if (Array.isArray(tx.items) && tx.items.length > 0) {
+      for (const item of tx.items) {
+        const prodId = item.productId || item.id;
+        const qtyKg = Number(item.quantityKg ?? item.kg ?? item.quantity ?? 0);
+        if (!prodId || qtyKg <= 0) continue;
+
+        const p = cheeseProducts.find(prod => String(prod.id) === String(prodId));
+        if (p) {
+          const prevStock = Number(p.stockKg || 0);
+          // Al anular una entrega/compra que sumó inventario, restamos la cantidad arrimada
+          const newStock = Math.max(0, prevStock - qtyKg);
+
+          setCheeseProducts(prev => prev.map(prod => String(prod.id) === String(prodId) ? { ...prod, stockKg: newStock } : prod));
+          try {
+            await updateLocalDoc('products', String(prodId), { stockKg: newStock });
+          } catch (e) {
+            console.error(`Error revirtiendo stock para producto ${prodId}:`, e);
+          }
+
+          // Kardex de anulación de compra
+          const unitCost = Number(item.pricePerKg || item.purchasePrice || p.purchasePrice || p.wholesalePrice || 0);
+          const kardexRev: KardexMovement = {
+            id: crypto.randomUUID(),
+            date: new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' }),
+            timestamp: Date.now(),
+            productId: p.id,
+            productName: p.name || item.name || 'Producto',
+            unit: (getUnitLabel(p) as any) || 'Und',
+            type: 'AJUSTE_MANUAL',
+            quantity: qtyKg,
+            previousStock: prevStock,
+            newStock: newStock,
+            unitCost: unitCost,
+            totalCost: qtyKg * unitCost,
+            totalValue: Number(item.totalUsd || (qtyKg * unitCost)),
+            referenceId: tx.invoiceNumber || tx.id,
+            notes: `Salida por anulación de recepción de queso ${tx.invoiceNumber || tx.id}`,
+            userOrCashier: 'Sistema / Auditoría'
+          };
+          try {
+            await addLocalDoc('kardex', kardexRev);
+          } catch (e) {
+            console.error("Error al persistir kardex de anulación de compra:", e);
+          }
+        }
+      }
+    }
+
+    // 3. Reversión de Bóveda Central (si el pago o abono movió caja chica o bancos)
+    const txAmount = Number(tx.amount || 0);
+    const pmLower = String(tx.paymentMethod || '').toLowerCase();
+    const currentVault = settings?.centralVaultBalance || { usd: 0, bs: 0, bankBs: 0, bankUsd: 0 };
+    const rate = Number(settings?.exchangeRate) > 1 ? Number(settings.exchangeRate) : 42.5;
+    let newVault = { ...currentVault };
+
+    // Si fue un pago a proveedor (salida de caja/banco), la anulación REINTEGRA los fondos a bóveda
+    if (tx.category === 'compras' && !tx.isIncome && txAmount > 0 && !pmLower.includes('compensación') && !pmLower.includes('cierre') && !pmLower.includes('libreta')) {
+      if (pmLower.includes('pago móvil') || pmLower.includes('pago movil') || pmLower.includes('banco') || pmLower.includes('transferencia')) {
+        const bsToAdd = Math.round((txAmount * rate) * 100) / 100;
+        newVault.bankBs = Math.round(((newVault.bankBs || 0) + bsToAdd) * 100) / 100;
+      } else if (pmLower.includes('efectivo bs') || pmLower.includes('ves') || pmLower.includes('bolívares') || pmLower.includes('bolivares')) {
+        const bsToAdd = Math.round((txAmount * rate) * 100) / 100;
+        newVault.bs = Math.round(((newVault.bs || 0) + bsToAdd) * 100) / 100;
+      } else {
+        newVault.usd = Math.round(((newVault.usd || 0) + txAmount) * 100) / 100;
+      }
+      handleUpdateSettings({ centralVaultBalance: newVault });
+      setBalance(prev => prev + txAmount);
+    } 
+    // Si fue un cobro de deuda de tienda (ingreso a caja/banco), la anulación DEVUELVE/DESCUENTA los fondos de bóveda
+    else if (tx.category === 'credito' && tx.isIncome && txAmount > 0) {
+      if (pmLower.includes('pago móvil') || pmLower.includes('pago movil') || pmLower.includes('banco') || pmLower.includes('transferencia')) {
+        const bsToSub = Math.round((txAmount * rate) * 100) / 100;
+        newVault.bankBs = Math.round(((newVault.bankBs || 0) - bsToSub) * 100) / 100;
+      } else if (pmLower.includes('efectivo bs') || pmLower.includes('ves') || pmLower.includes('bolívares') || pmLower.includes('bolivares')) {
+        const bsToSub = Math.round((txAmount * rate) * 100) / 100;
+        newVault.bs = Math.round(((newVault.bs || 0) - bsToSub) * 100) / 100;
+      } else {
+        newVault.usd = Math.round(((newVault.usd || 0) - txAmount) * 100) / 100;
+      }
+      handleUpdateSettings({ centralVaultBalance: newVault });
+      setBalance(prev => prev - txAmount);
+    }
+
+    // 4. Recalcular saldos del proveedor (balanceOwed, storeDebt) y Kilos Históricos de Ranking
+    if (selectedSup) {
+      const updatedTxs = transactions.map(t => String(t.id) === String(txId) ? { ...t, isVoided: true } : t);
+      const { payable: newPayable, debt: newDebt } = calculateDynamicBalances(selectedSup, updatedTxs);
+
+      // Calcular kg de ranking restando si la transacción era una entrega de queso
+      let kgToDeduct = 0;
+      const notesLower = String(tx.notes || '').toLowerCase();
+      const isDelivery = (tx.category === 'compras' && tx.isIncome) ||
+        notesLower.includes('recibido') ||
+        notesLower.includes('arrime') ||
+        notesLower.includes('entrega') ||
+        notesLower.includes('compra de queso');
+
+      if (isDelivery) {
+        if (Array.isArray(tx.items) && tx.items.length > 0) {
+          kgToDeduct = tx.items.reduce((s: number, it: any) => s + (Number(it.kg || it.quantityKg || it.quantity) || 0), 0);
+        } else if (tx.notes) {
+          const match = String(tx.notes).match(/(\d+(?:[.,]\d+)?)\s*kg/i);
+          if (match) kgToDeduct = parseFloat(match[1].replace(',', '.'));
+        }
+      }
+
+      const prevKgHist = Number(selectedSup.totalKgHistorical || 0);
+      const newKgHist = Math.max(0, Math.round((prevKgHist - kgToDeduct) * 100) / 100);
+
+      const supUpdates: Partial<SupplierProfile> = {
+        balanceOwed: newPayable,
+        storeDebt: newDebt,
+        ...(kgToDeduct > 0 ? { totalKgHistorical: newKgHist } : {})
+      };
+
+      setSuppliers(prev => prev.map(s => String(s.id) === String(selectedSup.id) ? { ...s, ...supUpdates } : s));
+      try {
+        await updateLocalDoc('suppliers', selectedSup.id, supUpdates);
+      } catch (e) {
+        console.error('Error al actualizar saldos y ranking de proveedor tras anulación:', e);
+      }
+    }
+
+    addNotification(`Operación #${tx.invoiceNumber || tx.id} anulada y revertida exitosamente.`, 'success');
+  };
+
   // 7. Operating expenses
   const handleAddExpense = (newExp: Omit<OperatingExpense, 'id'>) => {
     const expense: OperatingExpense = {
@@ -1861,9 +2012,17 @@ export default function App() {
       } catch (err) {
         await addLocalDoc('settings', { id: 'general', ...newSettings });
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error saving settings to Local API:", error);
-      addNotification("Error de red: La tasa y ajustes se guardaron solo localmente.", "warning");
+      const msg = String(error?.message || '');
+      if (msg.includes('No autenticado') || msg.includes('401') || msg.includes('sesión') || msg.includes('session')) {
+        addNotification("Sesión expirada o no autenticada. Inicie sesión nuevamente como administrador.", "warning");
+        setIsAuthenticated(false);
+        setCurrentUser(null);
+        setSelectedApp(null);
+      } else {
+        addNotification("Error al guardar ajustes en el servidor: " + (error?.message || "Error desconocido"), "warning");
+      }
     }
   };
 
@@ -1872,7 +2031,7 @@ export default function App() {
       import('./services/exchangeRateService').then(({ fetchOfficialBcvRate }) => {
         fetchOfficialBcvRate()
           .then(({ rate, timestamp }) => {
-            handleUpdateSettings({ exchangeRate: rate, lastRateSync: timestamp });
+            setSettings((prev) => ({ ...prev, exchangeRate: rate, lastRateSync: timestamp }));
           })
           .catch(err => console.warn("Fallo auto-sync BCV", err));
       });
@@ -2049,6 +2208,7 @@ export default function App() {
 
           {currentView === 'clients' && (
             <ClientsCreditView
+              isAdmin={currentUser?.role === 'admin'}
               clients={clients}
               salesHistory={transactions}
               exchangeRate={settings.exchangeRate || 42.50}
@@ -2073,6 +2233,7 @@ export default function App() {
               onNetSupplierBalances={handleNetSupplierBalances}
               onPaySupplierRemainingBalance={handlePaySupplierRemainingBalance}
               onLoadPurchase={handleLoadPurchase}
+              onVoidTransaction={handleVoidSupplierTransaction}
               onAddNotification={addNotification}
               isSidebarOpen={isSidebarOpen}
             />
@@ -2104,9 +2265,15 @@ export default function App() {
             <SettingsAdminView
               settings={settings}
               users={users}
+              currentUserId={currentUser?.id}
               onUpdateSettings={handleUpdateSettings}
               onAddNotification={addNotification}
               onResetAccounting={handleResetAccounting}
+              onRequireReauth={() => {
+                setIsAuthenticated(false);
+                setCurrentUser(null);
+                setSelectedApp(null);
+              }}
             />
           )}
 

@@ -2625,6 +2625,7 @@ export default function CheesePOSView({
                 <tr className="border-b border-editorial-border text-[10px] font-mono text-editorial-text-muted uppercase tracking-wider">
                   <th className="py-3 px-4">Referencia</th>
                   <th className="py-3 px-4">Fecha y Hora</th>
+                  <th className="py-3 px-4">Cajero</th>
                   <th className="py-3 px-4">Cliente</th>
                   <th className="py-3 px-4">Artículos / Concepto</th>
                   <th className="py-3 px-4">Método</th>
@@ -2636,7 +2637,7 @@ export default function CheesePOSView({
               <tbody className="divide-y divide-editorial-border/60 font-sans">
                 {allSalesHistory.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-8 text-center text-editorial-text-muted">
+                    <td colSpan={9} className="py-8 text-center text-editorial-text-muted">
                       No se han procesado ventas ni cobranzas en el sistema.
                     </td>
                   </tr>
@@ -2654,6 +2655,9 @@ export default function CheesePOSView({
                         </div>
                       </td>
                       <td className="py-3.5 px-4 text-editorial-text-muted">{s.date}</td>
+                      <td className="py-3.5 px-4 font-mono text-[11px] text-amber-400 font-bold max-w-[120px] truncate" title={s.cashierName || s.userOrCashier || 'Cajero'}>
+                        {s.cashierName || s.userOrCashier || 'Cajero'}
+                      </td>
                       <td className="py-3.5 px-4 font-medium">{s.clientName || s.entity || 'Cliente General'}</td>
                       <td className="py-3.5 px-4 text-editorial-text-muted max-w-[200px] truncate">
                         {s.isCollectionTx ? (
@@ -3271,6 +3275,7 @@ export default function CheesePOSView({
 
               <div className="space-y-1">
                 <p><span className="font-bold">Cliente:</span> {lastReceipt.clientName || lastReceipt.entity || 'Cliente Público'}</p>
+                <p><span className="font-bold">Atendido por:</span> {lastReceipt.cashierName || lastReceipt.userOrCashier || 'Caja Principal'}</p>
                 <p><span className="font-bold">Método:</span> {lastReceipt.paymentMethod || 'Efectivo'}</p>
                 {lastReceipt.isCollectionTx && (
                   <p><span className="font-bold">Concepto:</span> {lastReceipt.notes || 'Cobro de Cuota / Crédito'}</p>
@@ -3636,7 +3641,7 @@ export default function CheesePOSView({
               <div className="grid grid-cols-4 gap-4 text-sm font-mono bg-editorial-bg p-4 border border-editorial-border rounded">
                 <div>
                   <div className="text-[9px] text-editorial-text-muted uppercase tracking-wider mb-1">Cajero Responsable</div>
-                  <div className="font-bold text-amber-500 uppercase">Administrador</div>
+                  <div className="font-bold text-amber-500 uppercase">{selectedAuditClosing.closedBy || 'Cajero / Admin'}</div>
                 </div>
                 <div>
                   <div className="text-[9px] text-editorial-text-muted uppercase tracking-wider mb-1">Tasa BCV del Turno</div>

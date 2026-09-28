@@ -488,31 +488,33 @@ export default function CheeseInventoryView({
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* Sub-Tabs Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 max-w-2xl gap-2 border-b border-editorial-border/60 pb-4">
-        {[
-          { id: 'stock', label: 'Inventario Activo', icon: Package },
-          { id: 'adjust', label: 'Ajuste de Precios', icon: TrendingUp },
-          { id: 'purchase', label: 'Carga de Compras', icon: ArrowUpRight }
-        ].map(tab => {
-          const Icon = tab.icon;
-          const isSelected = activeSubTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveSubTab(tab.id as any)}
-              className={`flex items-center justify-center gap-2 p-3 text-[11px] font-mono font-bold uppercase tracking-wider rounded border transition-all cursor-pointer ${
-                isSelected
-                  ? 'bg-amber-500 border-amber-600 text-white shadow-md shadow-amber-500/10'
-                  : 'bg-editorial-card border-editorial-border text-editorial-text-muted hover:text-editorial-text-primary hover:border-editorial-text-muted/40'
-              }`}
-            >
-              <Icon className="w-3.5 h-3.5 shrink-0" />
-              <span>{tab.label}</span>
-            </button>
-          );
-        })}
-      </div>
+      {/* Sub-Tabs Grid (Solo Admin tiene acceso a Ajuste de Precios y Carga de Compras) */}
+      {isAdmin && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 max-w-2xl gap-2 border-b border-editorial-border/60 pb-4">
+          {[
+            { id: 'stock', label: 'Inventario Activo', icon: Package },
+            { id: 'adjust', label: 'Ajuste de Precios', icon: TrendingUp },
+            { id: 'purchase', label: 'Carga de Compras', icon: ArrowUpRight }
+          ].map(tab => {
+            const Icon = tab.icon;
+            const isSelected = activeSubTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveSubTab(tab.id as any)}
+                className={`flex items-center justify-center gap-2 p-3 text-[11px] font-mono font-bold uppercase tracking-wider rounded border transition-all cursor-pointer ${
+                  isSelected
+                    ? 'bg-amber-500 border-amber-600 text-white shadow-md shadow-amber-500/10'
+                    : 'bg-editorial-card border-editorial-border text-editorial-text-muted hover:text-editorial-text-primary hover:border-editorial-text-muted/40'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5 shrink-0" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* AI Assistant Console (Admin Only) */}
       {isAdmin && (
@@ -704,30 +706,32 @@ export default function CheeseInventoryView({
               )}
             </div>
 
-            <div className="flex gap-2 mt-4 sm:mt-0">
-              <button
-                onClick={() => csvFileInputRef.current?.click()}
-                className="px-4 py-2 bg-editorial-bg border border-editorial-border text-editorial-text-primary hover:text-emerald-400 font-serif font-bold text-[10px] tracking-wider uppercase flex items-center gap-1.5 transition-all cursor-pointer rounded"
-              >
-                <Upload className="w-3.5 h-3.5" />
-                Importar CSV
-              </button>
-              <button
-                onClick={handleExportCSV}
-                className="px-4 py-2 bg-editorial-bg border border-editorial-border text-editorial-text-primary hover:text-amber-500 font-serif font-bold text-[10px] tracking-wider uppercase flex items-center gap-1.5 transition-all cursor-pointer rounded"
-              >
-                <Download className="w-3.5 h-3.5" />
-                Exportar CSV
-              </button>
-              <button
-                onClick={() => setShowAddForm(!showAddForm)}
-                className="px-4 py-2 bg-amber-500 text-white font-serif font-bold text-[10px] tracking-wider uppercase flex items-center gap-1.5 hover:brightness-110 active:scale-95 transition-all cursor-pointer rounded ml-1 sm:ml-2"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                Nuevo Producto
-              </button>
-              <input type="file" ref={csvFileInputRef} accept=".csv" className="hidden" onChange={handleImportCSV} />
-            </div>
+            {isAdmin && (
+              <div className="flex gap-2 mt-4 sm:mt-0">
+                <button
+                  onClick={() => csvFileInputRef.current?.click()}
+                  className="px-4 py-2 bg-editorial-bg border border-editorial-border text-editorial-text-primary hover:text-emerald-400 font-serif font-bold text-[10px] tracking-wider uppercase flex items-center gap-1.5 transition-all cursor-pointer rounded"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  Importar CSV
+                </button>
+                <button
+                  onClick={handleExportCSV}
+                  className="px-4 py-2 bg-editorial-bg border border-editorial-border text-editorial-text-primary hover:text-amber-500 font-serif font-bold text-[10px] tracking-wider uppercase flex items-center gap-1.5 transition-all cursor-pointer rounded"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Exportar CSV
+                </button>
+                <button
+                  onClick={() => setShowAddForm(!showAddForm)}
+                  className="px-4 py-2 bg-amber-500 text-white font-serif font-bold text-[10px] tracking-wider uppercase flex items-center gap-1.5 hover:brightness-110 active:scale-95 transition-all cursor-pointer rounded ml-1 sm:ml-2"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Nuevo Producto
+                </button>
+                <input type="file" ref={csvFileInputRef} accept=".csv" className="hidden" onChange={handleImportCSV} />
+              </div>
+            )}
           </div>
 
           {/* New product addition drawer form */}
@@ -881,7 +885,7 @@ export default function CheeseInventoryView({
                     <th className="py-3 px-4 text-right">Costo ($)</th>
                     <th className="py-3 px-4 text-right">Venta ($)</th>
                     <th className="py-3 px-4 text-center">Alertas</th>
-                    <th className="py-3 px-4 text-center">Acciones</th>
+                    {isAdmin && <th className="py-3 px-4 text-center">Acciones</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-editorial-border/60">
@@ -1063,75 +1067,77 @@ export default function CheeseInventoryView({
                             </span>
                           )}
                         </td>
-                        <td className="py-4 px-4 text-center">
-                          {isEditing ? (
-                            <div key="edit-actions" className="flex justify-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={(e) => handleSaveInlineEdit(e)}
-                                className="p-1 border border-emerald-800 bg-emerald-950/20 text-emerald-400 rounded hover:bg-emerald-500 hover:text-white cursor-pointer active:scale-95 transition-transform"
-                                title="Guardar"
-                              >
-                                <Check className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  setEditingProduct(null);
-                                }}
-                                className="p-1 border border-editorial-border text-rose-400 rounded hover:bg-rose-500 hover:text-white cursor-pointer"
-                                title="Cancelar"
-                              >
-                                <span>X</span>
-                              </button>
-                            </div>
-                          ) : (
-                            <div key="view-actions" className="flex justify-center gap-1.5">
-                              <label className="p-1 border border-editorial-border bg-editorial-bg text-editorial-text-primary rounded hover:bg-amber-500 hover:border-amber-500 hover:text-white cursor-pointer transition-colors relative" title="Tomar Foto">
-                                <Camera className="w-3.5 h-3.5" />
-                                <input 
-                                  type="file" 
-                                  accept="image/*" 
-                                  capture="environment"
-                                  className="hidden" 
-                                  onChange={e => {
-                                    if (e.target.files?.[0]) handleUploadImageForProduct(p.id, e.target.files[0]);
-                                  }} 
-                                />
-                              </label>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  console.log('Producto a editar:', p);
-                                  setEditingProduct({ ...p, unit: getUnitLabel(p) as any });
-                                }}
-                                className="p-1 border border-editorial-border bg-editorial-bg text-editorial-text-primary rounded hover:bg-amber-500 hover:border-amber-500 hover:text-white cursor-pointer transition-colors"
-                                title="Editar"
-                              >
-                                <Edit2 className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  if (confirm(`¿Seguro que desea eliminar el producto ${p.name}?`)) {
-                                    onDeleteProduct(p.id);
-                                    onAddNotification(`Producto ${p.name} eliminado de la base de datos.`, 'info');
-                                  }
-                                }}
-                                className="p-1 border border-editorial-border bg-editorial-bg text-editorial-text-primary rounded hover:bg-rose-500 hover:border-rose-500 hover:text-white cursor-pointer transition-colors"
-                                title="Eliminar"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          )}
-                        </td>
+                        {isAdmin && (
+                          <td className="py-4 px-4 text-center">
+                            {isEditing ? (
+                              <div key="edit-actions" className="flex justify-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleSaveInlineEdit(e)}
+                                  className="p-1 border border-emerald-800 bg-emerald-950/20 text-emerald-400 rounded hover:bg-emerald-500 hover:text-white cursor-pointer active:scale-95 transition-transform"
+                                  title="Guardar"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setEditingProduct(null);
+                                  }}
+                                  className="p-1 border border-editorial-border text-rose-400 rounded hover:bg-rose-500 hover:text-white cursor-pointer"
+                                  title="Cancelar"
+                                >
+                                  <span>X</span>
+                                </button>
+                              </div>
+                            ) : (
+                              <div key="view-actions" className="flex justify-center gap-1.5">
+                                <label className="p-1 border border-editorial-border bg-editorial-bg text-editorial-text-primary rounded hover:bg-amber-500 hover:border-amber-500 hover:text-white cursor-pointer transition-colors relative" title="Tomar Foto">
+                                  <Camera className="w-3.5 h-3.5" />
+                                  <input 
+                                    type="file" 
+                                    accept="image/*" 
+                                    capture="environment"
+                                    className="hidden" 
+                                    onChange={e => {
+                                      if (e.target.files?.[0]) handleUploadImageForProduct(p.id, e.target.files[0]);
+                                    }} 
+                                  />
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    console.log('Producto a editar:', p);
+                                    setEditingProduct({ ...p, unit: getUnitLabel(p) as any });
+                                  }}
+                                  className="p-1 border border-editorial-border bg-editorial-bg text-editorial-text-primary rounded hover:bg-amber-500 hover:border-amber-500 hover:text-white cursor-pointer transition-colors"
+                                  title="Editar"
+                                >
+                                  <Edit2 className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    if (confirm(`¿Seguro que desea eliminar el producto ${p.name}?`)) {
+                                      onDeleteProduct(p.id);
+                                      onAddNotification(`Producto ${p.name} eliminado de la base de datos.`, 'info');
+                                    }
+                                  }}
+                                  className="p-1 border border-editorial-border bg-editorial-bg text-editorial-text-primary rounded hover:bg-rose-500 hover:border-rose-500 hover:text-white cursor-pointer transition-colors"
+                                  title="Eliminar"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     );
                   });

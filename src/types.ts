@@ -53,6 +53,12 @@ export interface Transaction {
   createdAt?: number;
   isClosed?: boolean;
   closureId?: string;
+  cashierUserId?: string;
+  cashierName?: string;
+  cashierRole?: string;
+  performedAt?: number | string;
+  userOrCashier?: string;
+  shiftSessionId?: string;
 }
 
 export interface DebtInstallment {

@@ -335,6 +335,83 @@ export const fetchCollection = async (collectionName: string) => {
   }
 };
 
+export interface CollectionQueryParams {
+  startDate?: string;
+  endDate?: string;
+  page?: number;
+  limit?: number;
+  search?: string;
+  type?: string;
+}
+
+export interface PaginatedCollectionResult<T = any> {
+  success?: boolean;
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  items: T[];
+}
+
+export const fetchCollectionQuery = async <T = any>(
+  collectionName: string,
+  params: CollectionQueryParams = {}
+): Promise<PaginatedCollectionResult<T>> => {
+  try {
+    const headers: Record<string, string> = {};
+    if (typeof process !== 'undefined' && process.env?.KALU_TEST_ADMIN_COOKIE) {
+      headers['Cookie'] = process.env.KALU_TEST_ADMIN_COOKIE;
+    }
+
+    const query = new URLSearchParams();
+    if (params.startDate) query.set('startDate', params.startDate);
+    if (params.endDate) query.set('endDate', params.endDate);
+    if (params.page) query.set('page', String(params.page));
+    if (params.limit) query.set('limit', String(params.limit));
+    if (params.search) query.set('search', params.search);
+    if (params.type && params.type !== 'ALL') query.set('type', params.type);
+
+    const res = await fetch(`${API_URL}/collections/${collectionName}?${query.toString()}`, {
+      credentials: 'include',
+      headers
+    });
+    if (!res.ok) throw new Error(`Failed to query collection ${collectionName}`);
+    const json = await res.json();
+
+    if (json && Array.isArray(json.items)) {
+      return json as PaginatedCollectionResult<T>;
+    }
+    if (Array.isArray(json)) {
+      return {
+        success: true,
+        page: params.page || 1,
+        limit: params.limit || json.length,
+        total: json.length,
+        totalPages: 1,
+        items: json as T[]
+      };
+    }
+    return {
+      success: true,
+      page: 1,
+      limit: 50,
+      total: 0,
+      totalPages: 1,
+      items: []
+    };
+  } catch (error) {
+    console.error(`Error querying ${collectionName}:`, error);
+    return {
+      success: false,
+      page: 1,
+      limit: 50,
+      total: 0,
+      totalPages: 1,
+      items: []
+    };
+  }
+};
+
 export const addLocalDoc = async (collectionName: string, data: any) => {
   try {
     const csrf = await getCsrfToken();

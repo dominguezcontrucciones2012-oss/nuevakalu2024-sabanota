@@ -2,10 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { ClientProfile, Transaction, DebtInstallment } from '../types';
 import { Users, Search, Plus, CreditCard, Award, BadgeAlert, Coins, Phone, Mail, FileCheck, Eye, Clock, X, CheckCircle, XCircle, Zap, ArrowDownLeft, ShieldCheck, Sparkles, Receipt } from 'lucide-react';
 import { fetchCollection, onCollectionSnapshot, updateLocalDoc } from '../services/localApi';
-import { parseSafeDecimal } from '../utils';
+import { parseSafeDecimal, getClientInitialPin } from '../utils';
 import { getVIPLevelInfo, VIP_LEVELS_MATRIX } from '../config/vipMatrix';
 
 interface ClientsCreditViewProps {
+  isAdmin?: boolean;
   clients: ClientProfile[];
   exchangeRate?: number;
   salesHistory?: any[];
@@ -22,7 +23,8 @@ export default function ClientsCreditView({
   onAddClient,
   onUpdateClient,
   onRecordDebtPayment,
-  onAddNotification
+  onAddNotification,
+  isAdmin = false
 }: ClientsCreditViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<'directory' | 'receivables'>('directory');
   const [searchQuery, setSearchQuery] = useState('');
@@ -113,9 +115,13 @@ export default function ClientsCreditView({
     e.preventDefault();
     if (!editingClient || !onUpdateClient) return;
 
-    const ced4 = editCedula.length >= 4 ? editCedula.slice(-4) : '';
-    const ph = editingClient.phone ? editingClient.phone.replace(/\D/g, '') : '';
-    const ph4 = ph.length >= 4 ? ph.slice(-4) : '0000';
+    const trimmedPin = editPin ? editPin.trim().replace(/\D/g, '') : '';
+    if (trimmedPin && !/^\d{6}$/.test(trimmedPin)) {
+      onAddNotification('El PIN debe contener exactamente 6 dígitos numéricos.', 'warning');
+      return;
+    }
+
+    const canonicalInitialPin = getClientInitialPin(editCedula || editingClient.cedula || editingClient.rfc || editingClient.idNumber);
 
     onUpdateClient(editingClient.id, {
       name: editName,
@@ -125,7 +131,7 @@ export default function ClientsCreditView({
       email: editEmail,
       address: editAddress,
       birthday: editBirthday,
-      pin: editPin || (editCedula ? ced4 : ph4),
+      pin: trimmedPin || canonicalInitialPin || editingClient.pin || undefined,
       tier: editTier,
       loyaltyPoints: Number(editLoyaltyPoints || 0)
     });
@@ -136,9 +142,13 @@ export default function ClientsCreditView({
     e.preventDefault();
     if (!name) return;
 
-    const ced4 = cedula.length >= 4 ? cedula.slice(-4) : '';
-    const ph = phone ? phone.replace(/\D/g, '') : '';
-    const ph4 = ph.length >= 4 ? ph.slice(-4) : '0000';
+    const trimmedPin = pin ? pin.trim().replace(/\D/g, '') : '';
+    if (trimmedPin && !/^\d{6}$/.test(trimmedPin)) {
+      onAddNotification('El PIN debe contener exactamente 6 dígitos numéricos.', 'warning');
+      return;
+    }
+
+    const canonicalInitialPin = getClientInitialPin(cedula);
 
     onAddClient({
       name,
@@ -150,7 +160,7 @@ export default function ClientsCreditView({
       rfc: cedula,
       address,
       birthday,
-      pin: pin || (cedula ? ced4 : ph4)
+      pin: trimmedPin || canonicalInitialPin || undefined
     });
     onAddNotification(`Perfil de cliente ${name} registrado con éxito en Nivel ${tier}.`, 'success');
     setName('');
@@ -263,13 +273,15 @@ export default function ClientsCreditView({
           </button>
         </div>
 
-        <button
-          onClick={() => setShowAddForm(!showAddForm)}
-          className="px-4 py-2 bg-amber-500 text-white font-serif font-bold text-xs tracking-wider uppercase flex items-center gap-1.5 hover:brightness-110 transition-all cursor-pointer shrink-0"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          Registrar Cliente
-        </button>
+        {isAdmin && (
+          <button
+            onClick={() => setShowAddForm(!showAddForm)}
+            className="px-4 py-2 bg-amber-500 text-white font-serif font-bold text-xs tracking-wider uppercase flex items-center gap-1.5 hover:brightness-110 transition-all cursor-pointer shrink-0"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Registrar Cliente
+          </button>
+        )}
       </div>
 
       {showAddForm && (
@@ -361,7 +373,7 @@ export default function ClientsCreditView({
                       </span>
                       <div className="flex items-center gap-2">
                         <span className="text-[10px] font-mono text-editorial-text-muted">ID: {c.id}</span>
-                        <button onClick={() => openEditModal(c)} className="text-[11px] text-amber-500 hover:text-amber-400 font-bold">✏️ Editar</button>
+                        {isAdmin && <button onClick={() => openEditModal(c)} className="text-[11px] text-amber-500 hover:text-amber-400 font-bold">✏️ Editar</button>}
                       </div>
                     </div>
 
@@ -807,7 +819,8 @@ export default function ClientsCreditView({
             balance: rollingBalance,
             items: s.items,
             receiptUrl: matchedReceiptUrl,
-            reference: s.invoiceNumber || s.id
+            reference: s.invoiceNumber || s.id,
+            cashierName: s.cashierName || s.userOrCashier || null
           };
         });
 
@@ -900,6 +913,11 @@ export default function ClientsCreditView({
                               </div>
                               <div className="text-[9px] text-editorial-text-muted mt-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
                                 Vía {t.method} {t.notes && `• ${t.notes}`}
+                                {t.cashierName && (
+                                  <span className="text-amber-400 font-bold ml-1.5">
+                                    [Cajero: {t.cashierName}]
+                                  </span>
+                                )}
                               </div>
                             </td>
                             <td className={`py-4 px-4 text-right font-bold text-sm ${isAbono ? 'text-amber-400' : 'text-rose-400'}`}>
@@ -956,8 +974,15 @@ export default function ClientsCreditView({
                 <input type="date" value={editBirthday} onChange={e => setEditBirthday(e.target.value)} className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none" />
               </div>
               <div className="space-y-1.5">
-                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN Acceso</label>
-                <input type="text" maxLength={4} value={editPin} onChange={e => setEditPin(e.target.value)} placeholder="4 dígitos" className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none font-mono tracking-widest" />
+                <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">PIN Acceso (6 dígitos)</label>
+                <input
+                  type="text"
+                  maxLength={6}
+                  value={editPin}
+                  onChange={e => setEditPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="6 dígitos"
+                  className="w-full h-10 px-3 bg-editorial-bg border border-editorial-border rounded text-xs text-editorial-text-primary focus:outline-none font-mono tracking-widest"
+                />
               </div>
               <div className="space-y-1.5">
                 <label className="text-[10px] font-mono text-editorial-text-muted uppercase block">Puntos Fidelidad (Pts)</label>

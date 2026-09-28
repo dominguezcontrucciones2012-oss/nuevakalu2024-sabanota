@@ -126,7 +126,7 @@ async function runPasskeyTests() {
     // 2. Login Cliente
     const loginClientRes = await request('/api/portal/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ portalType: 'client', identifier: '04141234567', pin: '678000' })
+      body: JSON.stringify({ portalType: 'client', identifier: '33964288', pin: '428800' })
     });
     clientCookie = loginClientRes.setCookie ? loginClientRes.setCookie.split(';')[0] : '';
     clientCsrf = loginClientRes.data?.csrfToken || '';
@@ -134,7 +134,7 @@ async function runPasskeyTests() {
     // 3. Login Productor
     const loginProducerRes = await request('/api/portal/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ portalType: 'producer', identifier: '04125550101', pin: '321900' })
+      body: JSON.stringify({ portalType: 'producer', identifier: '15712801', pin: '280100' })
     });
     producerCookie = loginProducerRes.setCookie ? loginProducerRes.setCookie.split(';')[0] : '';
     producerCsrf = loginProducerRes.data?.csrfToken || '';
@@ -228,7 +228,7 @@ async function runPasskeyTests() {
   try {
     const res = await request('/api/portal/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ portalType: 'client', identifier: '04141234567', pin: '678000' })
+      body: JSON.stringify({ portalType: 'client', identifier: '33964288', pin: '428800' })
     });
     const ok = res.status === 200 && res.data?.authenticated === true && res.data?.portalUser?.type === 'client';
     record('L) Login normal de Mundo Kalu Cliente preservado y funcional', ok);
@@ -240,7 +240,7 @@ async function runPasskeyTests() {
   try {
     const res = await request('/api/portal/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ portalType: 'producer', identifier: '04125550101', pin: '321900' })
+      body: JSON.stringify({ portalType: 'producer', identifier: '15712801', pin: '280100' })
     });
     const ok = res.status === 200 && res.data?.authenticated === true && res.data?.portalUser?.type === 'producer';
     record('M) Login normal de Mundo Kalu Productor preservado y funcional', ok);
