@@ -72,16 +72,37 @@ export const calculateDynamicBalances = (s: SupplierProfile, txList: Transaction
 
     if (s.isEmployee) {
       asc.forEach(tx => {
-        const isLiquidation = (tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'));
-        const isBodegaDebt = !isLiquidation && (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda')));
-        const isPayroll = !isLiquidation && (tx.category === 'gastos' || tx.category === 'compras' || (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))));
+        const notesLower = (tx.notes || '').toLowerCase();
+        const pmLower = (tx.paymentMethod || '').toLowerCase();
+        const isLiquidation = notesLower.includes('liquidaci') || notesLower.includes('finalizado') || notesLower.includes('cierre') || pmLower.includes('cierre');
         
+        const isPayroll = !isLiquidation && (
+          notesLower.includes('[nómina]') ||
+          notesLower.includes('nómina') ||
+          notesLower.includes('sueldo') ||
+          pmLower.includes('nómina') ||
+          pmLower.includes('nomina')
+        );
+
+        const isBodegaDebt = !isLiquidation && !isPayroll && (
+          tx.category === 'credito' ||
+          tx.category === 'ventas' ||
+          Number(tx.debtAmount) > 0 ||
+          notesLower.includes('fiado') ||
+          notesLower.includes('compra pos') ||
+          notesLower.includes('libreta') ||
+          pmLower.includes('tienda') ||
+          pmLower.includes('libreta') ||
+          pmLower.includes('pos')
+        );
+
         if (isLiquidation) {
           running = 0;
         } else if (isPayroll) {
           running += (Number(tx.amount) || 0);
         } else if (isBodegaDebt) {
-          running -= (Number(tx.amount) || 0);
+          const debtAmt = Number(tx.debtAmount) > 0 ? Number(tx.debtAmount) : (Number(tx.amount) || 0);
+          running -= debtAmt;
         } else if (tx.isIncome) {
           running += (Number(tx.amount) || 0);
         } else {
@@ -883,10 +904,30 @@ export default function SuppliersDebtsView({
                   const isEmp = !!s.isEmployee;
                   
                   if (isEmp) {
-                    const isLiquidation = (tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'));
-                    const isBodegaDebt = !isLiquidation && (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda')));
-                    const isPayroll = !isLiquidation && (tx.category === 'gastos' || tx.category === 'compras' || (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))));
+                    const notesLower = (tx.notes || '').toLowerCase();
+                    const pmLower = (tx.paymentMethod || '').toLowerCase();
+                    const isLiquidation = notesLower.includes('liquidaci') || notesLower.includes('finalizado') || notesLower.includes('cierre') || pmLower.includes('cierre');
                     
+                    const isPayroll = !isLiquidation && (
+                      notesLower.includes('[nómina]') ||
+                      notesLower.includes('nómina') ||
+                      notesLower.includes('sueldo') ||
+                      pmLower.includes('nómina') ||
+                      pmLower.includes('nomina')
+                    );
+
+                    const isBodegaDebt = !isLiquidation && !isPayroll && (
+                      tx.category === 'credito' ||
+                      tx.category === 'ventas' ||
+                      Number(tx.debtAmount) > 0 ||
+                      notesLower.includes('fiado') ||
+                      notesLower.includes('compra pos') ||
+                      notesLower.includes('libreta') ||
+                      pmLower.includes('tienda') ||
+                      pmLower.includes('libreta') ||
+                      pmLower.includes('pos')
+                    );
+
                     if (isLiquidation) {
                       rest = Number(tx.amount) > 0 ? Number(tx.amount) : Math.max(0, currentBalance);
                       currentBalance = 0;
@@ -894,7 +935,8 @@ export default function SuppliersDebtsView({
                       sum = Number(tx.amount) || 0;
                       currentBalance += sum;
                     } else if (isBodegaDebt) {
-                      rest = Number(tx.amount) || 0;
+                      const debtAmt = Number(tx.debtAmount) > 0 ? Number(tx.debtAmount) : (Number(tx.amount) || 0);
+                      rest = debtAmt;
                       currentBalance -= rest;
                     } else if (tx.isIncome) {
                       sum = Number(tx.amount) || 0;
@@ -1348,16 +1390,37 @@ export default function SuppliersDebtsView({
                     const asc = [...workerTxs].sort((a, b) => getTxTime(a) - getTxTime(b));
                     let running = 0;
                     asc.forEach(tx => {
-                      const isLiquidation = (tx.notes && (tx.notes.toLowerCase().includes('liquidaci') || tx.notes.toLowerCase().includes('finalizado') || tx.notes.toLowerCase().includes('cierre'))) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('cierre'));
-                      const isBodegaDebt = !isLiquidation && (tx.category === 'credito' || (tx.notes && tx.notes.toLowerCase().includes('fiado')) || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('tienda')));
-                      const isPayroll = !isLiquidation && (tx.category === 'gastos' || tx.category === 'compras' || (tx.notes && (tx.notes.toLowerCase().includes('nómina') || tx.notes.toLowerCase().includes('sueldo'))));
+                      const notesLower = (tx.notes || '').toLowerCase();
+                      const pmLower = (tx.paymentMethod || '').toLowerCase();
+                      const isLiquidation = notesLower.includes('liquidaci') || notesLower.includes('finalizado') || notesLower.includes('cierre') || pmLower.includes('cierre');
                       
+                      const isPayroll = !isLiquidation && (
+                        notesLower.includes('[nómina]') ||
+                        notesLower.includes('nómina') ||
+                        notesLower.includes('sueldo') ||
+                        pmLower.includes('nómina') ||
+                        pmLower.includes('nomina')
+                      );
+
+                      const isBodegaDebt = !isLiquidation && !isPayroll && (
+                        tx.category === 'credito' ||
+                        tx.category === 'ventas' ||
+                        Number(tx.debtAmount) > 0 ||
+                        notesLower.includes('fiado') ||
+                        notesLower.includes('compra pos') ||
+                        notesLower.includes('libreta') ||
+                        pmLower.includes('tienda') ||
+                        pmLower.includes('libreta') ||
+                        pmLower.includes('pos')
+                      );
+
                       if (isLiquidation) {
                         running = 0;
                       } else if (isPayroll) {
                         running += (Number(tx.amount) || 0);
                       } else if (isBodegaDebt) {
-                        running -= (Number(tx.amount) || 0);
+                        const debtAmt = Number(tx.debtAmount) > 0 ? Number(tx.debtAmount) : (Number(tx.amount) || 0);
+                        running -= debtAmt;
                       } else if (tx.isIncome) {
                         running += (Number(tx.amount) || 0);
                       } else {

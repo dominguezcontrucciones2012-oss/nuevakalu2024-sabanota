@@ -1131,15 +1131,6 @@ export default function CheesePOSView({
       }));
   }, [allTransactions]);
 
-  // Historial completo de movimientos (Ventas + Cobranzas CxC, abiertas y cerradas, excluyendo anuladas)
-  const allSalesHistory = React.useMemo(() => {
-    return [...validSalesHistory, ...collectionTransactions].sort((a: any, b: any) => {
-      const tA = Number(a.createdAt) || (a.date ? new Date(a.date).getTime() : 0);
-      const tB = Number(b.createdAt) || (b.date ? new Date(b.date).getTime() : 0);
-      return tB - tA;
-    });
-  }, [validSalesHistory, collectionTransactions]);
-
   const parseTime = React.useCallback((obj: any) => {
     if (!obj) return 0;
     if (obj.timestamp?.seconds) return obj.timestamp.seconds * 1000;
@@ -1166,6 +1157,15 @@ export default function CheesePOSView({
   }, [allTransactions, validSalesHistory]);
 
   const { currentShiftSales, currentShiftTransactions } = currentShiftDetails;
+
+  // Historial operativo de ventas de la caja/jornada actualmente abierta (!isClosed && !isVoided)
+  const allSalesHistory = React.useMemo(() => {
+    return [...currentShiftSales].sort((a: any, b: any) => {
+      const tA = Number(a.createdAt) || (a.date ? new Date(a.date).getTime() : 0);
+      const tB = Number(b.createdAt) || (b.date ? new Date(b.date).getTime() : 0);
+      return tB - tA;
+    });
+  }, [currentShiftSales]);
 
   const closingDetails = React.useMemo(() => {
     if (!selectedAuditClosing || selectedAuditClosing.purged) return { sales: [], incomes: [], expenses: [] };

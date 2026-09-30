@@ -33,3 +33,12 @@ backups/
 deploy_bundle_candidate/
 deploy_cashier_rbac_signature_*/
 deploy_manifest.txt
+release_packages/
+migration_backups/
+migration_analysis/
+transfer_*.mjs
+execute_*.mjs
+prepare_*.mjs
+audit_*.mjs
+run_*.mjs
+
