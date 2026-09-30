@@ -94,11 +94,14 @@ export const calculateDynamicBalances = (s: SupplierProfile, txList: Transaction
         const notesLower = (tx.notes || '').toLowerCase();
         const pmLower = (tx.paymentMethod || '').toLowerCase();
         
-        const isDelivery = (tx.category === 'compras' && tx.isIncome) || 
+        // Una entrega de queso suma (+) y debe tener estrictamente isIncome === true
+        const isDelivery = tx.isIncome === true && (
+          tx.category === 'compras' ||
           notesLower.includes('recibido') || 
           notesLower.includes('arrime') || 
           notesLower.includes('entrega') ||
-          notesLower.includes('compra de queso');
+          notesLower.includes('compra de queso')
+        );
 
         const isStoreDebt = tx.category === 'ventas' ||
           (tx.category === 'credito' && !tx.isIncome) ||
@@ -904,11 +907,14 @@ export default function SuppliersDebtsView({
                     const notesLower = (tx.notes || '').toLowerCase();
                     const pmLower = (tx.paymentMethod || '').toLowerCase();
 
-                    const isDelivery = (tx.category === 'compras' && tx.isIncome) || 
+                    // Una entrega de queso suma (+) y debe tener estrictamente isIncome === true
+                    const isDelivery = tx.isIncome === true && (
+                      tx.category === 'compras' || 
                       notesLower.includes('recibido') || 
                       notesLower.includes('arrime') || 
                       notesLower.includes('entrega') ||
-                      notesLower.includes('compra de queso');
+                      notesLower.includes('compra de queso')
+                    );
 
                     const isStoreDebt = tx.category === 'ventas' ||
                       (tx.category === 'credito' && !tx.isIncome) ||
@@ -1045,11 +1051,13 @@ export default function SuppliersDebtsView({
                                    badgeClasses = "inline-block px-2 py-1 rounded bg-blue-500/20 border border-blue-500/30 text-[10px] font-mono uppercase text-blue-400 font-bold tracking-wider";
                                  }
                                } else {
-                                 const isDelivery = (tx.category === 'compras' && tx.isIncome) || 
-                                   notesLower.includes('recibido') || 
-                                   notesLower.includes('arrime') || 
-                                   notesLower.includes('entrega') ||
-                                   notesLower.includes('compra de queso');
+                                 const isDelivery = tx.isIncome === true && (
+                                    tx.category === 'compras' ||
+                                    notesLower.includes('recibido') ||
+                                    notesLower.includes('arrime') ||
+                                    notesLower.includes('entrega') ||
+                                    notesLower.includes('compra de queso')
+                                  );
 
                                  const isStoreDebt = tx.category === 'ventas' ||
                                    (tx.category === 'credito' && !tx.isIncome) ||
